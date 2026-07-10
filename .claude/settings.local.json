@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//**)",
+      "Edit(//Users/karlgua/repos/work/document_rewrite/**)",
+      "Write(//Users/karlgua/repos/work/document_rewrite/**)",
+      "Bash(*)",
+      "WebSearch"
+    ],
+    "deny": [
+      "Bash(git push:*)"
+    ],
+    "ask": [
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(mv:*)"
+    ]
+  }
+}

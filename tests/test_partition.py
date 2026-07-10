@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hypoargus.partition import assert_partition_invariant, partition
 
 
@@ -71,11 +73,8 @@ def test_partition_no_trailing_newline():
 def test_partition_rejects_non_bytes():
     """非 bytes 输入被拒绝（原文以 bytes 处理，保证字节级）。"""
 
-    try:
+    with pytest.raises(TypeError):
         partition("not bytes")  # type: ignore[arg-type]
-    except TypeError:
-        return
-    raise AssertionError("partition 应对 str 输入抛 TypeError")
 
 
 def test_partition_empty():

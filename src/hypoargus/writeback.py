@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Protocol
 
 from hypoargus.domain import ArgumentationNode, NodeStatus
@@ -40,16 +39,6 @@ class RewriteFn(Protocol):
     ) -> bytes: ...
 
 
-def _paragraph_nodes(
-    tree: list[ArgumentationNode], paragraph_id: str
-) -> list[ArgumentationNode]:
-    return [n for n in tree if n.paragraph_id == paragraph_id]
-
-
-def _is_adopted(node: ArgumentationNode) -> bool:
-    return node.status == NodeStatus.ADOPTED
-
-
 def writeback(
     tree: list[ArgumentationNode],
     store: RawParagraphStore,
@@ -64,10 +53,15 @@ def writeback(
     规范顺序遍历保证：只要无采纳改动，输出与原始输入逐字节相等（分区不变式）。
     """
 
+    # 先按 paragraph_id 索引节点一次，避免逐段全量扫描树（O(N) 而非 O(N×P)）。
+    nodes_by_paragraph: dict[str, list[ArgumentationNode]] = {}
+    for node in tree:
+        nodes_by_paragraph.setdefault(node.paragraph_id, []).append(node)
+
     out = bytearray()
     for paragraph_id in store.paragraph_ids():
-        nodes = _paragraph_nodes(tree, paragraph_id)
-        if any(_is_adopted(n) for n in nodes):
+        nodes = nodes_by_paragraph.get(paragraph_id, [])
+        if any(n.status == NodeStatus.ADOPTED for n in nodes):
             if rewrite_fn is None:
                 raise NotImplementedError(
                     f"段落 {paragraph_id} 有 adopted 节点，但未提供 rewrite_fn"
@@ -77,12 +71,3 @@ def writeback(
         else:
             out += store.get(paragraph_id)
     return bytes(out)
-
-
-def writeback_tree_index(tree: list[ArgumentationNode]) -> Mapping[str, list[ArgumentationNode]]:
-    """以 ``paragraph_id`` 索引树节点（回写与测试断言辅助）。"""
-
-    index: dict[str, list[ArgumentationNode]] = {}
-    for node in tree:
-        index.setdefault(node.paragraph_id, []).append(node)
-    return index

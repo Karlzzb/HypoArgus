@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
 from hypoargus.raw_store import RawParagraphStore
 from hypoargus.writeback import writeback
@@ -66,7 +68,6 @@ def test_writeback_adopted_node_without_rewrite_fn_raises():
         content="para",
         status=NodeStatus.ADOPTED,
     )
-    import pytest
 
     with pytest.raises(NotImplementedError):
         writeback([node], store)

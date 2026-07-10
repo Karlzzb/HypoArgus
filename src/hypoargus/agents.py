@@ -15,16 +15,17 @@ from typing import Protocol
 
 from hypoargus.domain import ArgumentationNode, NodeType
 from hypoargus.raw_store import RawParagraphStore
+from hypoargus.writeback import writeback
 
 __all__ = [
     "ParseFn",
     "Hitl1Fn",
-    "Hitl2Fn",
     "VerifyFn",
     "HypothesisFn",
     "MergeFn",
     "ImpactFn",
     "ConsistencyFn",
+    "Hitl2Fn",
     "WritebackFn",
     "Agents",
     "create_stub_agents",
@@ -186,8 +187,6 @@ def _stub_writeback(
 
     #1：无采纳改动 → 全部逐字节拷回。分流（replace/rewrite/supplement）由 #10 接入。
     """
-
-    from hypoargus.writeback import writeback
 
     return writeback(tree, store)
 

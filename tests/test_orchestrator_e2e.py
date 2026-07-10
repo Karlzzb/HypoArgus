@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from hypoargus.agents import Agents, create_stub_agents
 from hypoargus.orchestrator import Orchestrator
 
@@ -75,8 +77,5 @@ def test_e2e_rejects_str_input():
     """原始文本以 bytes 流转（字节级保护原文的前提）。"""
 
     orch = Orchestrator()
-    try:
+    with pytest.raises(TypeError):
         orch.run("not bytes")  # type: ignore[arg-type]
-    except TypeError:
-        return
-    raise AssertionError("Orchestrator.run 应对 str 输入抛 TypeError")

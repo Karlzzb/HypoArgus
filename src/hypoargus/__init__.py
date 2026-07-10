@@ -10,6 +10,17 @@ from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
 from hypoargus.orchestrator import Orchestrator
 from hypoargus.partition import partition
 from hypoargus.raw_store import RawParagraphStore
+from hypoargus.retrieval import (
+    ComplianceError,
+    RetrievalConfig,
+    RetrievalKind,
+    RetrievalLayer,
+    RetrievalResponse,
+    Source,
+    create_mock_retrieval_layer,
+    redact_query,
+    validate_request,
+)
 from hypoargus.writeback import writeback
 
 __all__ = [
@@ -20,4 +31,14 @@ __all__ = [
     "RawParagraphStore",
     "partition",
     "writeback",
+    # 公共检索层（PRD §6、issue #3）：契约 + Mock 桩。
+    "ComplianceError",
+    "RetrievalConfig",
+    "RetrievalKind",
+    "RetrievalLayer",
+    "RetrievalResponse",
+    "Source",
+    "create_mock_retrieval_layer",
+    "redact_query",
+    "validate_request",
 ]

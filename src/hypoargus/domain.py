@@ -77,6 +77,38 @@ class HypothesisStatus(StrEnum):
     REFUTED = "refuted"
 
 
+class MergeAction(StrEnum):
+    """双轨合并算子对节点的裁决动作（ADR-0006 12 格矩阵）。
+
+    ``KEEP`` 保留原文（credible 各非冲突格、doubtful/error 无有效候选格）；
+    ``REPLACE`` / ``REWRITE`` / ``SUPPLEMENT`` 为「成立(supported)」列按假设与原文的
+    语义关系分流（对立 / 递进 / 扩展）；``CONFLICT`` 为 credible × 对立成立 → 贴
+    ``conflict`` 交人判、系统不自动裁决；``FREEZE`` 为 credible × 递进/扩展成立 →
+    严格冻结、原文不动（以静制动）。
+    """
+
+    KEEP = "keep"
+    REPLACE = "replace"
+    REWRITE = "rewrite"
+    SUPPLEMENT = "supplement"
+    CONFLICT = "conflict"
+    FREEZE = "freeze"
+
+
+class MergeDecision(BaseModel):
+    """合并算子对单节点的裁决（ADR-0006）。
+
+    ``action`` 为节点级裁决动作。``activated_hypothesis_ids`` 为被激活推入 HITL-2 的
+    supported 假设 id——``CONFLICT`` 时为对立 supported 假设、
+    ``REPLACE``/``REWRITE``/``SUPPLEMENT`` 时为被激活的 supported 假设、
+    ``KEEP``/``FREEZE`` 时为空。弱呈现（doubtful）的假设仍留在节点的
+    ``candidate_hypotheses`` 供 HITL-2 参考，但不计入 activated（未证实 ≠ 激活）。
+    """
+
+    action: MergeAction
+    activated_hypothesis_ids: list[str] = Field(default_factory=list)
+
+
 class Hypothesis(BaseModel):
     """一条可证伪的修订假设（ADR-0007/0008）。
 
@@ -102,6 +134,10 @@ class ArgumentationNode(BaseModel):
     ``argument_weight`` (0-100) 由解析智能体建树时按明文 rubric 赋值（带数据/引源的
     直接论据高分、泛泛断言低分），供影响传导计算剩余支撑率（ADR-0013）。影子节点
     不参与传导，权重恒 0。
+
+    ``merge_decision`` 由双轨合并算子（#6）写回——据体检 ``status`` × 开药
+    ``candidate_hypotheses`` 矩阵裁决；合并前为 ``None``。合并只标注、绝不替人拍板
+    （不置 ``adopted``、不写 ``adopted_hypothesis_id``，那由 HITL-2 #9 负责）。
     """
 
     node_id: str
@@ -114,3 +150,4 @@ class ArgumentationNode(BaseModel):
     status: NodeStatus = NodeStatus.UNVERIFIED
     issue_tags: list[str] = Field(default_factory=list)
     candidate_hypotheses: list[Hypothesis] = Field(default_factory=list)
+    merge_decision: MergeDecision | None = None

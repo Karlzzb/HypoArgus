@@ -18,6 +18,7 @@ from hypoargus.hitl1 import Hitl1Gate
 from hypoargus.hitl1 import confirm as hitl1_confirm
 from hypoargus.hypothesis import HypothesisLlmClient
 from hypoargus.hypothesis import hypothesize as hypothesize_fn
+from hypoargus.merge import merge as merge_fn
 from hypoargus.parser import LlmClient
 from hypoargus.parser import parse as parse_fn
 from hypoargus.raw_store import RawParagraphStore
@@ -162,10 +163,16 @@ def _stub_hypothesis(tree: list[ArgumentationNode]) -> dict[str, ArgumentationNo
     return {}
 
 
-def _stub_merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """合并桩：恒等（无两线路结果可合并）。"""
+def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+    """合并算子（委托纯函数 :func:`hypoargus.merge.merge`）。
 
-    return tree
+    双轨合并是确定性纯函数、无 LLM / 检索依赖（ADR-0006 12 格矩阵），故无桩——
+    tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回 ``{}``，输入树全为
+    ``unverified`` 且 ``candidate_hypotheses`` 空，合并逐节点判 ``KEEP``、不裁剪、
+    不置 ``adopted``，故「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
+    """
+
+    return merge_fn(tree)
 
 
 def _stub_impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
@@ -209,7 +216,7 @@ def create_stub_agents() -> Agents:
         hitl1=_stub_hitl1,
         verification=_stub_verification,
         hypothesis=_stub_hypothesis,
-        merge=_stub_merge,
+        merge=_merge,
         impact=_stub_impact,
         consistency=_stub_consistency,
         hitl2=_stub_hitl2,
@@ -226,11 +233,12 @@ def create_real_agents(
     retrieval: RetrievalLayer | None = None,
     max_iterations: int = 8,
 ) -> Agents:
-    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 下游桩」的智能体组。
+    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 下游桩」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（合并/影响/
-    一致性/HITL-2/回写分流）仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的
-    tracer bullet 承诺继续成立（解析产出真实树、HITL-1 可编辑结构，但无人采纳）。
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（影响 / 一致性 / HITL-2 /
+    回写分流）仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续
+    成立（解析产出真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）为确定性纯
+    函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents` 真实接入，此处不再替换。
 
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
     注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
@@ -238,7 +246,9 @@ def create_real_agents(
     不改 ``content``，故字节级承诺依然成立。当且仅当 ``hypothesis_llm`` 与 ``retrieval``
     同时给出时，开药桩（#5）替换为真实「投机生成 + 逐条取证」实现——开药只写回
     ``candidate_hypotheses``、不改 ``content`` 或 ``status``（与体检乐观并行、不读体检结论，
-    ADR-0002），字节级承诺依然成立。其余下游桩待 #6/#7/.../#10 接入。
+    ADR-0002），字节级承诺依然成立。合并（#6）读两线路合流后的 ``status`` ×
+    ``candidate_hypotheses`` 矩阵裁决，只贴 ``merge_decision`` / ``issue_tags`` / 裁剪假设、
+    不置 ``adopted``、不改 ``content``，字节级承诺依然成立。其余下游桩待 #7/.../#10 接入。
     """
 
     stubs = create_stub_agents()

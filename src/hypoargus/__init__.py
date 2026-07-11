@@ -7,7 +7,7 @@
 """
 
 from hypoargus.agents import Agents, create_real_agents, create_stub_agents
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
+from hypoargus.domain import ArgumentationNode, MergeAction, MergeDecision, NodeStatus, NodeType
 from hypoargus.hitl1 import (
     FakeHitl1Gate,
     Hitl1Action,
@@ -31,6 +31,7 @@ from hypoargus.hypothesis import (
     HypothesisVerifyStep,
 )
 from hypoargus.hypothesis import hypothesize as hypothesize
+from hypoargus.merge import apply_partial_updates, merge
 from hypoargus.orchestrator import Orchestrator
 from hypoargus.parser import (
     WEIGHT_RUBRIC,
@@ -124,4 +125,9 @@ __all__ = [
     "HypothesisLlmClient",
     "FakeHypothesisLlmClient",
     "hypothesize",
+    # 双轨合并算子（PRD §7、issue #6）：确定性 12 格矩阵纯函数。
+    "MergeAction",
+    "MergeDecision",
+    "merge",
+    "apply_partial_updates",
 ]

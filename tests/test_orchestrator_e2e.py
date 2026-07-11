@@ -409,3 +409,75 @@ def test_real_hypothesis_parallel_with_verification_byte_identity():
     out = orch.run(doc)
 
     assert out == doc  # 两线路并行、无人采纳 → 逐字节还原。
+
+
+# --------------------------------------------------------------------------- #
+# 真实双轨合并接入（issue #6 集成）
+#
+# create_stub_agents 已把合并桩替换为真实纯函数（#6 无 LLM/检索依赖）。
+# 双线路 partial 更新经 merge_tree reducer 合流到同一节点（status 与
+# candidate_hypotheses 共存），合并读 12 格矩阵裁决、贴 merge_decision、
+# 裁剪假设、贴 conflict；不改 content/status、不置 adopted → 终稿逐字节等于原文。
+# --------------------------------------------------------------------------- #
+
+
+def test_real_merge_wired_decisions_landed_byte_identity():
+    """两线路并行 → reducer 合流 → 合并读矩阵：sub_claim 冲突、evidence 替换。
+
+    - sub_claim (n0000)：体检 credible + 开药 supported-oppose → 冲突格（CONFLICT +
+      conflict 标签、对立假设保留为候选）。
+    - evidence (n0001)：体检 doubtful + 开药 supported-oppose → REPLACE（假设激活）。
+    - 终稿逐字节等于原文（合并不改 content、不置 adopted）。
+    """
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(
+                verdict=VerifyVerdict.DOUBTFUL
+                if node.node_id == "n0001"
+                else VerifyVerdict.CREDIBLE
+            )
+        ),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda node: [
+                HypothesisProposal(
+                    text=f"对立假设-{node.node_id}", relation=HypothesisRelation.OPPOSE
+                )
+            ],
+            verify_factory=lambda text, obs: HypothesisConcludeStep(
+                verdict=HypothesisVerdict.SUPPORTED
+            ),
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+
+    captured: dict = {}
+
+    def wrapped_merge(tree):
+        out = agents.merge(tree)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, merge=wrapped_merge))
+    out = orch.run(doc)
+
+    assert out == doc  # 字节级承诺：合并只标注、不改文本、无人采纳。
+
+    nodes = {n.node_id: n for n in captured["out"]}
+    # sub_claim：credible × 对立成立 → CONFLICT + conflict 标签，对立假设保留、原文不动。
+    sub = nodes["n0000"]
+    assert sub.merge_decision.action.value == "conflict"
+    assert "conflict" in sub.issue_tags
+    assert len(sub.merge_decision.activated_hypothesis_ids) == 1
+    assert len(sub.candidate_hypotheses) == 1  # 对立假设保留并列推 HITL-2
+    assert sub.status.value == "credible"
+    # evidence：doubtful × 对立成立 → REPLACE，假设激活、原文/状态不动。
+    evi = nodes["n0001"]
+    assert evi.merge_decision.action.value == "replace"
+    assert len(evi.merge_decision.activated_hypothesis_ids) == 1
+    assert evi.status.value == "doubtful"
+    # 全员流入 HITL-2、无人被自动采纳。
+    assert all(n.status.value != "adopted" for n in captured["out"])

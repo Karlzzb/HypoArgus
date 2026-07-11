@@ -19,6 +19,9 @@ from hypoargus.hitl1 import confirm as hitl1_confirm
 from hypoargus.parser import LlmClient
 from hypoargus.parser import parse as parse_fn
 from hypoargus.raw_store import RawParagraphStore
+from hypoargus.retrieval import RetrievalLayer
+from hypoargus.verification import VerifyLlmClient
+from hypoargus.verification import verify as verify_fn
 from hypoargus.writeback import writeback
 
 __all__ = [
@@ -216,20 +219,33 @@ def create_real_agents(
     *,
     llm: LlmClient,
     hitl1_gate: Hitl1Gate,
+    verify_llm: VerifyLlmClient | None = None,
+    retrieval: RetrievalLayer | None = None,
+    max_iterations: int = 8,
 ) -> Agents:
-    """返回「真实解析 + 真实 HITL-1 + 下游桩」的智能体组（issue #2）。
+    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检 + 下游桩」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换两个桩为真实实现，下游（体检/开药/合并/
-    影响/一致性/HITL-2/回写分流）仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的
+    在 :func:`create_stub_agents` 基础上替换两个桩为真实实现，下游（开药/合并/影响/
+    一致性/HITL-2/回写分流）仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的
     tracer bullet 承诺继续成立（解析产出真实树、HITL-1 可编辑结构，但无人采纳）。
 
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
-    注入闸门（真实 interrupt+checkpointer 属 #11）。
+    注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
+    ``retrieval`` 同时给出时，体检桩（#4）替换为真实 ReAct 实现——体检只写回节点状态、
+    不改 ``content``，故字节级承诺依然成立。其余下游桩待 #5/#6/.../#10 接入。
     """
 
     stubs = create_stub_agents()
-    return replace(
+    agents = replace(
         stubs,
         parse=lambda store: parse_fn(store, llm),
         hitl1=lambda tree: hitl1_confirm(tree, hitl1_gate),
     )
+    if verify_llm is not None and retrieval is not None:
+        agents = replace(
+            agents,
+            verification=lambda tree: verify_fn(
+                tree, verify_llm, retrieval, max_iterations=max_iterations
+            ),
+        )
+    return agents

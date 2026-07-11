@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from hypoargus.agents import Agents, create_real_agents, create_stub_agents
@@ -23,6 +25,13 @@ from hypoargus.parser import (
     ParagraphView,
     ParsedNodeProposal,
     ParseResult,
+)
+from hypoargus.retrieval import RetrievalKind, create_mock_retrieval_layer
+from hypoargus.verification import (
+    ConcludeStep,
+    FakeVerifyLlmClient,
+    SearchStep,
+    VerifyVerdict,
 )
 
 
@@ -195,3 +204,88 @@ def _cycle_factory():
         return ParseResult(nodes=nodes)
 
     return factory
+
+
+# --------------------------------------------------------------------------- #
+# 真实体检接入（issue #4 集成）
+#
+# create_real_agents 在给出 verify_llm + retrieval 时把体检桩替换为真实 ReAct 实现。
+# 体检只写回节点状态、不改 content、无人采纳 → 终稿逐字节等于原文的承诺继续成立。
+# --------------------------------------------------------------------------- #
+
+
+def _three_core_proposals() -> list[ParsedNodeProposal]:
+    """主论点 → 分论点 → 论据（三段、各一核心节点）。"""
+
+    return [
+        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM),
+        ParsedNodeProposal(
+            paragraph_id="p0002", node_type=NodeType.SUB_CLAIM, parent_index=0
+        ),
+        ParsedNodeProposal(
+            paragraph_id="p0003", node_type=NodeType.EVIDENCE, parent_index=1
+        ),
+    ]
+
+
+def _search_then_credible_factory():
+    """每节点：一次网络检索 → 结论 credible（按 node_id 记录调用次数）。"""
+
+    state: dict[str, int] = {}
+
+    def factory(node, observations):
+        count = state.get(node.node_id, 0)
+        state[node.node_id] = count + 1
+        if count == 0:
+            return SearchStep(
+                query=node.content,
+                channel=RetrievalKind.NETWORK,
+                domain="stats.example.com",
+            )
+        return ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+
+    return factory
+
+
+def test_real_verify_wired_core_nodes_get_verdicts_byte_identity():
+    """真实体检接入：三核心节点各落 credible，终稿逐字节等于原文（无采纳改动）。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    record: dict = {}
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(factory=_search_then_credible_factory()),
+        retrieval=create_mock_retrieval_layer(),
+    )
+
+    def wrapped_verify(tree):
+        updates = agents.verification(tree)
+        record.update(updates)
+        return updates
+
+    orch = Orchestrator(agents=replace(agents, verification=wrapped_verify))
+    out = orch.run(doc)
+
+    assert out == doc  # 字节级承诺：体检只动状态、不动文本。
+    assert set(record) == {"n0000", "n0001", "n0002"}
+    assert all(v.status.value == "credible" for v in record.values())
+
+
+def test_real_verify_all_error_still_byte_identity_no_hang():
+    """体检全程异常 → 三核心节点落 error，流水线仍推进至终稿逐字节还原（不卡死）。"""
+
+    def always_throws(node, observations):
+        raise RuntimeError("体检 LLM 不可用")
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(factory=always_throws),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    orch = Orchestrator(agents=agents)
+    out = orch.run(doc)
+
+    assert out == doc  # 异常兜底：节点落 error 不卡死、无人采纳 → 逐字节还原。

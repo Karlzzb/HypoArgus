@@ -42,6 +42,15 @@ from hypoargus.retrieval import (
     validate_request,
 )
 from hypoargus.tree_invariants import TreeInvariantError, validate_tree
+from hypoargus.verification import (
+    ConcludeStep,
+    FakeVerifyLlmClient,
+    SearchStep,
+    VerifyLlmClient,
+    VerifyStep,
+    VerifyVerdict,
+)
+from hypoargus.verification import verify as verify
 from hypoargus.writeback import writeback
 
 __all__ = [
@@ -82,4 +91,12 @@ __all__ = [
     "create_mock_retrieval_layer",
     "redact_query",
     "validate_request",
+    # 线路 1 · 体检 Agent（PRD §5、issue #4）：ReAct 循环 + LLM seam。
+    "VerifyVerdict",
+    "SearchStep",
+    "ConcludeStep",
+    "VerifyStep",
+    "VerifyLlmClient",
+    "FakeVerifyLlmClient",
+    "verify",
 ]

@@ -1,7 +1,7 @@
 """领域模型：论证节点与状态机（术语与 CONTEXT.md、ADR-0011 逐字一致）。
 
-本切片只承载 tracer bullet 流转所需的最小字段子集；后续切片逐步补全
-`argument_weight`、`candidate_hypotheses`、`adopted_hypothesis_id` 等字段。
+本切片承载 #2 解析所需字段子集（`argument_weight` 已补全，ADR-0013）；
+`candidate_hypotheses`、`adopted_hypothesis_id` 等字段由后续切片（#5/#9）补全。
 节点形状沿用 prd_v2.0.md §4 决策的 `ArgumentationNode`（形状为决策、非最终代码）。
 """
 
@@ -56,6 +56,10 @@ class ArgumentationNode(BaseModel):
 
     节点只携带自身那一段原文（作为推理输入）加 ``paragraph_id`` 指针，
     绝不存整篇原文（ADR-0005）。``paragraph_id`` 为单数——一个节点不可跨段（ADR-0001）。
+
+    ``argument_weight`` (0-100) 由解析智能体建树时按明文 rubric 赋值（带数据/引源的
+    直接论据高分、泛泛断言低分），供影响传导计算剩余支撑率（ADR-0013）。影子节点
+    不参与传导，权重恒 0。
     """
 
     node_id: str
@@ -64,5 +68,6 @@ class ArgumentationNode(BaseModel):
     children_ids: list[str] = Field(default_factory=list)
     paragraph_id: str
     content: str = ""
+    argument_weight: int = Field(default=0, ge=0, le=100)
     status: NodeStatus = NodeStatus.UNVERIFIED
     issue_tags: list[str] = Field(default_factory=list)

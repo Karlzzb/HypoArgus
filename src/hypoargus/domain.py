@@ -1,8 +1,9 @@
 """领域模型：论证节点与状态机（术语与 CONTEXT.md、ADR-0011 逐字一致）。
 
-本切片承载 #2 解析所需字段子集（`argument_weight` 已补全，ADR-0013）；
-`candidate_hypotheses`、`adopted_hypothesis_id` 等字段由后续切片（#5/#9）补全。
-节点形状沿用 prd_v2.0.md §4 决策的 `ArgumentationNode`（形状为决策、非最终代码）。
+本切片承载解析所需字段子集（``argument_weight`` 已补全，ADR-0013）；
+``candidate_hypotheses`` 由开药 Agent（#5）补全（ADR-0007/0008）；
+``adopted_hypothesis_id`` 由 HITL-2（#9）补全（ADR-0011 采纳链）。
+节点形状沿用 prd_v2.0.md §4 决策的 ``ArgumentationNode``（形状为决策、非最终代码）。
 """
 
 from __future__ import annotations
@@ -51,6 +52,47 @@ class NodeStatus(StrEnum):
     INVALID = "invalid"
 
 
+class HypothesisRelation(StrEnum):
+    """假设与原文的语义关系（ADR-0007）。
+
+    一条假设只承载一种关系；混合意图必须拆成多条假设。关系在生成时钉定，
+    决定回写通道：对立 → 替换、递进 → 改写、扩展 → 段尾追加。
+    """
+
+    OPPOSE = "oppose"
+    ADVANCE = "advance"
+    EXPAND = "expand"
+
+
+class HypothesisStatus(StrEnum):
+    """假设取证三态（ADR-0008），与原文侧 ``credible/doubtful/error`` 对称：
+
+    ``supported``（成立）↔ ``credible``、``doubtful``（存疑）↔ ``doubtful``、
+    ``refuted``（被推翻）↔ ``error``。``confidence`` 不参与此判决，仅用于同节点多条
+    ``supported`` 假设的排序。
+    """
+
+    SUPPORTED = "supported"
+    DOUBTFUL = "doubtful"
+    REFUTED = "refuted"
+
+
+class Hypothesis(BaseModel):
+    """一条可证伪的修订假设（ADR-0007/0008）。
+
+    ``hypothesis_id`` 由开药 Agent 确定性派生（节点 id + 关系 + 文本 + 序号），
+    供 HITL-2（#9）采纳与回写（#10）幂等链引用。``status`` 为取证终判，
+    是双轨合并（#6）矩阵 ``原文.status × 假设.status`` 的唯一输入；
+    ``confidence`` 0-1，仅排序、不裁决。
+    """
+
+    hypothesis_id: str
+    text: str
+    relation: HypothesisRelation
+    status: HypothesisStatus = HypothesisStatus.DOUBTFUL
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class ArgumentationNode(BaseModel):
     """论证树节点。
 
@@ -71,3 +113,4 @@ class ArgumentationNode(BaseModel):
     argument_weight: int = Field(default=0, ge=0, le=100)
     status: NodeStatus = NodeStatus.UNVERIFIED
     issue_tags: list[str] = Field(default_factory=list)
+    candidate_hypotheses: list[Hypothesis] = Field(default_factory=list)

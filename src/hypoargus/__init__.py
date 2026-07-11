@@ -18,6 +18,19 @@ from hypoargus.hitl1 import (
 from hypoargus.hitl1 import (
     confirm as hitl1_confirm,
 )
+from hypoargus.hypothesis import (
+    FakeHypothesisLlmClient,
+    Hypothesis,
+    HypothesisConcludeStep,
+    HypothesisLlmClient,
+    HypothesisProposal,
+    HypothesisRelation,
+    HypothesisSearchStep,
+    HypothesisStatus,
+    HypothesisVerdict,
+    HypothesisVerifyStep,
+)
+from hypoargus.hypothesis import hypothesize as hypothesize
 from hypoargus.orchestrator import Orchestrator
 from hypoargus.parser import (
     WEIGHT_RUBRIC,
@@ -99,4 +112,16 @@ __all__ = [
     "VerifyLlmClient",
     "FakeVerifyLlmClient",
     "verify",
+    # 线路 2 · 开药 Agent（PRD §5、issue #5）：投机生成 + 逐条取证 + LLM seam。
+    "HypothesisRelation",
+    "HypothesisStatus",
+    "Hypothesis",
+    "HypothesisVerdict",
+    "HypothesisProposal",
+    "HypothesisSearchStep",
+    "HypothesisConcludeStep",
+    "HypothesisVerifyStep",
+    "HypothesisLlmClient",
+    "FakeHypothesisLlmClient",
+    "hypothesize",
 ]

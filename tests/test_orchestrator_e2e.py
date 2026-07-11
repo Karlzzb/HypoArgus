@@ -19,6 +19,13 @@ from hypoargus.hitl1 import (
     Hitl1Decision,
     ReparentOp,
 )
+from hypoargus.hypothesis import (
+    FakeHypothesisLlmClient,
+    HypothesisConcludeStep,
+    HypothesisProposal,
+    HypothesisRelation,
+    HypothesisVerdict,
+)
 from hypoargus.orchestrator import Orchestrator
 from hypoargus.parser import (
     FakeLlmClient,
@@ -289,3 +296,116 @@ def test_real_verify_all_error_still_byte_identity_no_hang():
     out = orch.run(doc)
 
     assert out == doc  # 异常兜底：节点落 error 不卡死、无人采纳 → 逐字节还原。
+
+
+# --------------------------------------------------------------------------- #
+# 真实开药接入（issue #5 集成）
+#
+# create_real_agents 在给出 hypothesis_llm + retrieval 时把开药桩替换为真实
+# 「投机生成 + 逐条取证」实现。开药只写回 candidate_hypotheses、不改 content/status、
+# 无人采纳 → 终稿逐字节等于原文的承诺继续成立。与体检乐观并行（不读体检结论，
+# ADR-0002），本集成用桩体检（{}）以隔离观察开药线路行为。
+# --------------------------------------------------------------------------- #
+
+
+def _sub_claim_evidence_proposals() -> list[ParsedNodeProposal]:
+    """分论点 → 论据（两段、各一核心节点，均在开药覆盖范围内）。"""
+
+    return [
+        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.SUB_CLAIM),
+        ParsedNodeProposal(
+            paragraph_id="p0002", node_type=NodeType.EVIDENCE, parent_index=0
+        ),
+    ]
+
+
+def test_real_hypothesis_wired_nodes_get_hypotheses_byte_identity():
+    """真实开药接入：覆盖节点各产假设，终稿逐字节等于原文（无人采纳）。"""
+
+    doc = "分论点。\n\n论据。\n".encode()
+    record: dict = {}
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda node: [
+                HypothesisProposal(
+                    text=f"针对{node.node_id}的对立假设",
+                    relation=HypothesisRelation.OPPOSE,
+                )
+            ],
+            verify_factory=lambda text, obs: HypothesisConcludeStep(
+                verdict=HypothesisVerdict.SUPPORTED
+            ),
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+
+    def wrapped_hypothesis(tree):
+        updates = agents.hypothesis(tree)
+        record.update(updates)
+        return updates
+
+    orch = Orchestrator(agents=replace(agents, hypothesis=wrapped_hypothesis))
+    out = orch.run(doc)
+
+    assert out == doc  # 字节级承诺：开药只贴 candidate_hypotheses、不动文本。
+    assert set(record) == {"n0000", "n0001"}  # 仅 sub_claim/evidence 被开药覆盖
+    for node in record.values():
+        assert len(node.candidate_hypotheses) == 1
+        assert node.candidate_hypotheses[0].relation is HypothesisRelation.OPPOSE
+
+
+def test_real_hypothesis_all_verify_failure_still_byte_identity_no_hang():
+    """开药取证全程异常 → 假设落 doubtful，流水线仍推进至终稿逐字节还原（不卡死）。"""
+
+    def verify_always_throws(text, observations):
+        raise RuntimeError("取证 LLM 不可用")
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda node: [
+                HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)
+            ],
+            verify_factory=verify_always_throws,
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    orch = Orchestrator(agents=agents)
+    out = orch.run(doc)
+
+    assert out == doc  # 取证兜底：假设 doubtful 不卡死、无人采纳 → 逐字节还原。
+
+
+def test_real_hypothesis_parallel_with_verification_byte_identity():
+    """体检 ∥ 开药 同时真实接入：乐观并行执行不卡死、终稿逐字节等于原文。
+
+    开药不读体检结论（ADR-0002）：两线路各从同一棵 hitl-1 输出树出发、互不依赖。
+    字段级合流（同节点 status 与 candidate_hypotheses 共存）由双轨合并算子 #6 负责，
+    本测试只断言并行接入不破坏字节级承诺、不卡死。
+    """
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+        ),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda node: [
+                HypothesisProposal(text="x", relation=HypothesisRelation.EXPAND)
+            ],
+            verify_factory=lambda text, obs: HypothesisConcludeStep(
+                verdict=HypothesisVerdict.SUPPORTED
+            ),
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    orch = Orchestrator(agents=agents)
+    out = orch.run(doc)
+
+    assert out == doc  # 两线路并行、无人采纳 → 逐字节还原。

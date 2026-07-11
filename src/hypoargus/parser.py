@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
 from hypoargus.raw_store import RawParagraphStore
-from hypoargus.tree_invariants import validate_tree
+from hypoargus.tree_invariants import rebuild_children, validate_tree
 
 __all__ = [
     "WEIGHT_RUBRIC",
@@ -72,13 +72,14 @@ class ParsedNodeProposal(BaseModel):
 
     不含 ``content``：节点文本由解析器从只读表逐字节拷回，LLM 无权改写。
     ``parent_index`` 指向 LLM 输出列表中的父节点位置（稳定、由 LLM 控制排序），
-    解析器解析为 ``node_id``。
+    解析器解析为 ``node_id``。``argument_weight`` 不加 pydantic 边界——真实 LLM
+    偶尔返回 101，越界由解析器 :func:`_clamp_weight` 宽容 clamp（不整体崩溃）。
     """
 
     paragraph_id: str
     node_type: NodeType
     parent_index: int | None = None
-    argument_weight: int = Field(default=0, ge=0, le=100)
+    argument_weight: int = 0
 
 
 class ParseResult(BaseModel):
@@ -106,6 +107,18 @@ def _decode(paragraph_bytes: bytes) -> str:
     """逐字节解码段落原文（与 stub 一致：surrogateescape 兜底非 UTF-8 字节）。"""
 
     return paragraph_bytes.decode("utf-8", errors="surrogateescape")
+
+
+def _clamp_weight(value: int, node_type: NodeType) -> int:
+    """越界 clamp 到 [0,100]；影子节点恒 0（不参与传导，ADR-0013 rubric）。
+
+    真实 LLM 偶尔返回 101 或负数——pydantic 边界会整体崩溃，故提议层不加约束、
+    在此宽容 clamp。影子节点（background/evaluation）权重一律归零，无论 LLM 给何值。
+    """
+
+    if node_type.is_shadow:
+        return 0
+    return max(0, min(100, value))
 
 
 def _core_node_id(index: int) -> str:
@@ -137,19 +150,6 @@ def _break_cycles(nodes: list[ArgumentationNode]) -> None:
                 break
             cur = by_id[cur].parent_id
             steps += 1
-
-
-def _backfill_children(nodes: list[ArgumentationNode]) -> None:
-    """据 ``parent_id`` 重建 ``children_ids``（双向一致），覆盖任何 LLM 给定值。"""
-
-    for node in nodes:
-        node.children_ids = []
-    for node in nodes:
-        if node.parent_id is not None:
-            for parent in nodes:
-                if parent.node_id == node.parent_id:
-                    parent.children_ids.append(node.node_id)
-                    break
 
 
 def parse(store: RawParagraphStore, llm: LlmClient) -> list[ArgumentationNode]:
@@ -199,14 +199,14 @@ def parse(store: RawParagraphStore, llm: LlmClient) -> list[ArgumentationNode]:
                 parent_id=parent_id,
                 paragraph_id=prop.paragraph_id,
                 content=_decode(store.get(prop.paragraph_id)),
-                argument_weight=prop.argument_weight,
+                argument_weight=_clamp_weight(prop.argument_weight, prop.node_type),
                 status=NodeStatus.UNVERIFIED,
             )
         )
 
     # 3. 断环 + 回填 children。
     _break_cycles(nodes)
-    _backfill_children(nodes)
+    rebuild_children(nodes)
 
     # 4. 覆盖软启发式：无提议段落 → 只读 background 影子节点（绝不硬造论点）。
     for pid in paragraph_ids:

@@ -17,11 +17,26 @@ from __future__ import annotations
 
 from hypoargus.domain import ArgumentationNode
 
-__all__ = ["TreeInvariantError", "validate_tree"]
+__all__ = ["TreeInvariantError", "validate_tree", "rebuild_children"]
 
 
 class TreeInvariantError(Exception):
     """论证树违反结构不变式。"""
+
+
+def rebuild_children(nodes: list[ArgumentationNode]) -> None:
+    """据 ``parent_id`` 重建 ``children_ids``（双向一致），覆盖任何既有值。
+
+    解析器建树与 HITL-1 编辑后复检共用的结构维护 seam——与 :func:`validate_tree`
+    同处本模块（两者皆是「LLM 不可信、人编辑亦可能错、必须代码兜底」的树结构兜底）。
+    """
+
+    for node in nodes:
+        node.children_ids = []
+    by_id = {n.node_id: n for n in nodes}
+    for node in nodes:
+        if node.parent_id is not None and node.parent_id in by_id:
+            by_id[node.parent_id].children_ids.append(node.node_id)
 
 
 def validate_tree(tree: list[ArgumentationNode]) -> None:

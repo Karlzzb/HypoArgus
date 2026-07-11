@@ -6,8 +6,28 @@
 核心承诺：无任何采纳改动时，终稿与原始输入逐字节完全一致。
 """
 
+from hypoargus.agents import Agents, create_real_agents, create_stub_agents
 from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
+from hypoargus.hitl1 import (
+    FakeHitl1Gate,
+    Hitl1Action,
+    Hitl1Decision,
+    Hitl1Gate,
+    Hitl1Op,
+)
+from hypoargus.hitl1 import (
+    confirm as hitl1_confirm,
+)
 from hypoargus.orchestrator import Orchestrator
+from hypoargus.parser import (
+    WEIGHT_RUBRIC,
+    FakeLlmClient,
+    LlmClient,
+    ParagraphView,
+    ParsedNodeProposal,
+    ParseResult,
+    parse,
+)
 from hypoargus.partition import partition
 from hypoargus.raw_store import RawParagraphStore
 from hypoargus.retrieval import (
@@ -21,6 +41,7 @@ from hypoargus.retrieval import (
     redact_query,
     validate_request,
 )
+from hypoargus.tree_invariants import TreeInvariantError, validate_tree
 from hypoargus.writeback import writeback
 
 __all__ = [
@@ -31,6 +52,26 @@ __all__ = [
     "RawParagraphStore",
     "partition",
     "writeback",
+    # 智能体契约与装配（issue #1/#2）。
+    "Agents",
+    "create_stub_agents",
+    "create_real_agents",
+    # 论证结构解析 + HITL-1 结构确认（issue #2）。
+    "LlmClient",
+    "FakeLlmClient",
+    "ParagraphView",
+    "ParsedNodeProposal",
+    "ParseResult",
+    "WEIGHT_RUBRIC",
+    "parse",
+    "Hitl1Action",
+    "Hitl1Decision",
+    "Hitl1Gate",
+    "Hitl1Op",
+    "FakeHitl1Gate",
+    "hitl1_confirm",
+    "TreeInvariantError",
+    "validate_tree",
     # 公共检索层（PRD §6、issue #3）：契约 + Mock 桩。
     "ComplianceError",
     "RetrievalConfig",

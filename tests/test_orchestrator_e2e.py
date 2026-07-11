@@ -9,8 +9,21 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.agents import Agents, create_stub_agents
+from hypoargus.agents import Agents, create_real_agents, create_stub_agents
+from hypoargus.domain import NodeType
+from hypoargus.hitl1 import (
+    FakeHitl1Gate,
+    Hitl1Action,
+    Hitl1Decision,
+    ReparentOp,
+)
 from hypoargus.orchestrator import Orchestrator
+from hypoargus.parser import (
+    FakeLlmClient,
+    ParagraphView,
+    ParsedNodeProposal,
+    ParseResult,
+)
 
 
 def test_e2e_byte_identical_no_adoptions(sample_doc):
@@ -79,3 +92,106 @@ def test_e2e_rejects_str_input():
     orch = Orchestrator()
     with pytest.raises(TypeError):
         orch.run("not bytes")  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# 真实解析 + 真实 HITL-1 接入（issue #2 集成）
+#
+# create_real_agents 把解析桩、HITL-1 桩替换为真实实现，下游仍为桩。
+# 故无采纳改动 → 终稿逐字节等于原文的承诺继续成立。
+# --------------------------------------------------------------------------- #
+
+
+def _skip_gate() -> FakeHitl1Gate:
+    return FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP))
+
+
+def test_real_parse_empty_llm_skip_gate_byte_identity(sample_doc):
+    """空 LLM（无提议）→ 全段归影子 → 跳过 HITL-1 → 终稿逐字节等于原文。"""
+
+    _name, doc = sample_doc
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult()),
+        hitl1_gate=_skip_gate(),
+    )
+    orch = Orchestrator(agents=agents)
+    assert orch.run(doc) == doc
+
+
+def test_real_parse_cycle_proposal_does_not_crash_pipeline():
+    """LLM 给出成环 parent_index → 解析器断环、流水线仍推进至终稿逐字节还原。"""
+
+    doc = "# 标题\n\n第一段。\n\n第二段。\n".encode()
+    cycle_factory = _cycle_factory()
+    agents = create_real_agents(
+        llm=FakeLlmClient(factory=cycle_factory),
+        hitl1_gate=_skip_gate(),
+    )
+    orch = Orchestrator(agents=agents)
+    assert orch.run(doc) == doc
+
+
+def test_real_parse_with_proposals_skip_gate_byte_identity():
+    """真实提议产出含核心节点的论证树，但跳过 HITL-1 + 下游桩 → 终稿逐字节等于原文。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    proposals = [
+        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM),
+        ParsedNodeProposal(
+            paragraph_id="p0002", node_type=NodeType.SUB_CLAIM, parent_index=0
+        ),
+        ParsedNodeProposal(
+            paragraph_id="p0003", node_type=NodeType.EVIDENCE, parent_index=1
+        ),
+    ]
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=proposals)),
+        hitl1_gate=_skip_gate(),
+    )
+    orch = Orchestrator(agents=agents)
+    assert orch.run(doc) == doc
+
+
+def test_real_parse_hitl1_edits_do_not_break_byte_identity():
+    """HITL-1 结构编辑（reparent）改树形不改文本 → 终稿仍逐字节等于原文。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    proposals = [
+        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM),
+        ParsedNodeProposal(
+            paragraph_id="p0002", node_type=NodeType.SUB_CLAIM, parent_index=0
+        ),
+        ParsedNodeProposal(
+            paragraph_id="p0003", node_type=NodeType.EVIDENCE, parent_index=0
+        ),
+    ]
+    # reparent n0001（p0002 的分论点）提为根——树形变化、文本不动、无节点进入 adopted。
+    edit_gate = FakeHitl1Gate(
+        Hitl1Decision(
+            action=Hitl1Action.EDIT,
+            ops=[ReparentOp(node_id="n0001", new_parent_id=None)],
+        )
+    )
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=proposals)),
+        hitl1_gate=edit_gate,
+    )
+    orch = Orchestrator(agents=agents)
+    assert orch.run(doc) == doc
+
+
+def _cycle_factory():
+    """返回一个 factory：对每段都提议一个互相成环的节点。"""
+
+    def factory(paragraphs: list[ParagraphView]) -> ParseResult:
+        nodes = [
+            ParsedNodeProposal(
+                paragraph_id=p.paragraph_id,
+                node_type=NodeType.SUB_CLAIM,
+                parent_index=(i + 1) % max(len(paragraphs), 1),
+            )
+            for i, p in enumerate(paragraphs)
+        ]
+        return ParseResult(nodes=nodes)
+
+    return factory

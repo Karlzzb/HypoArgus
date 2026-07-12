@@ -134,76 +134,94 @@ END
 
 ## 2. 模块地图
 
-源码在 `src/hypoargus/`，共 18 个模块、约 4500 行。
+源码在 `src/`（扁平布局，ADR-0014：`package-dir={""="src"}`、`mypy_path=src` 解析顶层裸名 `domain`/`agents`/`infra`/`runtime`），共 37 个模块、约 5700 行。
 
-### 领域核心（共享不变语言，所有 agent 依赖、不反向依赖 agent）
+### 领域核心（`src/` 根，共享不变语言；所有 agent 依赖、不反向依赖 agent）
 
 | 模块 | 职责 |
 |---|---|
 | `domain.py` | `Argument` / `ArgumentType` / `ArgumentStatus` / `Hypothesis` / `MergeAction` / `MergeDecision`。节点形状为决策、非最终代码；字段由各 agent 分阶段补全。 |
 | `original_paragraphs.py` | `OriginalParagraphs`：只读、确定性、字节级无损的原文段落表（ADR-0005/0009）。 |
-| `partition.py` | 纯代码段落切分（零 LLM）。 |
-| `tree_invariants.py` | 论证树结构不变式（`validate_tree` / `rebuild_children`）。 |
+| `partition.py` | 纯代码段落切分（零 LLM，ADR-0009）+ 分区不变式自检。 |
+| `tree_invariants.py` | 论证树结构不变式（`validate_tree` / `rebuild_children`，ADR-0001）。 |
 | `status_machine.py` | 集中状态机：`validate_transition` / `transition_argument` / `mark_argument_error` + `ALLOWED_TRANSITIONS`（ADR-0011）。 |
 
-### 公共契约层（provider seam）
+### 公共契约与 provider adapter（`src/infra/`）
 
 | 模块 | 职责 |
 |---|---|
-| `retrieval.py` | `RetrievalLayer` Protocol + Mock（白名单/权限/模板在接口层强制）。体检 / 开药共用。 |
+| `retrieval.py` | `RetrievalLayer` Protocol + Mock + 合规校验（白名单 / 权限 / 模板在接口层强制）。体检 / 开药共用。 |
+| `retrieval_tool.py` | `RetrievalTool` 包 `RetrievalLayer`，独占 `SearchStep → RetrievalRequest` 翻译（ADR-0015）。 |
+| `tool_protocol.py` | 工具框架 seam 骨架（`ToolRegistry` / `BaseTool` / `ToolResult`，ADR-0015）。 |
+| `history.py` | `HistoryStore`：ReAct 步间检索观察记忆 + 压缩（ADR-0016）。 |
+| `llm_provider.py` | `build_qwen_chat_model()`：`ChatOpenAI` 指向 DashScope 端点；API key 只读 `DASHSCOPE_API_KEY`。 |
+| `llm_adapters.py` | `QwenParseLlmClient` / `QwenVerifyLlmClient` / `QwenHypothesisLlmClient`：经 `with_structured_output` 绑各 seam 契约。 |
 
-### 智能体（每个一个深模块：小接口 + 大实现）
+### 智能体（`src/agents/`）
 
-每个智能体都是**纯函数 + 注入 seam + provider-free Fake**：可独立 import、独立调用、独立单测。
+每个 **seam agent** 是子包 `agents/<name>/{contract,agent}.py`（ADR-0014）：`contract.py` 放 Protocol + Fake 桩 + 结构化 I/O 模型，`agent.py` 放纯函数，`__init__` re-export 保 `from agents.<name> import ...` 路径不变。
+**纯函数 agent** 为扁平单文件（无 seam、确定性、桩 = 真实）。
+每个 agent 都是**纯函数 + 注入 seam + provider-free Fake**：可独立 import、独立调用、独立单测（见 `docs/adding-an-agent.md`）。
 
 | 模块 | 接口 | seam | 覆盖节点 |
 |---|---|---|---|
-| `parser.py` | `parse(original_paragraphs, llm) -> list[Argument]` | `LlmClient` / `FakeLlmClient` | 全段（唯一读段落文本的环节） |
-| `hitl1.py` | `confirm(argument_tree, gate) -> list[Argument]` | `Hitl1Gate` / `FakeHitl1Gate` | 结构编辑（可跳过） |
-| `verification.py` | `verify(argument_tree, llm, retrieval, *, max_iterations) -> dict[str, ArgumentStatus]` | `VerifyLlmClient` / `FakeVerifyLlmClient` | main_claim / sub_claim / evidence |
-| `hypothesis.py` | `hypothesize(argument_tree, llm, retrieval, *, max_iterations) -> dict[str, list[Hypothesis]]` | `HypothesisLlmClient` / `FakeHypothesisLlmClient` | evidence / sub_claim（不读体检结论，ADR-0002） |
-| `merge.py` | `merge(argument_tree)` / `merge_with_partials(argument_tree, v, h, merge_fn)` / `apply_partial_updates(...)` | 无（确定性 12 格矩阵纯函数） | 全节点标注 |
+| `parser/{contract,agent}.py` | `parse(original_paragraphs, llm) -> list[Argument]` | `LlmClient` / `FakeLlmClient` | 全段（唯一读段落文本的环节） |
+| `hitl1/{contract,agent}.py` | `confirm(argument_tree, gate) -> list[Argument]` | `Hitl1Gate` / `FakeHitl1Gate` | 结构编辑（可跳过） |
+| `verification/{contract,agent}.py` | `verify(argument_tree, llm, retrieval, *, max_iterations) -> dict[str, ArgumentStatus]` | `VerifyLlmClient` / `FakeVerifyLlmClient` | main_claim / sub_claim / evidence |
+| `hypothesis/{contract,agent}.py` | `hypothesize(argument_tree, llm, retrieval, *, max_iterations) -> dict[str, list[Hypothesis]]` | `HypothesisLlmClient` / `FakeHypothesisLlmClient` | evidence / sub_claim（不读体检结论，ADR-0002） |
+| `hitl2/{contract,agent}.py` | `confirm(argument_tree, original_paragraphs, gate)` / `build_review(...)` | `Hitl2Gate` / `FakeHitl2Gate` / `ConservativeHitl2Gate` | 待决节点（不可跳过硬闸门，ADR-0010） |
+| `merge.py` | `merge` / `merge_with_partials` / `apply_partial_updates` | 无（确定性 12 格矩阵纯函数） | 全节点标注 |
 | `impact.py` | `impact(argument_tree) -> list[Argument]` | 无（串行·不产文本·剩余支撑率纯函数） | 上层论点 invalid/weakening |
 | `consistency.py` | `consistency(argument_tree) -> list[Argument]` | 无（单次扫描·只贴 `issue_tags`） | 段落级 / 全局一致性 |
-| `hitl2.py` | `confirm(argument_tree, original_paragraphs, gate) -> list[Argument]` / `build_review(...)` | `Hitl2Gate` / `FakeHitl2Gate` / `ConservativeHitl2Gate` | 待决节点（不可跳过硬闸门，ADR-0010） |
 | `writeback.py` | `writeback(argument_tree, original_paragraphs) -> WritebackResult` | 无（段落原子缝合·幂等纯函数） | 被采纳节点 |
 
-### 装配与调度
+### 装配与调度（`src/agents/assembly.py` + `src/runtime/`）
 
 | 模块 | 职责 |
 |---|---|
-| `agents.py` | `Agents` dataclass（9 个契约）+ `create_stub_agents` / `create_real_agents`（`functools.partial` 绑定依赖、逐个条件替换桩）。 |
-| `orchestrator.py` | `Orchestrator` 调度中枢 + `StageSpec` / `default_pipeline` / `_guarded` 兜底。 |
+| `agents/assembly.py` | `Agents` dataclass（9 契约）+ `MANIFEST`（单一 manifest：每 stage 的 `stub`/`real`/`deps`/`build`）+ `create_stub_agents` / `create_real_agents` + `_guarded` 兜底 + 各 `_X_node` build 闭包。 |
+| `runtime/orchestrator.py` | `Orchestrator` 调度中枢 + `StageSpec` / `default_pipeline`（遍历 `MANIFEST` 派生）+ `PipelineState` / `RunResult` / `NodeFn` / `merge_argument_tree` reducer + `resume_writeback`。 |
+| `runtime/cli_gates.py` | `CliHitl1Gate` / `CliHitl2Gate`：交互式同步闸门（终端 `input()`），非 tty 退化为保守决策。 |
+| `runtime/run_real.py` | `run_real_pipeline(original_doc)` + `python -m runtime.run_real` 入口。 |
 
 ## 3. seam 一览
 
 | seam | 类型 | 两个 adapter（→ 真 seam） | 位置 |
 |---|---|---|---|
-| LLM 解析 | Protocol | `FakeLlmClient` ↔ 真实 provider | `parser.LlmClient` |
-| LLM 体检 | Protocol | `FakeVerifyLlmClient` ↔ 真实 ReAct | `verification.VerifyLlmClient` |
-| LLM 开药 | Protocol | `FakeHypothesisLlmClient` ↔ 真实 | `hypothesis.HypothesisLlmClient` |
-| HITL-1 闸门 | Protocol | `FakeHitl1Gate` ↔ 真实 interrupt | `hitl1.Hitl1Gate` |
-| HITL-2 闸门 | Protocol | `FakeHitl2Gate` / `ConservativeHitl2Gate` ↔ 真实 interrupt | `hitl2.Hitl2Gate` |
-| 检索层 | Protocol | `create_mock_retrieval_layer` ↔ 真实 | `retrieval.RetrievalLayer` |
-| agent 实现 | dataclass 字段 | stub ↔ real（`dataclasses.replace` 逐个换） | `agents.Agents` |
-| **拓扑** | `StageSpec` 序列 | `default_pipeline()` ↔ 自定义 spec（省略 stage） | `orchestrator.default_pipeline` |
+| LLM 解析 | Protocol | `FakeLlmClient` ↔ `QwenParseLlmClient` | `agents/parser/contract.py`（真 adapter `infra/llm_adapters.py`） |
+| LLM 体检 | Protocol | `FakeVerifyLlmClient` ↔ `QwenVerifyLlmClient` | `agents/verification/contract.py`（真 adapter `infra/llm_adapters.py`） |
+| LLM 开药 | Protocol | `FakeHypothesisLlmClient` ↔ `QwenHypothesisLlmClient` | `agents/hypothesis/contract.py`（真 adapter `infra/llm_adapters.py`） |
+| HITL-1 闸门 | Protocol | `FakeHitl1Gate` ↔ `CliHitl1Gate` | `agents/hitl1/contract.py`（真 adapter `runtime/cli_gates.py`） |
+| HITL-2 闸门 | Protocol | `FakeHitl2Gate` / `ConservativeHitl2Gate` ↔ `CliHitl2Gate` | `agents/hitl2/contract.py`（真 adapter `runtime/cli_gates.py`） |
+| 检索层 | Protocol | `create_mock_retrieval_layer` ↔ 真实后端 | `infra/retrieval.py` |
+| 工具框架 | 骨架 | `ToolRegistry` + `RetrievalTool` ↔ 未来 `BaseTool` 实现 | `infra/tool_protocol.py` / `infra/retrieval_tool.py` |
+| 历史 seam | Protocol | `HistoryStore` ↔ 未来消息轮次融合 | `infra/history.py`（ADR-0016） |
+| agent 实现 | dataclass 字段 | stub ↔ real（`MANIFEST` 驱动 `dataclasses.replace` 逐条换） | `agents/assembly.py: Agents` |
+| **拓扑** | `StageSpec` 序列 | `default_pipeline()`（遍历 `MANIFEST` 派生）↔ 自定义 spec（省略 stage） | `runtime/orchestrator.py: default_pipeline` |
 
 每个 seam 都有「第二个 adapter」——按 deep-module 原则（two adapters means a real seam）均为真 seam，无假 seam。
 
-## 4. 装配：从桩到真实
+## 4. 装配：从桩到真实（manifest 驱动）
 
-`create_stub_agents()` 返回全套桩（tracer bullet 端到端回路：无采纳改动 → 终稿逐字节等于原文）。
-`create_real_agents(...)` 在桩基础上**逐个、条件地**替换：
+`MANIFEST`（`agents/assembly.py`）是单一装配真相源：每条 `AgentEntry` 含 `name`/`field`/`stub`/`real`/`deps`/`build`。
+它同时驱动两件事——typed `Agents` dataclass 构造与 `default_pipeline()` 拓扑（`StageSpec(name, build, deps)` per entry）。
 
-- `llm`（必填）→ 解析桩换真实解析；
-- `hitl1_gate`（必填）→ HITL-1 桩换真实闸门；
-- `verify_llm + retrieval`（同时给出）→ 体检桩换真实 ReAct；
-- `hypothesis_llm + retrieval`（同时给出）→ 开药桩换真实「投机生成 + 逐条取证」；
-- `hitl2_gate`（可选，缺省 `ConservativeHitl2Gate`）→ HITL-2 真实 confirm。
+- `create_stub_agents()`：遍历 `MANIFEST`，按 `field` 把 `stub` 装入 `Agents`（`partition` 无 field 跳过）。返回全套桩——tracer bullet 端到端回路（无采纳改动 → 终稿逐字节等于原文）。
+- `create_real_agents(...)`：在桩基础上遍历 `MANIFEST`，对有 `real` 工厂的条目调 `real(RealDeps)`，返回非 `None` 者替换对应 `field`（`dataclasses.replace`）。纯函数 agent 与 `partition` 的 `real=None`，不替换（桩 = 真实）。
 
-合并 / 影响传导 / 一致性 / 回写均为**确定性纯函数、无 LLM / 检索依赖**——桩路径与真实装配共用同一实现，故字节级承诺在任一替换组合下都成立。
+条件替换矩阵（`real` 工厂返回 `None` 即保留桩）：
 
-绑定依赖用 `functools.partial`（如 `partial(verify_fn, llm=verify_llm, retrieval=retrieval, max_iterations=...)`）——恢复 IDE 跳转与签名可见性，比 lambda 闭包更可读。
+| 入参 | 替换 |
+|---|---|
+| `llm`（必填） | 解析桩 → 真实解析 |
+| `hitl1_gate`（必填） | HITL-1 桩 → 真实闸门 |
+| `verify_llm + retrieval`（同时给出） | 体检桩 → 真实 ReAct |
+| `hypothesis_llm + retrieval`（同时给出） | 开药桩 → 真实「投机生成 + 逐条取证」 |
+| `hitl2_gate`（可选，缺省 `ConservativeHitl2Gate`） | HITL-2 桩 → 真实 confirm |
+
+合并 / 影响传导 / 一致性 / 回写均为确定性纯函数、无 LLM / 检索依赖——桩路径与真实装配共用同一实现，故字节级承诺在任一替换组合下都成立。
+`real` 工厂用 `functools.partial` 绑定依赖（恢复 IDE 跳转与签名可见性，比 lambda 闭包可读）。
+每条 `AgentEntry` 的 `stub`/`real`/`build`/`deps` 四字段逐项含义与新增 agent 的三触点见 `docs/adding-an-agent.md`。
 
 ## 5. 异常兜底与单向流控（issue #11 · PRD §13）
 
@@ -214,16 +232,7 @@ END
 - 其余异常 → `fallback()` 降级 patch + `_log_error_patch` 日志、单向向前推进。
 
 各 stage 只声明「正常返回」与「降级 patch」两件本质之事，样板收口于一处（locality）。
-降级语义一览：
-
-| stage | 降级 patch |
-|---|---|
-| parse | `argument_tree=[]`（空树向前） |
-| hitl1 / impact / consistency / hitl2 | 保留 stale 树 |
-| verification | 覆盖范围内未判决节点置 `error`（`_mark_verify_scope_error`） |
-| hypothesis | 空 partial（不置节点 error，避免覆盖体检判决） |
-| merge | 已合流未裁决的 `combined`（`apply_partial_updates`） |
-| writeback | 回退原文 bytes（保护原文底线）；`adopted` 节点不动、待续跑 |
+逐 stage 降级语义见 §1 大框每 stage 的 `失败降级 →` 标注（图细节，不再于此重复表）。
 
 回写幂等续跑入口：`Orchestrator.resume_writeback(argument_tree, original_paragraphs)`（崩溃恢复，复用纯函数幂等再推导）。
 
@@ -282,18 +291,21 @@ python -m runtime.run_real input.txt -o final.md
 
 ### 8.3 新增 agent
 
-1. 新模块：`Protocol` seam + provider-free `Fake*` + 纯函数主逻辑（`argument_tree -> patch`，`model_copy` 不改输入）。
-2. `agents.py`：加 `XFn` Protocol + `Agents` 字段 + `_stub_X`（桩）+ 在 `create_real_agents` 条件替换。
-3. `orchestrator.py`：加 `_X_node(agents) -> NodeFn`（用 `_guarded`）+ 在 `default_pipeline()` 插入 `StageSpec` 与 `deps`。
-4. `__init__.py`：re-export。
-5. 测试：`tests/test_X.py`（纯函数单测）+ 在 `test_orchestrator_e2e.py` 加集成断言。
+manifest 驱动下触点为 **3**（ADR-0014，原 7 触点收口于 `MANIFEST`）：
+
+1. **新子包** `agents/<name>/{contract,agent,__init__}.py`（seam agent）或扁平 `agents/<name>.py`（纯函数 agent）：`Protocol` seam + provider-free `Fake*` + 纯函数主逻辑（`argument_tree -> patch`，`model_copy` 不改输入）。
+2. **`agents/assembly.py`**：加 `Agents` 字段（typed）+ 一条 `MANIFEST` 条目（`stub` / `real` 工厂 / `deps` / `build` 闭包，后者用 `_guarded` 兜底）。
+3. **测试**：`tests/test_<name>.py`（纯函数单测）+ `test_orchestrator_e2e.py` 加集成断言。
+
+`default_pipeline()` 自动纳入新 stage（遍历 `MANIFEST`），无需改 `orchestrator.py`。
+完整走读（`verification` 真例 + 可填空骨架模板 + 两层调测）见 **`docs/adding-an-agent.md`**。
 
 ## 9. 质量门
 
 ```bash
 ruff check src tests          # E/F/I/UP/B，line-length 99，不强制 ruff format
 mypy --strict src             # 扁平 src 布局（ADR-0014），mypy_path=src 解析顶层裸名
-pytest -q                     # ~384 测试
+pytest -q                     # 416 测试 + 6 skip
 ```
 
 不强制 `ruff format`——不重排既有文件（既有缩进风格保持）。

@@ -30,7 +30,7 @@ dev = [
 # 扁平 src 布局（ADR-0014）：src/ 为包根，顶层裸名导入。
 package-dir = {"" = "src"}
 # 顶层裸模块（domain core 平铺于 src/ 根，不入子包）。
-py-modules = ["domain", "partition", "raw_store", "status_machine", "tree_invariants"]
+py-modules = ["domain", "original_paragraphs", "partition", "status_machine", "tree_invariants"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

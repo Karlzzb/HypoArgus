@@ -57,14 +57,10 @@ from domain import (
     HypothesisStatus,
     NodeType,
 )
-from infra.retrieval import (
-    KnowledgeBaseRetrievalRequest,
-    NetworkRetrievalRequest,
-    RetrievalKind,
-    RetrievalLayer,
-    RetrievalRequest,
-    Source,
-)
+from infra.history import HistoryStore
+from infra.retrieval import RetrievalKind, RetrievalLayer, Source
+from infra.retrieval_tool import RetrievalTool
+from infra.tool_protocol import ToolRegistry
 
 __all__ = [
     "HypothesisRelation",
@@ -109,7 +105,8 @@ class HypothesisSearchStep(BaseModel):
     """取证继续检索：调整检索词、选通道、附通道特有参数。
 
     通道为 ``network`` 或 ``knowledge_base``（镜像体检 #4 的正向检索范围）；结构化数据检索
-    （``structured``）不在取证通道内，``_build_request`` 拒绝 → 假设落 ``doubtful``。
+    （``structured``）不在取证通道内，:class:`infra.retrieval_tool.RetrievalTool` 拒绝 →
+    假设落 ``doubtful``。
     """
 
     action: Literal["search"] = "search"
@@ -243,57 +240,31 @@ def _hypothesis_id(
     return f"h-{digest}"
 
 
-def _build_request(step: HypothesisSearchStep) -> RetrievalRequest:
-    """把取证 ``HypothesisSearchStep`` 翻译为检索层 ``RetrievalRequest``；通道/参数不全 → 抛错。
-
-    合规（白名单域名 / 授权用户）由检索层 ``validate_request`` 在接口层强制；此处只构造
-    请求形状。结构化数据通道（``structured``）不在取证范围 → 抛错（→ 假设 ``doubtful``）。
-    """
-
-    if not step.query.strip():
-        raise ValueError("检索词不可为空")
-    if step.channel is RetrievalKind.NETWORK:
-        if not step.domain:
-            raise ValueError("网络检索须指定 domain")
-        return NetworkRetrievalRequest(query=step.query, domain=step.domain)
-    if step.channel is RetrievalKind.KNOWLEDGE_BASE:
-        if not step.user_id:
-            raise ValueError("知识库检索须指定 user_id")
-        return KnowledgeBaseRetrievalRequest(
-            query=step.query,
-            user_id=step.user_id,
-            type_filter=step.type_filter,
-            time_filter=step.time_filter,
-        )
-    raise ValueError(
-        f"取证不支持通道 {step.channel!r}（仅 network / knowledge_base）"
-    )
-
-
 def _verify_hypothesis(
     hypothesis_text: str,
     llm: HypothesisLlmClient,
-    retrieval: RetrievalLayer,
+    registry: ToolRegistry,
     max_iterations: int,
 ) -> HypothesisStatus:
     """单条假设的取证 ReAct 循环：bounded、绝不卡死。
 
     任何异常 / 迭代硬上限 / 结构非法 → ``doubtful``（取证失败 ≠ 被推翻，ADR-0008）。
+    检索经 ``registry.dispatch("retrieve", step=...)``（ADR-0015）；观察累积于
+    :class:`infra.history.HistoryStore`，回喂 LLM 前经压缩（ADR-0016）。
     """
 
-    observations: list[Source] = []
+    history = HistoryStore()
     for _ in range(max_iterations):
         try:
-            step = llm.next_verify_step(hypothesis_text, observations)
+            step = llm.next_verify_step(hypothesis_text, history.compressed_view())
         except Exception:
             return HypothesisStatus.DOUBTFUL
         try:
             if isinstance(step, HypothesisConcludeStep):
                 return _VERDICT_TO_STATUS[step.verdict]
             if isinstance(step, HypothesisSearchStep):
-                request = _build_request(step)
-                response = retrieval.retrieve(request)
-                observations.extend(response.materials)
+                result = registry.dispatch("retrieve", step=step)
+                history.extend(result.sources)
                 continue
             return HypothesisStatus.DOUBTFUL  # 结构非法（非 union 成员）
         except Exception:
@@ -319,6 +290,8 @@ def hypothesize(
     """
 
     updates: dict[str, ArgumentationNode] = {}
+    registry = ToolRegistry()
+    registry.register(RetrievalTool(retrieval))
     for node in tree:
         if not _should_hypothesize(node):
             continue
@@ -329,7 +302,7 @@ def hypothesize(
         hypotheses: list[Hypothesis] = []
         for idx, proposal in enumerate(proposals):
             status = _verify_hypothesis(
-                proposal.text, llm, retrieval, max_iterations
+                proposal.text, llm, registry, max_iterations
             )
             hypotheses.append(
                 Hypothesis(

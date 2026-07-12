@@ -459,12 +459,21 @@ class Orchestrator:
                 graph.add_edge(stage.name, END)
         return graph.compile()
 
-    def run(self, raw_text: bytes) -> bytes:
-        """驱动整条流水线：原始文本 → 终稿 bytes。"""
+    def run(
+        self, raw_text: bytes, *, session_config: dict[str, Any] | None = None
+    ) -> bytes:
+        """驱动整条流水线：原始文本 → 终稿 bytes。
 
-        return self.run_with_report(raw_text).final_doc
+        ``session_config`` 透传 langgraph ``RunnableConfig``（ADR-0016）——``metadata`` /
+        ``tags`` / ``callbacks`` 线程贯穿整条 Agent 链路，业务节点零侵入。当前为 #4
+        checkpointer 预备（``session_id`` 键），本切片内存态、不消费。
+        """
 
-    def run_with_report(self, raw_text: bytes) -> RunResult:
+        return self.run_with_report(raw_text, session_config=session_config).final_doc
+
+    def run_with_report(
+        self, raw_text: bytes, *, session_config: dict[str, Any] | None = None
+    ) -> RunResult:
         """驱动整条流水线，返回终稿 + 异常兜底日志（issue #11）。
 
         比 :meth:`run` 多返回 ``errors`` 通道——沿途各 stage 的单点波动兜底日志，供审计
@@ -475,7 +484,9 @@ class Orchestrator:
             raise TypeError(
                 f"Orchestrator.run 要求 bytes 输入，收到 {type(raw_text).__name__}"
             )
-        result: dict[str, Any] = self.graph.invoke({"raw_text": bytes(raw_text)})
+        result: dict[str, Any] = self.graph.invoke(
+            {"raw_text": bytes(raw_text)}, config=session_config
+        )
         final: bytes = result["final_doc"]
         errors: list[str] = list(result.get("errors", []))
         return RunResult(final_doc=final, errors=errors)

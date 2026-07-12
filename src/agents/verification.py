@@ -36,14 +36,10 @@ from typing import Annotated, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from domain import ArgumentationNode, NodeStatus, NodeType
-from infra.retrieval import (
-    KnowledgeBaseRetrievalRequest,
-    NetworkRetrievalRequest,
-    RetrievalKind,
-    RetrievalLayer,
-    RetrievalRequest,
-    Source,
-)
+from infra.history import HistoryStore
+from infra.retrieval import RetrievalKind, RetrievalLayer, Source
+from infra.retrieval_tool import RetrievalTool
+from infra.tool_protocol import ToolRegistry
 
 __all__ = [
     "VerifyVerdict",
@@ -73,7 +69,8 @@ class SearchStep(BaseModel):
     """继续检索：调整检索词、选通道、附通道特有参数。
 
     ``channel`` 为 ``network`` 或 ``knowledge_base``（体检聚焦查清事实的两类正向检索）；
-    结构化数据检索（``structured``）不在体检通道内，``_build_request`` 拒绝 → 节点 ``error``。
+    结构化数据检索（``structured``）不在体检通道内，:class:`infra.retrieval_tool.RetrievalTool`
+    拒绝 → 节点 ``error``。
     """
 
     action: Literal["search"] = "search"
@@ -172,52 +169,31 @@ _VERDICT_TO_STATUS: dict[VerifyVerdict, NodeStatus] = {
 }
 
 
-def _build_request(step: SearchStep) -> RetrievalRequest:
-    """把 ``SearchStep`` 翻译为检索层 ``RetrievalRequest``；通道/参数不全 → 抛错。
-
-    合规（白名单域名 / 授权用户 / 模板）由检索层 ``validate_request`` 在接口层强制；
-    此处只构造请求形状。结构化数据通道（``structured``）不在体检范围 → 抛错。
-    """
-
-    if not step.query.strip():
-        raise ValueError("检索词不可为空")
-    if step.channel is RetrievalKind.NETWORK:
-        if not step.domain:
-            raise ValueError("网络检索须指定 domain")
-        return NetworkRetrievalRequest(query=step.query, domain=step.domain)
-    if step.channel is RetrievalKind.KNOWLEDGE_BASE:
-        if not step.user_id:
-            raise ValueError("知识库检索须指定 user_id")
-        return KnowledgeBaseRetrievalRequest(
-            query=step.query,
-            user_id=step.user_id,
-            type_filter=step.type_filter,
-            time_filter=step.time_filter,
-        )
-    raise ValueError(f"体检不支持通道 {step.channel!r}（仅 network / knowledge_base）")
-
-
 def _verify_node(
     node: ArgumentationNode,
     llm: VerifyLlmClient,
-    retrieval: RetrievalLayer,
+    registry: ToolRegistry,
     max_iterations: int,
 ) -> NodeStatus:
-    """单节点 ReAct 循环： bounded、绝不卡死。异常/超时硬上限 → ``error``。"""
+    """单节点 ReAct 循环： bounded、绝不卡死。异常/超时硬上限 → ``error``。
 
-    observations: list[Source] = []
+    检索经 ``registry.dispatch("retrieve", step=...)``（ADR-0015）：``SearchStep →
+    RetrievalRequest`` 翻译与合规校验收口于 :class:`infra.retrieval_tool.RetrievalTool`。
+    观察累积于 :class:`infra.history.HistoryStore`，回喂 LLM 前经压缩（ADR-0016）。
+    """
+
+    history = HistoryStore()
     for _ in range(max_iterations):
         try:
-            step = llm.next_step(node, observations)
+            step = llm.next_step(node, history.compressed_view())
         except Exception:
             return NodeStatus.ERROR
         try:
             if isinstance(step, ConcludeStep):
                 return _VERDICT_TO_STATUS[step.verdict]
             if isinstance(step, SearchStep):
-                request = _build_request(step)
-                response = retrieval.retrieve(request)
-                observations.extend(response.materials)
+                result = registry.dispatch("retrieve", step=step)
+                history.extend(result.sources)
                 continue
             return NodeStatus.ERROR  # 结构非法（非 union 成员）
         except Exception:
@@ -241,9 +217,11 @@ def verify(
     """
 
     updates: dict[str, ArgumentationNode] = {}
+    registry = ToolRegistry()
+    registry.register(RetrievalTool(retrieval))
     for node in tree:
         if not _should_verify(node):
             continue
-        status = _verify_node(node, llm, retrieval, max_iterations)
+        status = _verify_node(node, llm, registry, max_iterations)
         updates[node.node_id] = node.model_copy(update={"status": status})
     return updates

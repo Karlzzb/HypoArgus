@@ -15,6 +15,8 @@
 - **text_span**：节点在原文中的起止偏移量，**仅作段内辅助定位**，回写逻辑不依赖它。
 - **基数约束**：一个段落可含多个节点；一个节点不可跨段落。
 - **只读原文段落表 (Raw Paragraph Store)**：`{ paragraph_id → 原始 bytes }` 的不可变副本。字节级还原、HITL-2 对比左栏、回写拷贝的共同真相源，**永不整篇进 Agent 上下文**。见 ADR-0005。
+- **节点权重 (`argument_weight`)**：0-100 整数，解析器建树时按明文 rubric 赋值——带数据/引源的论据高分、泛泛断言低分，影子节点恒 0。
+  供影响传导计算上层论点的剩余支撑率（`surviving_weight / total_weight`），是 `invalid` / `weakening` 判定的依据。见 ADR-0013。
 
 ## 论证树结构原则（解析器默认形态·软启发式）
 
@@ -44,6 +46,16 @@
 - **线路 1 / 体检**：对 claim & evidence 正向查询与纠错，产出原文状态 `credible / doubtful / error`。
 - **线路 2 / 开药**：对节点生成假说并对假说取证，产出假说状态 `supported / doubtful / refuted`（「无假说」= 空数组）。与原文 `credible/doubtful/error` 对称。见 ADR-0008。
 - **双轨合并算子 (Merge Operator)**：合并两线路结果，按 12 格矩阵裁决。见 ADR-0006。
+- **裁决动作 (MergeAction)**：合并算子对单节点的六种裁决：`keep`（保留原文）、`replace` / `rewrite` / `supplement`（成立假说按语义关系分流，见回写三操作）、`conflict`（原文 credible 且对立假说成立，贴签交人判）、`freeze`（原文 credible 且递进/扩展假说成立，严格冻结原文不动）。见 ADR-0006。
 - **回写三操作**：`替换 (replace)` / `改写 (rewrite)` / `补充 (supplement)`。由**假说与原文的语义关系**（`relation: oppose/advance/expand`）决定：**对立→替换、递进→改写、扩展→补充**。关系由假设生成 Agent 标注，一假说一关系。见 ADR-0006、ADR-0007。
 - **conflict**：原文 `credible` 且对立假说亦成立时贴的标签，交 HITL-2 人判，系统不自动裁决。
 - **HITL**：节点 1（结构确认，可跳过）、节点 2（修订内容确认，双轨决策大闸）。
+
+## 实现映射
+
+本文件只定义概念；具体实现见下列文档，二者分层维护、避免漂移。
+
+- 状态树字段流向（主/子智能体 state、字段来源、LLM seam 输入形式）：`docs/STATE.md`。
+- 模块边界、seam、装配与扩展点：`docs/DEVELOPMENT.md`。
+- 架构决策记录：`docs/adr/`。
+- 完整需求：`prd_v2.0.md`。

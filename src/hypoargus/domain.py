@@ -109,6 +109,18 @@ class MergeDecision(BaseModel):
     activated_hypothesis_ids: list[str] = Field(default_factory=list)
 
 
+HYPOTHESIS_RELATION_TO_MERGE_ACTION: dict[HypothesisRelation, MergeAction] = {
+    HypothesisRelation.OPPOSE: MergeAction.REPLACE,
+    HypothesisRelation.ADVANCE: MergeAction.REWRITE,
+    HypothesisRelation.EXPAND: MergeAction.SUPPLEMENT,
+}
+"""「成立(supported)」列动作由假设与原文的语义关系决定（ADR-0006/0007）：
+
+对立 → 替换、递进 → 改写、扩展 → 补充。双轨合并算子（#6）的分流与影响传导（#7）
+复用既有成立假设去激活共用此映射——单一定义点、避免漂移。
+"""
+
+
 class Hypothesis(BaseModel):
     """一条可证伪的修订假设（ADR-0007/0008）。
 

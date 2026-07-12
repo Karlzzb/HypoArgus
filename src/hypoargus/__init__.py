@@ -31,6 +31,16 @@ from hypoargus.hypothesis import (
     HypothesisVerifyStep,
 )
 from hypoargus.hypothesis import hypothesize as hypothesize
+from hypoargus.impact import (
+    INVALID_RATIO_THRESHOLD,
+    WEAKEN_RATIO_THRESHOLD,
+    WEAKENING_TAG,
+    ImpactVerdict,
+    ResidualSupport,
+    compute_residual_support,
+    impact,
+    verdict_for_ratio,
+)
 from hypoargus.merge import apply_partial_updates, merge
 from hypoargus.orchestrator import Orchestrator
 from hypoargus.parser import (
@@ -130,4 +140,13 @@ __all__ = [
     "MergeDecision",
     "merge",
     "apply_partial_updates",
+    # 影响传导 Agent（PRD §8、issue #7）：串行·不产文本·剩余支撑率失效判定纯函数。
+    "ImpactVerdict",
+    "ResidualSupport",
+    "WEAKENING_TAG",
+    "INVALID_RATIO_THRESHOLD",
+    "WEAKEN_RATIO_THRESHOLD",
+    "compute_residual_support",
+    "verdict_for_ratio",
+    "impact",
 ]

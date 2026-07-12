@@ -18,6 +18,7 @@ from hypoargus.hitl1 import Hitl1Gate
 from hypoargus.hitl1 import confirm as hitl1_confirm
 from hypoargus.hypothesis import HypothesisLlmClient
 from hypoargus.hypothesis import hypothesize as hypothesize_fn
+from hypoargus.impact import impact as impact_fn
 from hypoargus.merge import merge as merge_fn
 from hypoargus.parser import LlmClient
 from hypoargus.parser import parse as parse_fn
@@ -175,10 +176,16 @@ def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     return merge_fn(tree)
 
 
-def _stub_impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """影响传导桩：恒等（串行·不产文本）。"""
+def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+    """影响传导算子（委托纯函数 :func:`hypoargus.impact.impact`）。
 
-    return tree
+    影响传导是确定性纯函数、无 LLM / 检索依赖（ADR-0003 串行·不产文本、ADR-0013
+    剩余支撑率公式），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回
+    ``{}``、合并逐节点判 ``KEEP``、影子上层论点无子节点参与传导，故影响传导不动任何节点，
+    「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
+    """
+
+    return impact_fn(tree)
 
 
 def _stub_consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
@@ -217,7 +224,7 @@ def create_stub_agents() -> Agents:
         verification=_stub_verification,
         hypothesis=_stub_hypothesis,
         merge=_merge,
-        impact=_stub_impact,
+        impact=_impact,
         consistency=_stub_consistency,
         hitl2=_stub_hitl2,
         writeback=_stub_writeback,
@@ -233,11 +240,12 @@ def create_real_agents(
     retrieval: RetrievalLayer | None = None,
     max_iterations: int = 8,
 ) -> Agents:
-    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 下游桩」的智能体组。
+    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 真实影响传导 +
+    下游桩」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（影响 / 一致性 / HITL-2 /
-    回写分流）仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续
-    成立（解析产出真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）为确定性纯
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（一致性 / HITL-2 / 回写分流）
+    仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出
+    真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）与影响传导（#7）均为确定性纯
     函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents` 真实接入，此处不再替换。
 
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
@@ -248,7 +256,9 @@ def create_real_agents(
     ``candidate_hypotheses``、不改 ``content`` 或 ``status``（与体检乐观并行、不读体检结论，
     ADR-0002），字节级承诺依然成立。合并（#6）读两线路合流后的 ``status`` ×
     ``candidate_hypotheses`` 矩阵裁决，只贴 ``merge_decision`` / ``issue_tags`` / 裁剪假设、
-    不置 ``adopted``、不改 ``content``，字节级承诺依然成立。其余下游桩待 #7/.../#10 接入。
+    不置 ``adopted``、不改 ``content``；影响传导（#7）读合并后的树按剩余支撑率判 ``invalid``
+    / 贴 ``weakening``、复用既有成立假设激活，亦不改 ``content`` / 不新建假设——字节级承诺依然
+    成立。其余下游桩待 #8/#9/#10 接入。
     """
 
     stubs = create_stub_agents()

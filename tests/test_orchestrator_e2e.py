@@ -481,3 +481,96 @@ def test_real_merge_wired_decisions_landed_byte_identity():
     assert evi.status.value == "doubtful"
     # 全员流入 HITL-2、无人被自动采纳。
     assert all(n.status.value != "adopted" for n in captured["out"])
+
+
+# --------------------------------------------------------------------------- #
+# 真实影响传导接入（issue #7 集成）
+#
+# create_stub_agents 已把影响传导桩替换为真实纯函数（#7 无 LLM/检索依赖，串行·不产文本）。
+# 合并后的树经影响传导按剩余支撑率判 invalid/贴 weakening、复用既有成立假设激活；
+# 不改 content/不新建假设/不置 adopted → 终稿逐字节等于原文。本集成用桩开药（{}）
+# 以隔离观察影响传导：体检把叶子 evidence 判 error → sub_claim 塌方 invalid →
+# main_claim 上推 invalid（后序逐层）。
+# --------------------------------------------------------------------------- #
+
+
+def _weighted_three_core_proposals() -> list[ParsedNodeProposal]:
+    """主论点 → 分论点 → 论据（三段、各一核心节点，带非零权重以驱动影响传导）。"""
+
+    return [
+        ParsedNodeProposal(
+            paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM, argument_weight=80
+        ),
+        ParsedNodeProposal(
+            paragraph_id="p0002",
+            node_type=NodeType.SUB_CLAIM,
+            parent_index=0,
+            argument_weight=60,
+        ),
+        ParsedNodeProposal(
+            paragraph_id="p0003",
+            node_type=NodeType.EVIDENCE,
+            parent_index=1,
+            argument_weight=100,
+        ),
+    ]
+
+
+def test_real_impact_propagates_invalid_up_chain_byte_identity():
+    """叶子 evidence 体检 error → sub_claim 塌方 invalid → main_claim 上推 invalid。
+
+    - evidence (n0002)：体检 error（叶子不动，影响传导不判叶子）。
+    - sub_claim (n0001)：唯一子 evidence error → 剩余支撑率 0 < 0.5 → invalid。
+    - main_claim (n0000)：唯一子 sub_claim invalid → 0 < 0.5 → invalid（后序上推）。
+    - 终稿逐字节等于原文（影响传导不改 content、不置 adopted）。
+    """
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_weighted_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(
+                verdict=VerifyVerdict.ERROR
+                if node.node_id == "n0002"
+                else VerifyVerdict.CREDIBLE
+            )
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+
+    captured: dict = {}
+
+    def wrapped_impact(tree):
+        out = agents.impact(tree)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, impact=wrapped_impact))
+    out = orch.run(doc)
+
+    assert out == doc  # 字节级承诺：影响传导不产文本、不置 adopted。
+
+    nodes = {n.node_id: n for n in captured["out"]}
+    assert nodes["n0002"].status.value == "error"  # 叶子：体检判决，影响传导不动
+    assert nodes["n0001"].status.value == "invalid"  # 子全死 → 塌方
+    assert nodes["n0000"].status.value == "invalid"  # 子塌方 → 上推
+    # 影响传导不替人拍板、不新建假设。
+    assert all(n.status.value != "adopted" for n in captured["out"])
+    assert all(n.merge_decision is not None for n in captured["out"])
+
+
+def test_real_impact_all_credible_unaffected_byte_identity():
+    """全核心节点体检 credible → 影响传导不动任何节点、终稿逐字节等于原文。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_weighted_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    orch = Orchestrator(agents=agents)
+    assert orch.run(doc) == doc  # 全可信 → 无失效/弱化 → 逐字节还原

@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 from hypoargus.domain import (
+    HYPOTHESIS_RELATION_TO_MERGE_ACTION,
     ArgumentationNode,
     MergeAction,
     MergeDecision,
@@ -79,12 +80,8 @@ def apply_partial_updates(
 # 矩阵查表
 # --------------------------------------------------------------------------- #
 
-_RELATION_TO_ACTION: dict[HypothesisRelation, MergeAction] = {
-    HypothesisRelation.OPPOSE: MergeAction.REPLACE,
-    HypothesisRelation.ADVANCE: MergeAction.REWRITE,
-    HypothesisRelation.EXPAND: MergeAction.SUPPLEMENT,
-}
-"""「成立」列动作由假设关系决定（ADR-0006/0007）。"""
+# 「成立」列动作由假设关系决定（ADR-0006/0007）；映射定义于 domain，与影响传导 #7 共用。
+_RELATION_TO_ACTION = HYPOTHESIS_RELATION_TO_MERGE_ACTION
 
 _VERDICT_ROWS: frozenset[NodeStatus] = frozenset(
     {NodeStatus.CREDIBLE, NodeStatus.DOUBTFUL, NodeStatus.ERROR}

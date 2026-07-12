@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from hypoargus.agents import create_stub_agents
-from hypoargus.orchestrator import Orchestrator, default_pipeline
+from agents.assembly import create_stub_agents
+from runtime.orchestrator import Orchestrator, default_pipeline
 
 _DOC = "主论点。\n\n分论点。\n\n论据。\n".encode()
 

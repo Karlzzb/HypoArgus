@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import (
+from agents.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
+from agents.merge import apply_partial_updates, merge
+from domain import (
     ArgumentationNode,
     MergeAction,
     NodeStatus,
     NodeType,
 )
-from hypoargus.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
-from hypoargus.merge import apply_partial_updates, merge
 
 # --------------------------------------------------------------------------- #
 # 构造工具

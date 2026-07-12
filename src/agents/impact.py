@@ -29,7 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from hypoargus.domain import (
+from agents.hypothesis import HypothesisStatus
+from domain import (
     HYPOTHESIS_RELATION_TO_MERGE_ACTION,
     ArgumentationNode,
     MergeAction,
@@ -37,8 +38,7 @@ from hypoargus.domain import (
     NodeStatus,
     NodeType,
 )
-from hypoargus.hypothesis import HypothesisStatus
-from hypoargus.status_machine import validate_transition
+from status_machine import validate_transition
 
 __all__ = [
     "ImpactVerdict",

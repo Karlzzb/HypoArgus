@@ -14,23 +14,23 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import Protocol
 
-from hypoargus.consistency import consistency as consistency_fn
-from hypoargus.domain import ArgumentationNode, NodeType
-from hypoargus.hitl1 import Hitl1Gate
-from hypoargus.hitl1 import confirm as hitl1_confirm
-from hypoargus.hitl2 import ConservativeHitl2Gate, Hitl2Gate
-from hypoargus.hitl2 import confirm as hitl2_confirm
-from hypoargus.hypothesis import HypothesisLlmClient
-from hypoargus.hypothesis import hypothesize as hypothesize_fn
-from hypoargus.impact import impact as impact_fn
-from hypoargus.merge import merge as merge_fn
-from hypoargus.parser import LlmClient
-from hypoargus.parser import parse as parse_fn
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.retrieval import RetrievalLayer
-from hypoargus.verification import VerifyLlmClient
-from hypoargus.verification import verify as verify_fn
-from hypoargus.writeback import WritebackResult, writeback
+from agents.consistency import consistency as consistency_fn
+from agents.hitl1 import Hitl1Gate
+from agents.hitl1 import confirm as hitl1_confirm
+from agents.hitl2 import ConservativeHitl2Gate, Hitl2Gate
+from agents.hitl2 import confirm as hitl2_confirm
+from agents.hypothesis import HypothesisLlmClient
+from agents.hypothesis import hypothesize as hypothesize_fn
+from agents.impact import impact as impact_fn
+from agents.merge import merge as merge_fn
+from agents.parser import LlmClient
+from agents.parser import parse as parse_fn
+from agents.verification import VerifyLlmClient
+from agents.verification import verify as verify_fn
+from agents.writeback import WritebackResult, writeback
+from domain import ArgumentationNode, NodeType
+from infra.retrieval import RetrievalLayer
+from raw_store import RawParagraphStore
 
 __all__ = [
     "ParseFn",
@@ -181,7 +181,7 @@ def _stub_hypothesis(tree: list[ArgumentationNode]) -> dict[str, ArgumentationNo
 
 
 def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """合并算子（委托纯函数 :func:`hypoargus.merge.merge`）。
+    """合并算子（委托纯函数 :func:`agents.merge.merge`）。
 
     双轨合并是确定性纯函数、无 LLM / 检索依赖（ADR-0006 12 格矩阵），故无桩——
     tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回 ``{}``，输入树全为
@@ -193,7 +193,7 @@ def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
 
 
 def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """影响传导算子（委托纯函数 :func:`hypoargus.impact.impact`）。
+    """影响传导算子（委托纯函数 :func:`agents.impact.impact`）。
 
     影响传导是确定性纯函数、无 LLM / 检索依赖（ADR-0003 串行·不产文本、ADR-0013
     剩余支撑率公式），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回
@@ -205,7 +205,7 @@ def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
 
 
 def _consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """一致性校验算子（委托纯函数 :func:`hypoargus.consistency.consistency`）。
+    """一致性校验算子（委托纯函数 :func:`agents.consistency.consistency`）。
 
     一致性校验是确定性纯函数、无 LLM / 检索依赖（ADR-0012 批注门禁·单次扫描·
     只贴 ``issue_tags``），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下
@@ -232,7 +232,7 @@ def _stub_hitl2(
 def _stub_writeback(
     tree: list[ArgumentationNode], store: RawParagraphStore
 ) -> WritebackResult:
-    """回写算子（委托纯函数 :func:`hypoargus.writeback.writeback`）。
+    """回写算子（委托纯函数 :func:`agents.writeback.writeback`）。
 
     回写是确定性纯函数、无 LLM / 检索依赖（ADR-0001/0005/0011、PRD §11 纯函数子缝），
     故无桩——tracer bullet 与真实装配共用同一实现。桩路径下解析产出每段一个
@@ -296,7 +296,7 @@ def create_real_agents(
     失败停留 ``adopted`` 并贴 ``writeback_error``、重跑幂等不重复注入——故注入会采纳的闸门时
     终稿不再逐字节等于原文（变更段已缝合），未变更段仍逐字节还原。真实人判 ``interrupt`` +
     ``Command(resume)`` + checkpointer 属后续切片；回写幂等续跑入口见
-    :meth:`hypoargus.orchestrator.Orchestrator.resume_writeback`（#11）。
+    :meth:`runtime.orchestrator.Orchestrator.resume_writeback`（#11）。
     """
 
     stubs = create_stub_agents()

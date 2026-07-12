@@ -23,15 +23,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from hypoargus.domain import (
+from domain import (
     HYPOTHESIS_RELATION_TO_MERGE_ACTION,
     ArgumentationNode,
     Hypothesis,
     MergeAction,
     NodeStatus,
 )
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.status_machine import transition_node
+from raw_store import RawParagraphStore
+from status_machine import transition_node
 
 __all__ = [
     "SUPPLEMENT_AUDIT_MARKER",

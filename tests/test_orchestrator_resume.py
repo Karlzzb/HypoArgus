@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from hypoargus.domain import (
+from domain import (
     ArgumentationNode,
     Hypothesis,
     HypothesisRelation,
@@ -15,8 +15,8 @@ from hypoargus.domain import (
     NodeStatus,
     NodeType,
 )
-from hypoargus.orchestrator import Orchestrator
-from hypoargus.raw_store import RawParagraphStore
+from raw_store import RawParagraphStore
+from runtime.orchestrator import Orchestrator
 
 _DOC = "分论点。\n\n论据。\n".encode()
 

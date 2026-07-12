@@ -42,7 +42,7 @@ LLM seam 做轻量语义校验）：
 
 from __future__ import annotations
 
-from hypoargus.domain import ArgumentationNode, NodeType
+from domain import ArgumentationNode, NodeType
 
 __all__ = [
     "MIXED_PARAGRAPH_KIND_TAG",

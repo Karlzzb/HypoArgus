@@ -40,13 +40,13 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from hypoargus.agents import Agents, create_stub_agents
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
-from hypoargus.hitl2 import Hitl2GateError
-from hypoargus.merge import apply_partial_updates, merge_with_partials
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.status_machine import mark_node_error
-from hypoargus.writeback import WritebackResult
+from agents.assembly import Agents, create_stub_agents
+from agents.hitl2 import Hitl2GateError
+from agents.merge import apply_partial_updates, merge_with_partials
+from agents.writeback import WritebackResult
+from domain import ArgumentationNode, NodeStatus, NodeType
+from raw_store import RawParagraphStore
+from status_machine import mark_node_error
 
 __all__ = [
     "PipelineState",
@@ -486,7 +486,7 @@ class Orchestrator:
         """回写幂等续跑入口（issue #11 · 衔接 #10 · ADR-0011）。
 
         回写中断（崩溃 / 进程退出 / :meth:`run_with_report` 中 writeback stage 兜底回退）
-        后，对持久化树续跑：复用纯函数 :func:`hypoargus.writeback.writeback` 的幂等再推导——
+        后，对持久化树续跑：复用纯函数 :func:`agents.writeback.writeback` 的幂等再推导——
         扫「``adopted`` 且未 ``corrected``」的节点、据持久化的 ``adopted_hypothesis_id``
         重新分流缝合，已 ``corrected`` 者从原始 bytes 重新推导、不重复注入，最终状态收敛为
         ``corrected``。不可解析者停留 ``adopted`` + 贴 ``writeback_error``，可再次续跑。

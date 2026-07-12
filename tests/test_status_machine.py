@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
-from hypoargus.status_machine import (
+from domain import ArgumentationNode, NodeStatus, NodeType
+from status_machine import (
     ALLOWED_TRANSITIONS,
     IllegalStatusTransitionError,
     mark_node_error,

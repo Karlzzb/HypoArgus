@@ -29,9 +29,9 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.tree_invariants import rebuild_children, validate_tree
+from domain import ArgumentationNode, NodeStatus, NodeType
+from raw_store import RawParagraphStore
+from tree_invariants import rebuild_children, validate_tree
 
 __all__ = [
     "WEIGHT_RUBRIC",

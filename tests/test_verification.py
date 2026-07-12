@@ -9,17 +9,17 @@ doubtful / error``、不重写原文、异常/超时不卡死流程。
 
 from __future__ import annotations
 
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
-from hypoargus.retrieval import (
-    RetrievalKind,
-    create_mock_retrieval_layer,
-)
-from hypoargus.verification import (
+from agents.verification import (
     ConcludeStep,
     FakeVerifyLlmClient,
     SearchStep,
     VerifyVerdict,
     verify,
+)
+from domain import ArgumentationNode, NodeStatus, NodeType
+from infra.retrieval import (
+    RetrievalKind,
+    create_mock_retrieval_layer,
 )
 
 

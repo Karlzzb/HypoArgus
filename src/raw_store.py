@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from types import MappingProxyType
 
-from hypoargus.partition import Paragraph, partition
+from partition import Paragraph, partition
 
 __all__ = ["RawParagraphStore"]
 

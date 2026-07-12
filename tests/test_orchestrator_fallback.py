@@ -11,11 +11,11 @@ from dataclasses import replace
 
 import pytest
 
-from hypoargus.agents import create_real_agents, create_stub_agents
-from hypoargus.domain import NodeType
-from hypoargus.hitl1 import FakeHitl1Gate, Hitl1Action, Hitl1Decision
-from hypoargus.orchestrator import Orchestrator
-from hypoargus.parser import FakeLlmClient, ParsedNodeProposal, ParseResult
+from agents.assembly import create_real_agents, create_stub_agents
+from agents.hitl1 import FakeHitl1Gate, Hitl1Action, Hitl1Decision
+from agents.parser import FakeLlmClient, ParsedNodeProposal, ParseResult
+from domain import NodeType
+from runtime.orchestrator import Orchestrator
 
 _DOC = "主论点。\n\n分论点。\n\n论据。\n".encode()
 
@@ -116,7 +116,7 @@ def test_tree_stage_exception_keeps_pipeline_alive_and_logs(stage, build_throwin
 def test_hitl2_gate_error_is_hard_stop_not_swallowed():
     """Hitl2GateError 是硬闸门正确性硬停，不兜底、原样上抛（ADR-0010）。"""
 
-    from hypoargus.hitl2 import Hitl2GateError
+    from agents.hitl2 import Hitl2GateError
 
     base = create_stub_agents()
 

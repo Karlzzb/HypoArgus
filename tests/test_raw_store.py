@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.partition import partition
-from hypoargus.raw_store import RawParagraphStore
+from partition import partition
+from raw_store import RawParagraphStore
 
 
 def test_store_from_text_roundtrip(sample_doc):

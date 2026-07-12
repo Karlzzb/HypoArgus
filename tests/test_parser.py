@@ -9,8 +9,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from hypoargus.domain import NodeStatus, NodeType
-from hypoargus.parser import (
+from agents.parser import (
     FakeLlmClient,
     LlmClient,
     ParagraphView,
@@ -18,8 +17,9 @@ from hypoargus.parser import (
     ParseResult,
     parse,
 )
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.tree_invariants import validate_tree
+from domain import NodeStatus, NodeType
+from raw_store import RawParagraphStore
+from tree_invariants import validate_tree
 
 
 def _store(*paragraphs: str) -> RawParagraphStore:

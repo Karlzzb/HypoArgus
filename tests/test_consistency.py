@@ -16,21 +16,21 @@
 
 from __future__ import annotations
 
-from hypoargus.consistency import (
+from agents.consistency import (
     DUPLICATE_QUALIFICATION_TAG,
     MIXED_PARAGRAPH_KIND_TAG,
     MULTI_MAIN_CLAIM_TAG,
     MULTI_PRIMARY_PER_PARAGRAPH_TAG,
     consistency,
 )
-from hypoargus.domain import (
+from agents.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
+from domain import (
     ArgumentationNode,
     MergeAction,
     MergeDecision,
     NodeStatus,
     NodeType,
 )
-from hypoargus.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
 
 # --------------------------------------------------------------------------- #
 # 构造工具

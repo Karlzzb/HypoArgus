@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import ArgumentationNode, NodeType
-from hypoargus.hitl1 import (
+from agents.hitl1 import (
     FakeHitl1Gate,
     Hitl1Action,
     Hitl1Decision,
     Hitl1Gate,
     confirm,
 )
-from hypoargus.tree_invariants import TreeInvariantError
+from domain import ArgumentationNode, NodeType
+from tree_invariants import TreeInvariantError
 
 
 def _node(
@@ -127,7 +127,7 @@ def test_confirm_does_not_mutate_caller_tree():
 
 
 def _reparent(node_id: str, new_parent_id: str | None) -> Hitl1Decision:
-    from hypoargus.hitl1 import ReparentOp
+    from agents.hitl1 import ReparentOp
 
     return Hitl1Decision(
         action=Hitl1Action.EDIT,
@@ -182,7 +182,7 @@ def test_confirm_reparent_to_missing_parent_raises():
 def test_confirm_merge_same_paragraph_unions_children():
     """合并同段两节点：幸存者保留自身属性，被删节点的子节点改挂幸存者。"""
 
-    from hypoargus.hitl1 import MergeOp
+    from agents.hitl1 import MergeOp
 
     # a 根 → b（p0001）、c（p0001），c 有子 d。
     tree = [
@@ -211,7 +211,7 @@ def test_confirm_merge_same_paragraph_unions_children():
 def test_confirm_merge_cross_paragraph_rejected():
     """跨段合并违反 ADR-0001（一节点一段）→ 抛错，调用方不变。"""
 
-    from hypoargus.hitl1 import MergeOp
+    from agents.hitl1 import MergeOp
 
     tree = [
         _node("a", node_type=NodeType.MAIN_CLAIM, children_ids=["b", "c"]),
@@ -235,7 +235,7 @@ def test_confirm_merge_cross_paragraph_rejected():
 def test_confirm_split_creates_sibling_same_paragraph():
     """拆分节点 N → 新节点为同段叶兄弟，唯一 id，继承类型/父。"""
 
-    from hypoargus.hitl1 import SplitOp
+    from agents.hitl1 import SplitOp
 
     tree = _abc_tree()
     out = confirm(
@@ -262,7 +262,7 @@ def test_confirm_split_creates_sibling_same_paragraph():
 def test_confirm_split_twice_yields_distinct_ids():
     """连续拆分两次 → 两个不同 id，均不与既有冲突。"""
 
-    from hypoargus.hitl1 import SplitOp
+    from agents.hitl1 import SplitOp
 
     tree = _abc_tree()
     out = confirm(
@@ -287,7 +287,7 @@ def test_confirm_split_twice_yields_distinct_ids():
 def test_confirm_set_type_demote_to_shadow_zeros_weight():
     """set_type → BACKGROUND：影子节点，权重归零。"""
 
-    from hypoargus.hitl1 import SetTypeOp
+    from agents.hitl1 import SetTypeOp
 
     tree = [
         _node("a", node_type=NodeType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
@@ -311,7 +311,7 @@ def test_confirm_set_type_demote_to_shadow_zeros_weight():
 def test_confirm_set_type_promote_shadow_to_core_sets_default_weight():
     """set_type 影子→核心：权重设保守默认 50（原 0 不适合核心）。"""
 
-    from hypoargus.hitl1 import SetTypeOp
+    from agents.hitl1 import SetTypeOp
 
     tree = [
         _node("a", node_type=NodeType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
@@ -335,7 +335,7 @@ def test_confirm_set_type_promote_shadow_to_core_sets_default_weight():
 def test_confirm_mark_no_op_converts_paragraph_to_shadow():
     """mark_no_op(pid)：该段所有节点转 BACKGROUND、权重 0，结构不变。"""
 
-    from hypoargus.hitl1 import MarkNoOpOp
+    from agents.hitl1 import MarkNoOpOp
 
     tree = [
         _node(
@@ -378,7 +378,7 @@ def test_confirm_mark_no_op_converts_paragraph_to_shadow():
 def test_confirm_fix_boundary_raises_deferred():
     """fix_boundary 延后实现（domain 无 text_span，ADR-0001）→ NotImplementedError。"""
 
-    from hypoargus.hitl1 import FixBoundaryOp
+    from agents.hitl1 import FixBoundaryOp
 
     tree = _abc_tree()
     snapshot = [n.model_dump() for n in tree]
@@ -398,13 +398,13 @@ def test_confirm_fix_boundary_raises_deferred():
 def test_confirm_edit_sequence_applied_in_order_and_validated():
     """多步编辑按序应用、每步 revalidate：先 split b，再 reparent 新节点到 c 下。"""
 
-    from hypoargus.hitl1 import ReparentOp
+    from agents.hitl1 import ReparentOp
 
     tree = _abc_tree()
     # 第一步 split b → 新节点 new；第二步 reparent new 到 c（需先知道 new 的 id）。
     # 由于 id 由实现决定，第二步用 split 产出的节点——这里改用更简单的序列：
     # reparent c 到 b，再 set b 为 sub_claim（无关结构变更，验证多步不冲突）。
-    from hypoargus.hitl1 import SetTypeOp
+    from agents.hitl1 import SetTypeOp
 
     out = confirm(
         tree,
@@ -428,7 +428,7 @@ def test_confirm_edit_sequence_applied_in_order_and_validated():
 def test_confirm_edit_sequence_invalid_step_rejects_wholesale():
     """序列中某步非法 → 整个决策丢弃，调用方原树不变。"""
 
-    from hypoargus.hitl1 import ReparentOp, SetTypeOp
+    from agents.hitl1 import ReparentOp, SetTypeOp
 
     tree = _abc_tree()
     snapshot = [n.model_dump() for n in tree]

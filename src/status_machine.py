@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from hypoargus.domain import ArgumentationNode, NodeStatus
+from domain import ArgumentationNode, NodeStatus
 
 __all__ = [
     "ALLOWED_TRANSITIONS",

@@ -29,15 +29,15 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from hypoargus.domain import (
+from domain import (
     ArgumentationNode,
     HypothesisRelation,
     HypothesisStatus,
     NodeStatus,
     NodeType,
 )
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.status_machine import (
+from raw_store import RawParagraphStore
+from status_machine import (
     IllegalStatusTransitionError,
     validate_transition,
 )

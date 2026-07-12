@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import (
+from agents.writeback import (
+    SUPPLEMENT_AUDIT_MARKER,
+    WRITEBACK_ERROR_TAG,
+    WritebackResult,
+    writeback,
+)
+from domain import (
     ArgumentationNode,
     Hypothesis,
     HypothesisRelation,
@@ -21,13 +27,7 @@ from hypoargus.domain import (
     NodeStatus,
     NodeType,
 )
-from hypoargus.raw_store import RawParagraphStore
-from hypoargus.writeback import (
-    SUPPLEMENT_AUDIT_MARKER,
-    WRITEBACK_ERROR_TAG,
-    WritebackResult,
-    writeback,
-)
+from raw_store import RawParagraphStore
 
 # --------------------------------------------------------------------------- #
 # 构造小工具

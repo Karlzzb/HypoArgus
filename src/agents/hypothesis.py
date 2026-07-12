@@ -50,14 +50,14 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from hypoargus.domain import (
+from domain import (
     ArgumentationNode,
     Hypothesis,
     HypothesisRelation,
     HypothesisStatus,
     NodeType,
 )
-from hypoargus.retrieval import (
+from infra.retrieval import (
     KnowledgeBaseRetrievalRequest,
     NetworkRetrievalRequest,
     RetrievalKind,

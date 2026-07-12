@@ -20,8 +20,8 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from hypoargus.domain import ArgumentationNode, NodeType
-from hypoargus.tree_invariants import TreeInvariantError, rebuild_children, validate_tree
+from domain import ArgumentationNode, NodeType
+from tree_invariants import TreeInvariantError, rebuild_children, validate_tree
 
 __all__ = [
     "Hitl1Action",

@@ -11,40 +11,40 @@ from dataclasses import replace
 
 import pytest
 
-from hypoargus.agents import Agents, create_real_agents, create_stub_agents
-from hypoargus.domain import NodeType
-from hypoargus.hitl1 import (
+from agents.assembly import Agents, create_real_agents, create_stub_agents
+from agents.hitl1 import (
     FakeHitl1Gate,
     Hitl1Action,
     Hitl1Decision,
     ReparentOp,
 )
-from hypoargus.hitl2 import (
+from agents.hitl2 import (
     FakeHitl2Gate,
     Hitl2Action,
     Hitl2Decision,
 )
-from hypoargus.hypothesis import (
+from agents.hypothesis import (
     FakeHypothesisLlmClient,
     HypothesisConcludeStep,
     HypothesisProposal,
     HypothesisRelation,
     HypothesisVerdict,
 )
-from hypoargus.orchestrator import Orchestrator
-from hypoargus.parser import (
+from agents.parser import (
     FakeLlmClient,
     ParagraphView,
     ParsedNodeProposal,
     ParseResult,
 )
-from hypoargus.retrieval import RetrievalKind, create_mock_retrieval_layer
-from hypoargus.verification import (
+from agents.verification import (
     ConcludeStep,
     FakeVerifyLlmClient,
     SearchStep,
     VerifyVerdict,
 )
+from domain import NodeType
+from infra.retrieval import RetrievalKind, create_mock_retrieval_layer
+from runtime.orchestrator import Orchestrator
 
 
 def test_e2e_byte_identical_no_adoptions(sample_doc):
@@ -747,7 +747,7 @@ def test_real_hitl2_all_credible_pass_path_byte_identity():
 def test_real_hitl2_pass_on_pending_raises_hard_gate_e2e():
     """有待决内容时闸门返回 PASS → 硬闸门在流水线内拦截（绝不无人拍板自动采纳）。"""
 
-    from hypoargus.hitl2 import Hitl2GateError
+    from agents.hitl2 import Hitl2GateError
 
     doc = "分论点。\n\n论据。\n".encode()
     # 显式注入一个越权 PASS 闸门。
@@ -768,7 +768,7 @@ def test_real_hitl2_adopting_gate_persists_adoption_in_pipeline():
     假设文本就位、两节点翻 corrected。
     """
 
-    from hypoargus.hitl2 import AdoptOp, Hitl2Action, Hitl2Decision, Hitl2Gate
+    from agents.hitl2 import AdoptOp, Hitl2Action, Hitl2Decision, Hitl2Gate
 
     class _AdoptFirstGate(Hitl2Gate):
         """对每个有激活候选的待决节点，采纳其首条激活假设。"""

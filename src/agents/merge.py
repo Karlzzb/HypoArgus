@@ -31,14 +31,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from hypoargus.domain import (
+from agents.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
+from domain import (
     HYPOTHESIS_RELATION_TO_MERGE_ACTION,
     ArgumentationNode,
     MergeAction,
     MergeDecision,
     NodeStatus,
 )
-from hypoargus.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
 
 __all__ = ["apply_partial_updates", "merge", "merge_with_partials"]
 
@@ -80,7 +80,7 @@ def apply_partial_updates(
 
 # 合并算子对外形态：``(tree, tree, tree) -> tree``（将两线路 partial 视为同棵树的不同字段切片）。
 MergeLike = Callable[[list[ArgumentationNode]], list[ArgumentationNode]]
-"""合并算子可调用形态（与 :class:`hypoargus.agents.MergeFn` 结构同构）。
+"""合并算子可调用形态（与 :class:`agents.assembly.MergeFn` 结构同构）。
 
 merge 模块不依赖 agents 契约（agents 是装配层、merge 是纯领域算子），故以本地别名
 表达该可调用形态，避免反向导入。"""
@@ -95,7 +95,7 @@ def merge_with_partials(
     """字段级合流两线路 partial 后跑矩阵裁决——合并的两步 staging 收口于此。
 
     合并 = 「先字段级合流两线路 partial、再矩阵裁决」两步；本入口把该 staging 收口在
-    merge 模块内（之前由调度层 :mod:`hypoargus.orchestrator` 显式串两步，使合并的内部
+    merge 模块内（之前由调度层 :mod:`runtime.orchestrator` 显式串两步，使合并的内部
     步骤漏到调度层）。返回裁决后的新树（不修改输入）。
 
     :func:`apply_partial_updates` 仍为公开纯函数，供调度层在合并算子异常时取「已合流、

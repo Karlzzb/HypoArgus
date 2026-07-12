@@ -21,15 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import (
-    ArgumentationNode,
-    MergeAction,
-    MergeDecision,
-    NodeStatus,
-    NodeType,
-)
-from hypoargus.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
-from hypoargus.impact import (
+from agents.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
+from agents.impact import (
     INVALID_RATIO_THRESHOLD,
     WEAKEN_RATIO_THRESHOLD,
     WEAKENING_TAG,
@@ -37,6 +30,13 @@ from hypoargus.impact import (
     compute_residual_support,
     impact,
     verdict_for_ratio,
+)
+from domain import (
+    ArgumentationNode,
+    MergeAction,
+    MergeDecision,
+    NodeStatus,
+    NodeType,
 )
 
 # --------------------------------------------------------------------------- #

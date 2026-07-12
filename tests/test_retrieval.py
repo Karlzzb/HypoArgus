@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter
 
-from hypoargus.retrieval import (
+from infra.retrieval import (
     ComplianceError,
     KnowledgeBaseRetrievalRequest,
     NetworkRetrievalRequest,

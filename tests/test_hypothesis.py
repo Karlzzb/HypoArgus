@@ -10,8 +10,7 @@
 
 from __future__ import annotations
 
-from hypoargus.domain import ArgumentationNode, NodeType
-from hypoargus.hypothesis import (
+from agents.hypothesis import (
     FakeHypothesisLlmClient,
     HypothesisConcludeStep,
     HypothesisProposal,
@@ -21,7 +20,8 @@ from hypoargus.hypothesis import (
     HypothesisVerdict,
     hypothesize,
 )
-from hypoargus.retrieval import RetrievalKind, create_mock_retrieval_layer
+from domain import ArgumentationNode, NodeType
+from infra.retrieval import RetrievalKind, create_mock_retrieval_layer
 
 
 def _node(

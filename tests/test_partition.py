@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.partition import assert_partition_invariant, partition
+from partition import assert_partition_invariant, partition
 
 
 def test_partition_concat_equals_input(sample_doc):

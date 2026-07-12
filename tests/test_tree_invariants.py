@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import ArgumentationNode, NodeType
-from hypoargus.tree_invariants import TreeInvariantError, validate_tree
+from domain import ArgumentationNode, NodeType
+from tree_invariants import TreeInvariantError, validate_tree
 
 
 def _node(

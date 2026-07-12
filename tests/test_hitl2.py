@@ -20,16 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypoargus.domain import (
-    ArgumentationNode,
-    HypothesisRelation,
-    HypothesisStatus,
-    MergeAction,
-    MergeDecision,
-    NodeStatus,
-    NodeType,
-)
-from hypoargus.hitl2 import (
+from agents.hitl2 import (
     AdoptOp,
     EditContentOp,
     FakeHitl2Gate,
@@ -42,8 +33,17 @@ from hypoargus.hitl2 import (
     build_review,
     confirm,
 )
-from hypoargus.hypothesis import Hypothesis
-from hypoargus.raw_store import RawParagraphStore
+from agents.hypothesis import Hypothesis
+from domain import (
+    ArgumentationNode,
+    HypothesisRelation,
+    HypothesisStatus,
+    MergeAction,
+    MergeDecision,
+    NodeStatus,
+    NodeType,
+)
+from raw_store import RawParagraphStore
 
 # --------------------------------------------------------------------------- #
 # 测试夹具：一棵「主论点可信 + 分论点存疑带候选 + 论据错误」的树。
@@ -99,7 +99,7 @@ def _node(
 def _store(*paragraphs: tuple[str, str]) -> RawParagraphStore:
     """从 (paragraph_id, text) 序列构造只读原文表（文本以 utf-8 编码固化）。"""
 
-    from hypoargus.partition import Paragraph
+    from partition import Paragraph
 
     return RawParagraphStore(
         [Paragraph(pid, text.encode("utf-8")) for pid, text in paragraphs]

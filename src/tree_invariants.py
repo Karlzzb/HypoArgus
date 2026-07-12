@@ -15,7 +15,7 @@
 
 from __future__ import annotations
 
-from hypoargus.domain import ArgumentationNode
+from domain import ArgumentationNode
 
 __all__ = ["TreeInvariantError", "validate_tree", "rebuild_children"]
 

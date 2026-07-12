@@ -10,7 +10,7 @@
 - 任何异常（LLM 抛、检索抛、结构非法）→ 节点落 ``error``，单向推进到下一节点（PRD §13）。
 - ``content`` 永不被改写（节点文本只来自只读表，``parser.py`` 先例，by construction）。
 
-取证经公共检索层契约（``hypoargus.retrieval``，#3）：按 ``SearchStep`` 构造 ``RetrievalRequest``
+取证经公共检索层契约（``infra.retrieval``，#3）：按 ``SearchStep`` 构造 ``RetrievalRequest``
 发出，合规（白名单/权限/模板）由检索层在接口层强制。返回的 ``Source`` 累积为 observations
 回喂 LLM；不整篇 dump、不放入 messages 原文（dev-guide §4 源压缩铁律）。
 
@@ -35,8 +35,8 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from hypoargus.domain import ArgumentationNode, NodeStatus, NodeType
-from hypoargus.retrieval import (
+from domain import ArgumentationNode, NodeStatus, NodeType
+from infra.retrieval import (
     KnowledgeBaseRetrievalRequest,
     NetworkRetrievalRequest,
     RetrievalKind,

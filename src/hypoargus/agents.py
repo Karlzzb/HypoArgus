@@ -222,7 +222,7 @@ def _stub_hitl2(
 
     无待决内容时一键通过（PASS）；桩路径下解析产出每段一个 ``background`` 影子节点，
     无 ``doubtful``/``error``/``conflict``/激活候选 → 一律 PASS、无人采纳 → 逐字节拷回。
-    真实人判 ``interrupt`` + checkpointer 属 #11。
+    真实人判 ``interrupt`` + checkpointer 属后续切片。
     """
 
     return hitl2_confirm(tree, store, ConservativeHitl2Gate())
@@ -277,7 +277,7 @@ def create_real_agents(
     故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出真实树、
     HITL-1 可编辑结构、HITL-2 默认保守闸门不采纳）。
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
-    注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
+    注入闸门（真实 interrupt+checkpointer 属后续切片）。当且仅当 ``verify_llm`` 与
     ``retrieval`` 同时给出时，体检桩（#4）替换为真实 ReAct 实现——体检只写回节点状态、
     不改 ``content``，故字节级承诺依然成立。当且仅当 ``hypothesis_llm`` 与 ``retrieval``
     同时给出时，开药桩（#5）替换为真实「投机生成 + 逐条取证」实现——开药只写回
@@ -294,7 +294,8 @@ def create_real_agents(
     按关系分流缝合（对立→替换、递进→改写、扩展→段尾追加带审计标识），成功翻 ``corrected``、
     失败停留 ``adopted`` 并贴 ``writeback_error``、重跑幂等不重复注入——故注入会采纳的闸门时
     终稿不再逐字节等于原文（变更段已缝合），未变更段仍逐字节还原。真实人判 ``interrupt`` +
-    ``Command(resume)`` + checkpointer 属 #11。
+    ``Command(resume)`` + checkpointer 属后续切片；回写幂等续跑入口见
+    :meth:`hypoargus.orchestrator.Orchestrator.resume_writeback`（#11）。
     """
 
     stubs = create_stub_agents()

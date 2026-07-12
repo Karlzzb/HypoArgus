@@ -18,7 +18,8 @@
 应用、要么全部丢弃——在深拷贝上工作，非法步即终止、调用方原树不动。
 
 本切片为同步注入闸门（``Hitl2Gate`` seam，``FakeHitl2Gate`` 供离线单测）；真实
-``interrupt`` + ``Command(resume)`` + checkpointer 属 #11。
+``interrupt`` + ``Command(resume)`` + checkpointer 属后续切片（#11 落地的是状态机拦截
++ 异常兜底 + 回写幂等续跑，未含 HITL 打断/持久化）。
 """
 
 from __future__ import annotations
@@ -36,6 +37,10 @@ from hypoargus.domain import (
     NodeType,
 )
 from hypoargus.raw_store import RawParagraphStore
+from hypoargus.status_machine import (
+    IllegalStatusTransitionError,
+    validate_transition,
+)
 
 __all__ = [
     "Hitl2Action",
@@ -181,7 +186,7 @@ class Hitl2Review(BaseModel):
 class Hitl2Gate(Protocol):
     """HITL-2 闸门 seam：审阅呈现 → 返回纯数据决策。
 
-    真实实现用 ``interrupt`` 把呈现交给用户、用 ``Command(resume)`` 收回决策（#11）；
+    真实实现用 ``interrupt`` 把呈现交给用户、用 ``Command(resume)`` 收回决策（后续切片）；
     本 seam 不绑任何前端 / 中断机制。``confirm`` 保证：闸门看到的是 ``build_review``
     产出的**呈现**，决策的合法性由 ``confirm`` 校验——闸门不可越权（如对无待决内容
     返回 PASS 之外的动作、或采纳未激活的假设）。
@@ -206,7 +211,7 @@ class ConservativeHitl2Gate:
     作为 :func:`create_real_agents` 未注入闸门时的默认——守住「绝不自动采纳」底线：
     无待决内容 → ``PASS``（闸门内无待办的一键通过，ADR-0010 空过口径）；有待决内容 →
     ``DECIDE`` + 空 ops（人看过、全驳回、原文保留）。这是一次性同步桩；真实人判
-    ``interrupt`` 属 #11。本默认使既有 #4–#8 端到端集成测试（无人采纳）仍逐字节等于原文。
+    ``interrupt`` 属后续切片。本默认使既有 #4–#8 端到端集成测试（无人采纳）仍逐字节等于原文。
     """
 
     def review(self, review: Hitl2Review) -> Hitl2Decision:
@@ -354,7 +359,8 @@ def _apply_adopt(nodes: list[ArgumentationNode], op: AdoptOp) -> None:
        节点不呈现、不可采纳（保护原文底线）；
     3. ``hypothesis_id`` 在节点 ``merge_decision.activated_hypothesis_ids`` 内——HITL-2
        不凭空造药，只从系统已激活的候选中勾选；
-    4. 节点尚未 ``adopted``/``corrected``（状态机非法变更拦截，ADR-0011）。
+    4. 状态机迁移合法（``adopted``/``corrected`` 不可重复采纳，ADR-0011）——由集中状态机
+       子缝 :func:`validate_transition` 统一拦截，杜绝规则漂移。
 
     成功则置 ``status = adopted``、``adopted_hypothesis_id = op.hypothesis_id``；
     ``edited_text`` 非空时覆写该假设文本（落回 ``candidate_hypotheses``，供回写 #10 幂等重取）。
@@ -365,10 +371,12 @@ def _apply_adopt(nodes: list[ArgumentationNode], op: AdoptOp) -> None:
         raise Hitl2GateError(
             f"采纳非法：节点 {op.node_id} 非待决态（{node.status.value}），不可采纳"
         )
-    if node.status in (NodeStatus.ADOPTED, NodeStatus.CORRECTED):
+    try:
+        validate_transition(node.status, NodeStatus.ADOPTED)
+    except IllegalStatusTransitionError as exc:
         raise Hitl2GateError(
             f"状态机非法变更：节点 {op.node_id} 已为 {node.status.value}，不可重复采纳"
-        )
+        ) from exc
     activated = _activated_ids(node)
     if op.hypothesis_id not in activated:
         raise Hitl2GateError(

@@ -68,7 +68,7 @@ from hypoargus.impact import (
     verdict_for_ratio,
 )
 from hypoargus.merge import apply_partial_updates, merge
-from hypoargus.orchestrator import Orchestrator
+from hypoargus.orchestrator import Orchestrator, RunResult
 from hypoargus.parser import (
     WEIGHT_RUBRIC,
     FakeLlmClient,
@@ -90,6 +90,14 @@ from hypoargus.retrieval import (
     create_mock_retrieval_layer,
     redact_query,
     validate_request,
+)
+from hypoargus.status_machine import (
+    ALLOWED_TRANSITIONS,
+    ORCHESTRATOR_ERROR_TAG,
+    IllegalStatusTransitionError,
+    mark_node_error,
+    transition_node,
+    validate_transition,
 )
 from hypoargus.tree_invariants import TreeInvariantError, validate_tree
 from hypoargus.verification import (
@@ -114,12 +122,21 @@ __all__ = [
     "NodeType",
     "Orchestrator",
     "RawParagraphStore",
+    "RunResult",
     "partition",
     "writeback",
     # 修订回写 Agent（PRD §11、issue #10）：段落原子缝合·幂等·纯函数 seam。
     "WritebackResult",
     "SUPPLEMENT_AUDIT_MARKER",
     "WRITEBACK_ERROR_TAG",
+    # 集中状态机子缝（PRD §12/§13、issue #11、ADR-0011）：非法状态变更一律拦截 +
+    # 编排兜底紧急通道 mark_node_error。
+    "ALLOWED_TRANSITIONS",
+    "IllegalStatusTransitionError",
+    "ORCHESTRATOR_ERROR_TAG",
+    "mark_node_error",
+    "transition_node",
+    "validate_transition",
     # 智能体契约与装配（issue #1/#2）。
     "Agents",
     "create_stub_agents",

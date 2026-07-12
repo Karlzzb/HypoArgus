@@ -38,6 +38,7 @@ from hypoargus.domain import (
     NodeType,
 )
 from hypoargus.hypothesis import HypothesisStatus
+from hypoargus.status_machine import validate_transition
 
 __all__ = [
     "ImpactVerdict",
@@ -190,13 +191,19 @@ def _reactivate(node: ArgumentationNode) -> MergeDecision:
 
 
 def _invalidate(node: ArgumentationNode) -> ArgumentationNode:
-    """把上层论点置 ``invalid``：status 翻 ``invalid``，按需复用既有假设激活。"""
+    """把上层论点置 ``invalid``：status 翻 ``invalid``，按需复用既有假设激活。
+
+    状态迁移合法性经集中状态机子缝 :func:`validate_transition` 校验（``credible`` /
+    ``doubtful`` / ``error`` → ``invalid``，ADR-0011）——上层论点在合并后处于这三态之一，
+    故迁移恒合法；越权流转由状态机统一拦截。
+    """
 
     decision = node.merge_decision
     if decision is not None and decision.action in _ACTIVATING_ACTIONS:
         new_decision = decision  # 已激活假设（合并算子对 doubtful/error 行所设）——保留。
     else:
         new_decision = _reactivate(node)  # KEEP/FREEZE/None → 复用 supported 重新激活。
+    validate_transition(node.status, NodeStatus.INVALID)
     return node.model_copy(
         update={"status": NodeStatus.INVALID, "merge_decision": new_decision}
     )

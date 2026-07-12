@@ -31,6 +31,7 @@ from hypoargus.domain import (
     NodeStatus,
 )
 from hypoargus.raw_store import RawParagraphStore
+from hypoargus.status_machine import transition_node
 
 __all__ = [
     "SUPPLEMENT_AUDIT_MARKER",
@@ -171,12 +172,12 @@ def _rewrite_paragraph(
             out_nodes.append(_tag_writeback_error(node))
             continue
         paragraph = new_paragraph
-        # 成功：翻 corrected（已 corrected 者保持）；adopted_hypothesis_id 持久保留。
-        out_nodes.append(
-            node.model_copy(update={"status": NodeStatus.CORRECTED})
-            if node.status is NodeStatus.ADOPTED
-            else node.model_copy()
-        )
+        # 成功：adopted → corrected（经集中状态机子缝校验合法迁移）；已 corrected 者保持
+        # （终态，幂等重跑不动）；adopted_hypothesis_id 持久保留。
+        if node.status is NodeStatus.ADOPTED:
+            out_nodes.append(transition_node(node, NodeStatus.CORRECTED))
+        else:
+            out_nodes.append(node.model_copy())
     return _encode(paragraph), out_nodes
 
 

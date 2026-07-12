@@ -42,7 +42,7 @@ LLM seam 做轻量语义校验）：
 
 from __future__ import annotations
 
-from domain import ArgumentationNode, NodeType
+from domain import Argument, ArgumentType
 
 __all__ = [
     "MIXED_PARAGRAPH_KIND_TAG",
@@ -70,7 +70,7 @@ DUPLICATE_QUALIFICATION_TAG = "duplicate_qualification"
 """全局·术语定义一致：两个 ``qualification`` 归一化内容完全相同（潜在冗余瑕疵）。"""
 
 
-def consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def consistency(argument_tree: list[Argument]) -> list[Argument]:
     """对标注完成的树跑单次一致性扫描，返回贴批注后的新树（不修改输入）。
 
     - **只追加** ``issue_tags``（去重，保留既有标签如 ``conflict`` / ``weakening``）。
@@ -80,19 +80,19 @@ def consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     """
 
     # 单次扫描收集每节点的新增标签，最后统一去重追加——天然单次、不打回。
-    extra: dict[str, list[str]] = {n.node_id: [] for n in tree}
-    _scan_paragraph_kind(tree, extra)
-    _scan_multi_primary_per_paragraph(tree, extra)
-    _scan_multi_main_claim(tree, extra)
-    _scan_duplicate_qualification(tree, extra)
+    extra: dict[str, list[str]] = {n.argument_id: [] for n in argument_tree}
+    _scan_paragraph_kind(argument_tree, extra)
+    _scan_multi_primary_per_paragraph(argument_tree, extra)
+    _scan_multi_main_claim(argument_tree, extra)
+    _scan_duplicate_qualification(argument_tree, extra)
 
-    out: list[ArgumentationNode] = []
-    for node in tree:
-        tags = list(node.issue_tags)
-        for tag in extra.get(node.node_id, []):
+    out: list[Argument] = []
+    for argument in argument_tree:
+        tags = list(argument.issue_tags)
+        for tag in extra.get(argument.argument_id, []):
             if tag not in tags:
                 tags.append(tag)
-        out.append(node.model_copy(update={"issue_tags": tags}) if tags else node.model_copy())
+        out.append(argument.model_copy(update={"issue_tags": tags}) if tags else argument.model_copy())
     return out
 
 
@@ -102,19 +102,19 @@ def consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
 
 
 def _scan_paragraph_kind(
-    tree: list[ArgumentationNode], extra: dict[str, list[str]]
+    argument_tree: list[Argument], extra: dict[str, list[str]]
 ) -> None:
     """同一段落同时含影子与核心逻辑节点 → 该段全部节点贴 ``mixed_paragraph_kind``。"""
 
-    by_paragraph: dict[str, list[ArgumentationNode]] = {}
-    for node in tree:
-        by_paragraph.setdefault(node.paragraph_id, []).append(node)
-    for nodes in by_paragraph.values():
-        has_shadow = any(n.node_type.is_shadow for n in nodes)
-        has_core = any(not n.node_type.is_shadow for n in nodes)
+    by_paragraph: dict[str, list[Argument]] = {}
+    for argument in argument_tree:
+        by_paragraph.setdefault(argument.paragraph_id, []).append(argument)
+    for arguments in by_paragraph.values():
+        has_shadow = any(n.argument_type.is_shadow for n in arguments)
+        has_core = any(not n.argument_type.is_shadow for n in arguments)
         if has_shadow and has_core:
-            for n in nodes:
-                extra[n.node_id].append(MIXED_PARAGRAPH_KIND_TAG)
+            for n in arguments:
+                extra[n.argument_id].append(MIXED_PARAGRAPH_KIND_TAG)
 
 
 # --------------------------------------------------------------------------- #
@@ -123,18 +123,18 @@ def _scan_paragraph_kind(
 
 
 def _scan_multi_primary_per_paragraph(
-    tree: list[ArgumentationNode], extra: dict[str, list[str]]
+    argument_tree: list[Argument], extra: dict[str, list[str]]
 ) -> None:
     """同一段落含多于一个根节点（``parent_id`` 为 ``None``）→ 这些根节点贴标签。"""
 
-    roots_by_paragraph: dict[str, list[ArgumentationNode]] = {}
-    for node in tree:
-        if node.parent_id is None:
-            roots_by_paragraph.setdefault(node.paragraph_id, []).append(node)
+    roots_by_paragraph: dict[str, list[Argument]] = {}
+    for argument in argument_tree:
+        if argument.parent_id is None:
+            roots_by_paragraph.setdefault(argument.paragraph_id, []).append(argument)
     for roots in roots_by_paragraph.values():
         if len(roots) > 1:
             for n in roots:
-                extra[n.node_id].append(MULTI_PRIMARY_PER_PARAGRAPH_TAG)
+                extra[n.argument_id].append(MULTI_PRIMARY_PER_PARAGRAPH_TAG)
 
 
 # --------------------------------------------------------------------------- #
@@ -143,14 +143,14 @@ def _scan_multi_primary_per_paragraph(
 
 
 def _scan_multi_main_claim(
-    tree: list[ArgumentationNode], extra: dict[str, list[str]]
+    argument_tree: list[Argument], extra: dict[str, list[str]]
 ) -> None:
     """全树多于一个 ``main_claim`` → 所有 ``main_claim`` 节点贴 ``multi_main_claim``。"""
 
-    mains = [n for n in tree if n.node_type is NodeType.MAIN_CLAIM]
+    mains = [n for n in argument_tree if n.argument_type is ArgumentType.MAIN_CLAIM]
     if len(mains) > 1:
         for n in mains:
-            extra[n.node_id].append(MULTI_MAIN_CLAIM_TAG)
+            extra[n.argument_id].append(MULTI_MAIN_CLAIM_TAG)
 
 
 # --------------------------------------------------------------------------- #
@@ -165,15 +165,15 @@ def _normalize(text: str) -> str:
 
 
 def _scan_duplicate_qualification(
-    tree: list[ArgumentationNode], extra: dict[str, list[str]]
+    argument_tree: list[Argument], extra: dict[str, list[str]]
 ) -> None:
     """两个 ``qualification`` 节点归一化内容完全相同 → 双方贴 ``duplicate_qualification``。"""
 
-    by_norm: dict[str, list[ArgumentationNode]] = {}
-    for node in tree:
-        if node.node_type is NodeType.QUALIFICATION:
-            by_norm.setdefault(_normalize(node.content), []).append(node)
+    by_norm: dict[str, list[Argument]] = {}
+    for argument in argument_tree:
+        if argument.argument_type is ArgumentType.QUALIFICATION:
+            by_norm.setdefault(_normalize(argument.content), []).append(argument)
     for group in by_norm.values():
         if len(group) > 1:
             for n in group:
-                extra[n.node_id].append(DUPLICATE_QUALIFICATION_TAG)
+                extra[n.argument_id].append(DUPLICATE_QUALIFICATION_TAG)

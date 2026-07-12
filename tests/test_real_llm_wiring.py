@@ -19,7 +19,7 @@ from agents.hitl2 import (
     Hitl2Action,
     Hitl2Review,
 )
-from domain import ArgumentationNode, NodeType
+from domain import Argument, ArgumentType
 from infra.llm_provider import build_qwen_chat_model
 from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate
 from runtime.orchestrator import RunResult
@@ -42,17 +42,17 @@ def _scripted_input(lines: Iterable[str]):
     return _fn
 
 
-def _sample_tree() -> list[ArgumentationNode]:
+def _sample_tree() -> list[Argument]:
     return [
-        ArgumentationNode(
-            node_id="n0",
-            node_type=NodeType.MAIN_CLAIM,
+        Argument(
+            argument_id="n0",
+            argument_type=ArgumentType.MAIN_CLAIM,
             paragraph_id="p0001",
             content="主论点",
         ),
-        ArgumentationNode(
-            node_id="n1",
-            node_type=NodeType.EVIDENCE,
+        Argument(
+            argument_id="n1",
+            argument_type=ArgumentType.EVIDENCE,
             paragraph_id="p0002",
             content="论据",
             parent_id="n0",
@@ -117,13 +117,13 @@ def test_cli_hitl1_gate_noninteractive_skips():
 
 def test_cli_hitl2_gate_pass_when_no_pending():
     gate = CliHitl2Gate(interactive=True, out_fn=lambda *_a, **_k: None)
-    review = Hitl2Review(nodes=[], has_pending=False)
+    review = Hitl2Review(arguments=[], has_pending=False)
     assert gate.review(review).action == Hitl2Action.PASS
 
 
 def test_cli_hitl2_gate_noninteractive_decides_empty():
     gate = CliHitl2Gate(interactive=False, out_fn=lambda *_a, **_k: None)
-    review = Hitl2Review(nodes=[], has_pending=True)
+    review = Hitl2Review(arguments=[], has_pending=True)
     decision = gate.review(review)
     assert decision.action == Hitl2Action.DECIDE
     assert decision.ops == []
@@ -151,7 +151,7 @@ def test_run_real_pipeline_wiring_byte_identical_when_unadopted():
         hitl2_gate=ConservativeHitl2Gate(),
     )
     assert isinstance(report, RunResult)
-    assert report.final_doc == _DOC
+    assert report.final_document == _DOC
 
 
 # --------------------------------------------------------------------------- #

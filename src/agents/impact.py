@@ -32,11 +32,11 @@ from enum import StrEnum
 from agents.hypothesis import HypothesisStatus
 from domain import (
     HYPOTHESIS_RELATION_TO_MERGE_ACTION,
-    ArgumentationNode,
+    Argument,
+    ArgumentStatus,
+    ArgumentType,
     MergeAction,
     MergeDecision,
-    NodeStatus,
-    NodeType,
 )
 from status_machine import validate_transition
 
@@ -65,11 +65,11 @@ WEAKEN_RATIO_THRESHOLD = 0.7
 WEAKENING_TAG = "weakening"
 """「弱化」批注标签（贴入 ``issue_tags``，对应 PRD §8「0.5–0.7 贴弱化批注」）。"""
 
-_NON_SURVIVING: frozenset[NodeStatus] = frozenset({NodeStatus.ERROR, NodeStatus.INVALID})
+_NON_SURVIVING: frozenset[ArgumentStatus] = frozenset({ArgumentStatus.ERROR, ArgumentStatus.INVALID})
 """不存活状态：``error``（自证其伪）与 ``invalid``（被拖垮）——对父论点不提供支撑。
 ``doubtful`` 仍计存活（存疑但立着），``unverified`` / ``pending_verification`` 计存活。"""
 
-_UPPER_CLAIMS: frozenset[NodeType] = frozenset({NodeType.MAIN_CLAIM, NodeType.SUB_CLAIM})
+_UPPER_CLAIMS: frozenset[ArgumentType] = frozenset({ArgumentType.MAIN_CLAIM, ArgumentType.SUB_CLAIM})
 """影响传导只判上层论点；叶子（evidence/qualification）与影子节点不参与。"""
 
 
@@ -115,7 +115,7 @@ class ResidualSupport:
 
 
 def compute_residual_support(
-    children: list[ArgumentationNode],
+    children: list[Argument],
 ) -> ResidualSupport:
     """计算父论点的剩余支撑率（ADR-0013）。
 
@@ -124,7 +124,7 @@ def compute_residual_support(
     计存活。无参与传导子节点（全影子 / 空）时 ``ratio`` 守为 1.0——不凭空判失效。
     """
 
-    participating = [c for c in children if not c.node_type.is_shadow]
+    participating = [c for c in children if not c.argument_type.is_shadow]
     total = sum(c.argument_weight for c in participating)
     surviving = sum(
         c.argument_weight for c in participating if c.status not in _NON_SURVIVING
@@ -170,7 +170,7 @@ _ACTIVATING_ACTIONS: frozenset[MergeAction] = frozenset(
 ``KEEP`` / ``FREEZE`` / ``None`` → 复用节点既有 supported 假设重新激活。"""
 
 
-def _reactivate(node: ArgumentationNode) -> MergeDecision:
+def _reactivate(argument: Argument) -> MergeDecision:
     """复用节点**已有**成立假设去激活（仅复用、绝不新建，ADR-0003）。
 
     无 supported 假设 → ``KEEP``（无候选、原文入 HITL-2）；有 supported → 按最高
@@ -178,7 +178,7 @@ def _reactivate(node: ArgumentationNode) -> MergeDecision:
     """
 
     supported = [
-        h for h in node.candidate_hypotheses if h.status is HypothesisStatus.SUPPORTED
+        h for h in argument.candidate_hypotheses if h.status is HypothesisStatus.SUPPORTED
     ]
     if not supported:
         return MergeDecision(action=MergeAction.KEEP)
@@ -190,7 +190,7 @@ def _reactivate(node: ArgumentationNode) -> MergeDecision:
     )
 
 
-def _invalidate(node: ArgumentationNode) -> ArgumentationNode:
+def _invalidate(argument: Argument) -> Argument:
     """把上层论点置 ``invalid``：status 翻 ``invalid``，按需复用既有假设激活。
 
     状态迁移合法性经集中状态机子缝 :func:`validate_transition` 校验（``credible`` /
@@ -198,14 +198,14 @@ def _invalidate(node: ArgumentationNode) -> ArgumentationNode:
     故迁移恒合法；越权流转由状态机统一拦截。
     """
 
-    decision = node.merge_decision
+    decision = argument.merge_decision
     if decision is not None and decision.action in _ACTIVATING_ACTIONS:
         new_decision = decision  # 已激活假设（合并算子对 doubtful/error 行所设）——保留。
     else:
-        new_decision = _reactivate(node)  # KEEP/FREEZE/None → 复用 supported 重新激活。
-    validate_transition(node.status, NodeStatus.INVALID)
-    return node.model_copy(
-        update={"status": NodeStatus.INVALID, "merge_decision": new_decision}
+        new_decision = _reactivate(argument)  # KEEP/FREEZE/None → 复用 supported 重新激活。
+    validate_transition(argument.status, ArgumentStatus.INVALID)
+    return argument.model_copy(
+        update={"status": ArgumentStatus.INVALID, "merge_decision": new_decision}
     )
 
 
@@ -214,7 +214,7 @@ def _invalidate(node: ArgumentationNode) -> ArgumentationNode:
 # --------------------------------------------------------------------------- #
 
 
-def impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def impact(argument_tree: list[Argument]) -> list[Argument]:
     """对标注完成的树跑失效传导，返回标注后的新树（不修改输入）。
 
     后序遍历（先子后父）：使 ``invalid`` 子节点在判父论点时已计为不存活，失效逐层上推
@@ -227,29 +227,29 @@ def impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     - ``unaffected``：不动。绝不改 ``content``、不新建假设、不置 ``adopted``/``corrected``。
     """
 
-    by_id: dict[str, ArgumentationNode] = {n.node_id: n for n in tree}
-    if len(by_id) != len(tree):
-        # node_id 重复——树结构不变式违反（应由 validate_tree 兜底）；守势：逐节点浅拷。
-        return [n.model_copy() for n in tree]
+    by_id: dict[str, Argument] = {n.argument_id: n for n in argument_tree}
+    if len(by_id) != len(argument_tree):
+        # argument_id 重复——树结构不变式违反（应由 validate_tree 兜底）；守势：逐节点浅拷。
+        return [n.model_copy() for n in argument_tree]
 
     # 可变状态视图：后序中子节点先翻 invalid，父论点读其最新 status 计剩余支撑率。
-    working: dict[str, ArgumentationNode] = {n.node_id: n for n in tree}
+    working: dict[str, Argument] = {n.argument_id: n for n in argument_tree}
     seen: set[str] = set()
 
-    def judge(node: ArgumentationNode) -> None:
-        nid = node.node_id
+    def judge(argument: Argument) -> None:
+        nid = argument.argument_id
         if nid in seen:
             return  # 防御：环或重复到达（树应无环，validate_tree 兜底）。
         seen.add(nid)
         # 后序：先判子节点。
-        for cid in node.children_ids:
+        for cid in argument.children_ids:
             child = working.get(cid)
             if child is not None:
                 judge(child)
         current = working[nid]
-        if current.node_type not in _UPPER_CLAIMS:
+        if current.argument_type not in _UPPER_CLAIMS:
             return  # 叶子 / 影子不参与传导。
-        if current.status is NodeStatus.ERROR:
+        if current.status is ArgumentStatus.ERROR:
             return  # 自证其伪：不再改判 invalid。
         children = [working[c] for c in current.children_ids if c in working]
         verdict = verdict_for_ratio(compute_residual_support(children).ratio)
@@ -262,15 +262,15 @@ def impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
             working[nid] = current.model_copy(update={"issue_tags": tags})
         # UNAFFECTED：不动，working[nid] 仍为输入节点。
 
-    for n in tree:
+    for n in argument_tree:
         if n.parent_id is None or n.parent_id not in by_id:
             judge(n)  # 森林根（含 dangling parent_id，守势当根处理）。
-    for n in tree:  # 兜底：覆盖任何未从根到达的节点（结构异常时）。
-        if n.node_id not in seen:
+    for n in argument_tree:  # 兜底：覆盖任何未从根到达的节点（结构异常时）。
+        if n.argument_id not in seen:
             judge(n)
 
     # 输出新实例：未变节点浅拷、已变节点取 working 中的新实例。
     return [
-        working[n.node_id] if working[n.node_id] is not n else n.model_copy()
-        for n in tree
+        working[n.argument_id] if working[n.argument_id] is not n else n.model_copy()
+        for n in argument_tree
     ]

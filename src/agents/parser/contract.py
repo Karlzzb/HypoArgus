@@ -12,7 +12,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import NodeType
+from domain import ArgumentType
 
 __all__ = [
     "WEIGHT_RUBRIC",
@@ -52,12 +52,12 @@ class ParsedNodeProposal(BaseModel):
 
     不含 ``content``：节点文本由解析器从只读表逐字节拷回，LLM 无权改写。
     ``parent_index`` 指向 LLM 输出列表中的父节点位置（稳定、由 LLM 控制排序），
-    解析器解析为 ``node_id``。``argument_weight`` 不加 pydantic 边界——真实 LLM
+    解析器解析为 ``argument_id``。``argument_weight`` 不加 pydantic 边界——真实 LLM
     偶尔返回 101，越界由解析器 :func:`agents.parser.agent._clamp_weight` 宽容 clamp（不整体崩溃）。
     """
 
     paragraph_id: str
-    node_type: NodeType
+    argument_type: ArgumentType
     parent_index: int | None = None
     argument_weight: int = 0
 
@@ -65,7 +65,7 @@ class ParsedNodeProposal(BaseModel):
 class ParseResult(BaseModel):
     """LLM 解析输出：一组节点提议。"""
 
-    nodes: list[ParsedNodeProposal] = Field(default_factory=list)
+    proposals: list[ParsedNodeProposal] = Field(default_factory=list)
 
 
 class LlmClient(Protocol):
@@ -102,7 +102,7 @@ class FakeLlmClient:
         elif isinstance(result, ParseResult):
             self._result = result
         else:
-            self._result = ParseResult(nodes=list(result))
+            self._result = ParseResult(proposals=list(result))
 
     def parse(self, paragraphs: list[ParagraphView]) -> ParseResult:
         if self._factory is not None:

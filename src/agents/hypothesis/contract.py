@@ -16,7 +16,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from domain import (
-    ArgumentationNode,
+    Argument,
     Hypothesis,
     HypothesisRelation,
     HypothesisStatus,
@@ -108,7 +108,7 @@ class HypothesisLlmClient(Protocol):
     本 seam 不绑任何 provider。
     """
 
-    def propose(self, node: ArgumentationNode) -> list[HypothesisProposal]: ...
+    def propose(self, argument: Argument) -> list[HypothesisProposal]: ...
 
     def next_verify_step(
         self, hypothesis_text: str, observations: list[Source]
@@ -119,7 +119,7 @@ class FakeHypothesisLlmClient:
     """离线开药 LLM 桩。provider-free、确定（供单测）。
 
     生成（``propose``）：
-    - ``propose_factory``：``callable(node) -> list[HypothesisProposal]``，可据节点决策。
+    - ``propose_factory``：``callable(argument) -> list[HypothesisProposal]``，可据节点决策。
     - 二者皆无 → 返回 ``[]``（无假设，等价于不生成的最简桩）。
 
     取证（``next_verify_step``）：
@@ -133,7 +133,7 @@ class FakeHypothesisLlmClient:
     def __init__(
         self,
         *,
-        propose_factory: Callable[[ArgumentationNode], list[HypothesisProposal]]
+        propose_factory: Callable[[Argument], list[HypothesisProposal]]
         | None = None,
         verify_factory: Callable[[str, list[Source]], HypothesisSearchStep | HypothesisConcludeStep]
         | None = None,
@@ -144,9 +144,9 @@ class FakeHypothesisLlmClient:
         self._verify_script = list(verify_script) if verify_script is not None else None
         self._verify_cursor = 0
 
-    def propose(self, node: ArgumentationNode) -> list[HypothesisProposal]:
+    def propose(self, argument: Argument) -> list[HypothesisProposal]:
         if self._propose_factory is not None:
-            return self._propose_factory(node)
+            return self._propose_factory(argument)
         return []
 
     def next_verify_step(

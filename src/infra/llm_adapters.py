@@ -34,7 +34,7 @@ from agents.hypothesis import (
 )
 from agents.parser import WEIGHT_RUBRIC, ParagraphView, ParseResult
 from agents.verification import ConcludeStep, SearchStep, VerifyVerdict
-from domain import ArgumentationNode
+from domain import Argument
 from infra.retrieval import RetrievalKind, Source
 
 __all__ = [
@@ -73,24 +73,24 @@ def _build_parse_prompt(paragraphs: list[ParagraphView]) -> str:
     )
 
 
-def _build_verify_prompt(node: ArgumentationNode, observations: list[Source]) -> str:
+def _build_verify_prompt(argument: Argument, observations: list[Source]) -> str:
     return (
         "你是事实验证 ReAct 决策器。对给定节点，每步做一个极窄结构化决策：\n"
         "- action=search：继续检索，给 query + channel（network 或 knowledge_base；"
         "structured 不在体检通道）。network 须给 domain 白名单域名。\n"
         "- action=conclude：就地结论，给 verdict（credible/doubtful/error）+ reasoning。"
         "查到明确比对素材即可结论。\n\n"
-        f"节点 [type={node.node_type.value}] 内容：\n{node.content}\n\n"
+        f"节点 [type={argument.argument_type.value}] 内容：\n{argument.content}\n\n"
         f"已累积检索素材：\n{_format_observations(observations)}"
     )
 
 
-def _build_propose_prompt(node: ArgumentationNode) -> str:
+def _build_propose_prompt(argument: Argument) -> str:
     return (
         "你是论证修订假设生成器。对给定节点投机生成 0..N 条**可证伪**的修订假设，"
         "每条恰好一种 relation（oppose=对立替换 / advance=递进改写 / expand=扩展追加）。"
         "confidence 0-1 仅用于排序、不参与裁决。无假设则返回空列表。\n\n"
-        f"节点 [type={node.node_type.value}] 内容：\n{node.content}"
+        f"节点 [type={argument.argument_type.value}] 内容：\n{argument.content}"
     )
 
 
@@ -227,9 +227,9 @@ class QwenVerifyLlmClient:
         return self._chain
 
     def next_step(
-        self, node: ArgumentationNode, observations: list[Source]
+        self, argument: Argument, observations: list[Source]
     ) -> SearchStep | ConcludeStep:
-        envelope = self._get_chain().invoke(_build_verify_prompt(node, observations))
+        envelope = self._get_chain().invoke(_build_verify_prompt(argument, observations))
         assert isinstance(envelope, _VerifyEnvelope)
         return envelope.to_step()
 
@@ -259,8 +259,8 @@ class QwenHypothesisLlmClient:
             )
         return self._verify_chain
 
-    def propose(self, node: ArgumentationNode) -> list[HypothesisProposal]:
-        envelope = self._get_propose_chain().invoke(_build_propose_prompt(node))
+    def propose(self, argument: Argument) -> list[HypothesisProposal]:
+        envelope = self._get_propose_chain().invoke(_build_propose_prompt(argument))
         assert isinstance(envelope, _ProposalsEnvelope)
         return envelope.proposals
 

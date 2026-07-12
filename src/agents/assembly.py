@@ -42,10 +42,10 @@ from agents.parser import parse as parse_fn
 from agents.verification import VerifyLlmClient
 from agents.verification import verify as verify_fn
 from agents.writeback import WritebackResult, writeback
-from domain import ArgumentationNode, NodeStatus, NodeType
+from domain import Argument, ArgumentStatus, ArgumentType, Hypothesis
 from infra.retrieval import RetrievalLayer
-from raw_store import RawParagraphStore
-from status_machine import mark_node_error
+from original_paragraphs import OriginalParagraphs
+from status_machine import mark_argument_error
 
 if TYPE_CHECKING:
     # 仅类型：build 闭包返回 ``NodeFn``、``state: PipelineState`` 注解在
@@ -76,47 +76,47 @@ __all__ = [
 class ParseFn(Protocol):
     """论证结构解析（#2 接入真实 LLM 解析）。返回初始论证树。"""
 
-    def __call__(self, store: RawParagraphStore) -> list[ArgumentationNode]: ...
+    def __call__(self, original_paragraphs: OriginalParagraphs) -> list[Argument]: ...
 
 
 class Hitl1Fn(Protocol):
     """HITL-1 结构确认（#2 接入，可跳过）。返回确认后的树。"""
 
-    def __call__(self, tree: list[ArgumentationNode]) -> list[ArgumentationNode]: ...
+    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
 
 
 class VerifyFn(Protocol):
-    """线路 1 · 体检（#4 接入 ReAct）。返回对部分节点的状态更新（by node_id）。"""
+    """线路 1 · 体检（#4 接入 ReAct）。返回对部分节点的可信度裁决（by argument_id）。"""
 
     def __call__(
-        self, tree: list[ArgumentationNode]
-    ) -> dict[str, ArgumentationNode]: ...
+        self, argument_tree: list[Argument]
+    ) -> dict[str, ArgumentStatus]: ...
 
 
 class HypothesisFn(Protocol):
-    """线路 2 · 开药（#5 接入）。返回对部分节点的假设更新（by node_id）。"""
+    """线路 2 · 开药（#5 接入）。返回对部分节点的候选假设列表（by argument_id）。"""
 
     def __call__(
-        self, tree: list[ArgumentationNode]
-    ) -> dict[str, ArgumentationNode]: ...
+        self, argument_tree: list[Argument]
+    ) -> dict[str, list[Hypothesis]]: ...
 
 
 class MergeFn(Protocol):
     """双轨合并算子（#6 接入确定性 12 格矩阵）。返回标注后的同一棵树。"""
 
-    def __call__(self, tree: list[ArgumentationNode]) -> list[ArgumentationNode]: ...
+    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
 
 
 class ImpactFn(Protocol):
     """影响传导（#7 接入，串行·不产文本）。返回标注后的同一棵树。"""
 
-    def __call__(self, tree: list[ArgumentationNode]) -> list[ArgumentationNode]: ...
+    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
 
 
 class ConsistencyFn(Protocol):
     """一致性校验（#8 接入，批注门禁·只贴 issue_tags·不打回）。"""
 
-    def __call__(self, tree: list[ArgumentationNode]) -> list[ArgumentationNode]: ...
+    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
 
 
 class Hitl2Fn(Protocol):
@@ -126,8 +126,8 @@ class Hitl2Fn(Protocol):
     """
 
     def __call__(
-        self, tree: list[ArgumentationNode], store: RawParagraphStore
-    ) -> list[ArgumentationNode]: ...
+        self, argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
+    ) -> list[Argument]: ...
 
 
 class WritebackFn(Protocol):
@@ -140,7 +140,7 @@ class WritebackFn(Protocol):
     """
 
     def __call__(
-        self, tree: list[ArgumentationNode], store: RawParagraphStore
+        self, argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
     ) -> WritebackResult: ...
 
 
@@ -168,7 +168,7 @@ class Agents:
 # --------------------------------------------------------------------------- #
 
 
-def _stub_parse(store: RawParagraphStore) -> list[ArgumentationNode]:
+def _stub_parse(original_paragraphs: OriginalParagraphs) -> list[Argument]:
     """解析桩：每段一个只读 background 影子节点。
 
     影子节点不参与校验与传导、状态恒 ``unverified``、永不进入 ``adopted``，
@@ -177,35 +177,35 @@ def _stub_parse(store: RawParagraphStore) -> list[ArgumentationNode]:
     """
 
     return [
-        ArgumentationNode(
-            node_id=f"n-{pid}",
-            node_type=NodeType.BACKGROUND,
+        Argument(
+            argument_id=f"n-{pid}",
+            argument_type=ArgumentType.BACKGROUND,
             paragraph_id=pid,
-            content=store.get(pid).decode("utf-8", errors="surrogateescape"),
+            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
         )
-        for pid in store.paragraph_ids()
+        for pid in original_paragraphs.paragraph_ids()
     ]
 
 
-def _stub_hitl1(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def _stub_hitl1(argument_tree: list[Argument]) -> list[Argument]:
     """HITL-1 桩：跳过结构确认，树原样返回（跳过即不改原文一个字）。"""
 
-    return tree
+    return argument_tree
 
 
-def _stub_verification(tree: list[ArgumentationNode]) -> dict[str, ArgumentationNode]:
+def _stub_verification(argument_tree: list[Argument]) -> dict[str, ArgumentStatus]:
     """体检桩：不校验、不更新状态。"""
 
     return {}
 
 
-def _stub_hypothesis(tree: list[ArgumentationNode]) -> dict[str, ArgumentationNode]:
+def _stub_hypothesis(argument_tree: list[Argument]) -> dict[str, list[Hypothesis]]:
     """开药桩：不生成假设。"""
 
     return {}
 
 
-def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def _merge(argument_tree: list[Argument]) -> list[Argument]:
     """合并算子（委托纯函数 :func:`agents.merge.merge`）。
 
     双轨合并是确定性纯函数、无 LLM / 检索依赖（ADR-0006 12 格矩阵），故无桩——
@@ -214,10 +214,10 @@ def _merge(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     不置 ``adopted``，故「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
     """
 
-    return merge_fn(tree)
+    return merge_fn(argument_tree)
 
 
-def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def _impact(argument_tree: list[Argument]) -> list[Argument]:
     """影响传导算子（委托纯函数 :func:`agents.impact.impact`）。
 
     影响传导是确定性纯函数、无 LLM / 检索依赖（ADR-0003 串行·不产文本、ADR-0013
@@ -226,10 +226,10 @@ def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
     """
 
-    return impact_fn(tree)
+    return impact_fn(argument_tree)
 
 
-def _consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+def _consistency(argument_tree: list[Argument]) -> list[Argument]:
     """一致性校验算子（委托纯函数 :func:`agents.consistency.consistency`）。
 
     一致性校验是确定性纯函数、无 LLM / 检索依赖（ADR-0012 批注门禁·单次扫描·
@@ -238,12 +238,12 @@ def _consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     限定，一致性校验不贴任何标签，「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
     """
 
-    return consistency_fn(tree)
+    return consistency_fn(argument_tree)
 
 
 def _stub_hitl2(
-    tree: list[ArgumentationNode], store: RawParagraphStore
-) -> list[ArgumentationNode]:
+    argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
+) -> list[Argument]:
     """HITL-2 桩（委托保守默认闸门 :class:`ConservativeHitl2Gate`）。
 
     无待决内容时一键通过（PASS）；桩路径下解析产出每段一个 ``background`` 影子节点，
@@ -251,21 +251,21 @@ def _stub_hitl2(
     真实人判 ``interrupt`` + checkpointer 属后续切片。
     """
 
-    return hitl2_confirm(tree, store, ConservativeHitl2Gate())
+    return hitl2_confirm(argument_tree, original_paragraphs, ConservativeHitl2Gate())
 
 
 def _stub_writeback(
-    tree: list[ArgumentationNode], store: RawParagraphStore
+    argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
 ) -> WritebackResult:
     """回写算子（委托纯函数 :func:`agents.writeback.writeback`）。
 
     回写是确定性纯函数、无 LLM / 检索依赖（ADR-0001/0005/0011、PRD §11 纯函数子缝），
     故无桩——tracer bullet 与真实装配共用同一实现。桩路径下解析产出每段一个
-    ``background`` 影子节点、无人采纳 → 全部逐字节拷回，``final_doc`` 逐字节等于原文；
+    ``background`` 影子节点、无人采纳 → 全部逐字节拷回，``final_document`` 逐字节等于原文；
     采纳路径下（HITL-2 #9 注入会采纳的闸门时）按关系分流缝合、翻 ``corrected``。
     """
 
-    return writeback(tree, store)
+    return writeback(argument_tree, original_paragraphs)
 
 
 # --------------------------------------------------------------------------- #
@@ -273,8 +273,8 @@ def _stub_writeback(
 # --------------------------------------------------------------------------- #
 
 # 体检覆盖范围（PRD §5）：claim & evidence。整体异常时把范围内未判决节点就地置 error。
-_VERIFY_SCOPE: frozenset[NodeType] = frozenset(
-    {NodeType.MAIN_CLAIM, NodeType.SUB_CLAIM, NodeType.EVIDENCE}
+_VERIFY_SCOPE: frozenset[ArgumentType] = frozenset(
+    {ArgumentType.MAIN_CLAIM, ArgumentType.SUB_CLAIM, ArgumentType.EVIDENCE}
 )
 
 
@@ -285,8 +285,8 @@ def _log_error_patch(stage: str, exc: BaseException) -> dict[str, list[str]]:
 
 
 def _mark_verify_scope_error(
-    tree: list[ArgumentationNode], reason: str
-) -> list[ArgumentationNode]:
+    argument_tree: list[Argument], reason: str
+) -> list[Argument]:
     """体检整体异常时把覆盖范围内、仍处未判决态的节点就地置 error（PRD §13）。
 
     ``claim`` / ``evidence`` 节点若仍 ``unverified`` / ``pending_verification``（体检本应
@@ -295,15 +295,15 @@ def _mark_verify_scope_error(
     已判决（``credible`` / ``doubtful`` / ``error``）或非覆盖节点不动。
     """
 
-    out: list[ArgumentationNode] = []
-    for node in tree:
-        if node.node_type in _VERIFY_SCOPE and node.status in (
-            NodeStatus.UNVERIFIED,
-            NodeStatus.PENDING_VERIFICATION,
+    out: list[Argument] = []
+    for argument in argument_tree:
+        if argument.argument_type in _VERIFY_SCOPE and argument.status in (
+            ArgumentStatus.UNVERIFIED,
+            ArgumentStatus.PENDING_VERIFICATION,
         ):
-            out.append(mark_node_error(node, reason=reason))
+            out.append(mark_argument_error(argument, reason=reason))
         else:
-            out.append(node.model_copy())
+            out.append(argument.model_copy())
     return out
 
 
@@ -341,12 +341,12 @@ def _partition_node(_agents: Agents) -> NodeFn:
         纯代码、无智能体波动，不包兜底——分区不变式自检失败即正确性 bug、应硬停。
         """
 
-        raw_text: bytes = state["raw_text"]
-        store = RawParagraphStore.from_text(raw_text)
-        # store 自检：分区不变式（字节级还原是代码级确定的，不依赖任何模型）。
-        rebuilt = b"".join(store.get(pid) for pid in store.paragraph_ids())
-        assert rebuilt == raw_text, "分区不变式自检失败：拼接 ≠ 原始输入"
-        return {"store": store, "tree": []}
+        original_doc: bytes = state["original_doc"]
+        original_paragraphs = OriginalParagraphs.from_text(original_doc)
+        # original_paragraphs 自检：分区不变式（字节级还原是代码级确定的，不依赖任何模型）。
+        rebuilt = b"".join(original_paragraphs.get(pid) for pid in original_paragraphs.paragraph_ids())
+        assert rebuilt == original_doc, "分区不变式自检失败：拼接 ≠ 原始输入"
+        return {"original_paragraphs": original_paragraphs, "argument_tree": []}
 
     return partition_node
 
@@ -355,11 +355,11 @@ def _parse_node(agents: Agents) -> NodeFn:
     def parse_node(state: PipelineState) -> dict[str, object]:
         """论证结构解析（#2 接入真实 LLM）。异常 → 记日志 + 保留空树向前（PRD §13）。"""
 
-        store = state["store"]
+        original_paragraphs = state["original_paragraphs"]
         return _guarded(
             "parse",
-            lambda: {"tree": agents.parse(store)},
-            lambda: {"tree": []},
+            lambda: {"argument_tree": agents.parse(original_paragraphs)},
+            lambda: {"argument_tree": []},
         )
 
     return parse_node
@@ -369,11 +369,11 @@ def _hitl1_node(agents: Agents) -> NodeFn:
     def hitl1_node(state: PipelineState) -> dict[str, object]:
         """HITL-1 结构确认（#2 接入，可跳过）。异常 → 记日志 + 保留 stale 树向前。"""
 
-        tree = state["tree"]
+        argument_tree = state["argument_tree"]
         return _guarded(
             "hitl1",
-            lambda: {"tree": agents.hitl1(tree)},
-            lambda: {"tree": tree},
+            lambda: {"argument_tree": agents.hitl1(argument_tree)},
+            lambda: {"argument_tree": argument_tree},
         )
 
     return hitl1_node
@@ -385,15 +385,15 @@ def _verification_node(agents: Agents) -> NodeFn:
 
         整体异常（非单节点 LLM 抛错——单节点异常由体检内部已置 ``error``）时，把
         ``claim`` / ``evidence`` 范围内仍 ``unverified`` / ``pending`` 的节点就地置
-        ``error``（PRD §13「目标节点置错误状态」），整树写入 ``tree``；不写
-        ``verification_updates``（无 partial 可信）。下游合并据此见 ``error`` 状态。
+        ``error``（PRD §13「目标节点置错误状态」），整树写入 ``argument_tree``；不写
+        ``argument_credibility``（无 partial 可信）。下游合并据此见 ``error`` 状态。
         """
 
-        tree = state["tree"]
+        argument_tree = state["argument_tree"]
         return _guarded(
             "verification",
-            lambda: {"verification_updates": agents.verification(tree)},
-            lambda: {"tree": _mark_verify_scope_error(tree, reason="verify")},
+            lambda: {"argument_credibility": agents.verification(argument_tree)},
+            lambda: {"argument_tree": _mark_verify_scope_error(argument_tree, reason="verify")},
         )
 
     return verification_node
@@ -407,10 +407,10 @@ def _hypothesis_node(agents: Agents) -> NodeFn:
         无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
         """
 
-        tree = state["tree"]
+        argument_tree = state["argument_tree"]
         return _guarded(
             "hypothesis",
-            lambda: {"hypothesis_updates": agents.hypothesis(tree)},
+            lambda: {"hypotheses": agents.hypothesis(argument_tree)},
             lambda: {},
         )
 
@@ -427,15 +427,15 @@ def _merge_node(agents: Agents) -> NodeFn:
         ``merge_decision``，下游以体检/开药结果继续），记日志。
         """
 
-        tree = state["tree"]
-        v_updates = state.get("verification_updates", {})
-        h_updates = state.get("hypothesis_updates", {})
+        argument_tree = state["argument_tree"]
+        v_updates = state.get("argument_credibility", {})
+        h_updates = state.get("hypotheses", {})
         return _guarded(
             "merge",
-            lambda: {"tree": merge_with_partials(tree, v_updates, h_updates, agents.merge)},
+            lambda: {"argument_tree": merge_with_partials(argument_tree, v_updates, h_updates, agents.merge)},
             # 兜底取「已合流、未裁决」中间态——apply_partial_updates 为 merge 模块公开
             # 纯函数（兜底语义需要、非 staging 串接，不构成内部步骤泄漏）。
-            lambda: {"tree": apply_partial_updates(tree, v_updates, h_updates)},
+            lambda: {"argument_tree": apply_partial_updates(argument_tree, v_updates, h_updates)},
         )
 
     return merge_node
@@ -445,11 +445,11 @@ def _impact_node(agents: Agents) -> NodeFn:
     def impact_node(state: PipelineState) -> dict[str, object]:
         """影响传导（#7 接入，串行·不产文本）。异常 → 记日志 + 保留 stale 树向前。"""
 
-        tree = state["tree"]
+        argument_tree = state["argument_tree"]
         return _guarded(
             "impact",
-            lambda: {"tree": agents.impact(tree)},
-            lambda: {"tree": tree},
+            lambda: {"argument_tree": agents.impact(argument_tree)},
+            lambda: {"argument_tree": argument_tree},
         )
 
     return impact_node
@@ -459,11 +459,11 @@ def _consistency_node(agents: Agents) -> NodeFn:
     def consistency_node(state: PipelineState) -> dict[str, object]:
         """一致性校验（#8 接入，批注门禁·不打回）。异常 → 记日志 + 保留 stale 树向前。"""
 
-        tree = state["tree"]
+        argument_tree = state["argument_tree"]
         return _guarded(
             "consistency",
-            lambda: {"tree": agents.consistency(tree)},
-            lambda: {"tree": tree},
+            lambda: {"argument_tree": agents.consistency(argument_tree)},
+            lambda: {"argument_tree": argument_tree},
         )
 
     return consistency_node
@@ -479,12 +479,12 @@ def _hitl2_node(agents: Agents) -> NodeFn:
         → 回写逐字节还原。
         """
 
-        tree = state["tree"]
-        store = state["store"]
+        argument_tree = state["argument_tree"]
+        original_paragraphs = state["original_paragraphs"]
         return _guarded(
             "hitl2",
-            lambda: {"tree": agents.hitl2(tree, store)},
-            lambda: {"tree": tree},
+            lambda: {"argument_tree": agents.hitl2(argument_tree, original_paragraphs)},
+            lambda: {"argument_tree": argument_tree},
         )
 
     return hitl2_node
@@ -500,20 +500,20 @@ def _writeback_node(agents: Agents) -> NodeFn:
         #10）；记日志。幂等：续跑据持久化的 ``adopted_hypothesis_id`` 重新推导、不重复注入。
         """
 
-        tree = state["tree"]
-        store = state["store"]
+        argument_tree = state["argument_tree"]
+        original_paragraphs = state["original_paragraphs"]
 
         def success() -> dict[str, object]:
-            result = agents.writeback(tree, store)
-            return {"final_doc": result.final_doc, "tree": result.tree}
+            result = agents.writeback(argument_tree, original_paragraphs)
+            return {"final_document": result.final_document, "argument_tree": result.argument_tree}
 
         return _guarded(
             "writeback",
             success,
             # 回退原文 bytes（保护原文底线）；adopted 节点不动、待续跑。
             lambda: {
-                "final_doc": b"".join(store.get(pid) for pid in store.paragraph_ids()),
-                "tree": tree,
+                "final_document": b"".join(original_paragraphs.get(pid) for pid in original_paragraphs.paragraph_ids()),
+                "argument_tree": argument_tree,
             },
         )
 

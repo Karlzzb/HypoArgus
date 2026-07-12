@@ -3,7 +3,7 @@
 本切片承载解析所需字段子集（``argument_weight`` 已补全，ADR-0013）；
 ``candidate_hypotheses`` 由开药 Agent（#5）补全（ADR-0007/0008）；
 ``adopted_hypothesis_id`` 由 HITL-2（#9）补全（ADR-0011 采纳链）。
-节点形状沿用 prd_v2.0.md §4 决策的 ``ArgumentationNode``（形状为决策、非最终代码）。
+节点形状沿用 prd_v2.0.md §4 决策的 ``Argument``（形状为决策、非最终代码）。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 
-class NodeType(StrEnum):
+class ArgumentType(StrEnum):
     """论证节点类型。
 
     核心逻辑节点参与校验与逻辑传导；影子节点只读、不参与校验与传导，但提供上下文
@@ -31,10 +31,10 @@ class NodeType(StrEnum):
     def is_shadow(self) -> bool:
         """影子节点（只读、不参与校验与传导）。"""
 
-        return self in (NodeType.BACKGROUND, NodeType.EVALUATION)
+        return self in (ArgumentType.BACKGROUND, ArgumentType.EVALUATION)
 
 
-class NodeStatus(StrEnum):
+class ArgumentStatus(StrEnum):
     """节点状态机。
 
     ``unverified → pending_verification → (credible | doubtful | error)
@@ -137,7 +137,7 @@ class Hypothesis(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class ArgumentationNode(BaseModel):
+class Argument(BaseModel):
     """论证树节点。
 
     节点只携带自身那一段原文（作为推理输入）加 ``paragraph_id`` 指针，
@@ -157,14 +157,14 @@ class ArgumentationNode(BaseModel):
     不重复注入，故用户决策不丢失。采纳前为 ``None``。
     """
 
-    node_id: str
-    node_type: NodeType
+    argument_id: str
+    argument_type: ArgumentType
     parent_id: str | None = None
     children_ids: list[str] = Field(default_factory=list)
     paragraph_id: str
     content: str = ""
     argument_weight: int = Field(default=0, ge=0, le=100)
-    status: NodeStatus = NodeStatus.UNVERIFIED
+    status: ArgumentStatus = ArgumentStatus.UNVERIFIED
     issue_tags: list[str] = Field(default_factory=list)
     candidate_hypotheses: list[Hypothesis] = Field(default_factory=list)
     merge_decision: MergeDecision | None = None

@@ -101,7 +101,7 @@ class HistoryStore:
     「压至预算内」的列表回喂 LLM（dev-guide §4 源压缩铁律）。压缩策略集中在 seam 之后
     （locality：未来升级为真实摘要 / 抗漂移只改此模块）。全量 :meth:`all` 供审计 / 断言。
 
-    作用域每循环一个（per node / per hypothesis）——与既有 ``observations`` 作用域一致。
+    作用域每循环一个（per argument / per hypothesis）——与既有 ``observations`` 作用域一致。
     """
 
     def __init__(self, config: CompressionConfig | None = None) -> None:

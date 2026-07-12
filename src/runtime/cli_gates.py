@@ -29,15 +29,15 @@ from agents.hitl1 import (
 )
 from agents.hitl2 import (
     AdoptOp,
+    ArgumentReview,
     EditContentOp,
     Hitl2Action,
     Hitl2Decision,
     Hitl2Op,
     Hitl2Review,
-    NodeReview,
     RejectOp,
 )
-from domain import ArgumentationNode, NodeType
+from domain import Argument, ArgumentType
 
 __all__ = ["CliHitl1Gate", "CliHitl2Gate"]
 
@@ -73,8 +73,8 @@ class CliHitl1Gate:
         self._input = input_fn
         self._out = out_fn
 
-    def review(self, tree: list[ArgumentationNode]) -> Hitl1Decision:
-        self._print_tree(tree)
+    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
+        self._print_tree(argument_tree)
         if not _is_interactive(self._interactive):
             self._out("[非交互] HITL-1 保守 SKIP（不改结构、原文不动）。")
             return Hitl1Decision(action=Hitl1Action.SKIP)
@@ -86,18 +86,18 @@ class CliHitl1Gate:
                 return Hitl1Decision(action=Hitl1Action.ACCEPT)
             if raw in ("e", "edit"):
                 return Hitl1Decision(
-                    action=Hitl1Action.EDIT, ops=self._collect_ops(tree)
+                    action=Hitl1Action.EDIT, ops=self._collect_ops(argument_tree)
                 )
             self._out("未知选项，请输入 s/a/e。")
 
-    def _print_tree(self, tree: list[ArgumentationNode]) -> None:
+    def _print_tree(self, argument_tree: list[Argument]) -> None:
         self._out("=== HITL-1 结构确认：解析树 ===")
-        if not tree:
+        if not argument_tree:
             self._out("（空树）")
             return
-        for n in tree:
+        for n in argument_tree:
             self._out(
-                f"{n.node_id}\ttype={n.node_type.value}\tweight={n.argument_weight}"
+                f"{n.argument_id}\ttype={n.argument_type.value}\tweight={n.argument_weight}"
                 f"\tpara={n.paragraph_id}\tparent={n.parent_id}\tstatus={n.status.value}"
             )
         self._out(
@@ -105,8 +105,8 @@ class CliHitl1Gate:
             " | mark_no_op <para_id> | split <id> | merge <id> <id>... | done"
         )
 
-    def _collect_ops(self, tree: list[ArgumentationNode]) -> list[Hitl1Op]:
-        ids = {n.node_id for n in tree}
+    def _collect_ops(self, argument_tree: list[Argument]) -> list[Hitl1Op]:
+        ids = {n.argument_id for n in argument_tree}
         ops: list[Hitl1Op] = []
         while True:
             raw = self._input("edit> ").strip()
@@ -132,13 +132,13 @@ class CliHitl1Gate:
                 if len(args) != 2 or args[0] not in ids:
                     return None
                 return ReparentOp(
-                    node_id=args[0],
+                    argument_id=args[0],
                     new_parent_id=None if args[1] == "root" else args[1],
                 )
             if cmd == "set_type":
                 if len(args) != 2 or args[0] not in ids:
                     return None
-                return SetTypeOp(node_id=args[0], new_type=NodeType(args[1]))
+                return SetTypeOp(argument_id=args[0], new_type=ArgumentType(args[1]))
             if cmd == "mark_no_op":
                 if len(args) != 1:
                     return None
@@ -146,11 +146,11 @@ class CliHitl1Gate:
             if cmd == "split":
                 if len(args) != 1 or args[0] not in ids:
                     return None
-                return SplitOp(node_id=args[0])
+                return SplitOp(argument_id=args[0])
             if cmd == "merge":
                 if len(args) < 2 or any(a not in ids for a in args):
                     return None
-                return MergeOp(node_ids=args)
+                return MergeOp(argument_ids=args)
             if cmd == "?":
                 return None
         except (ValueError, KeyError):
@@ -190,21 +190,21 @@ class CliHitl2Gate:
             self._out("[非交互] HITL-2 有待决但无人拍板 → 全驳回、原文逐字节保留。")
             return Hitl2Decision(action=Hitl2Action.DECIDE, ops=[])
         ops: list[Hitl2Op] = []
-        for node in review.nodes:
-            ops.extend(self._prompt_node(node))
+        for argument in review.arguments:
+            ops.extend(self._prompt_argument_review(argument))
         return Hitl2Decision(action=Hitl2Action.DECIDE, ops=ops)
 
-    def _prompt_node(self, node: NodeReview) -> list[Hitl2Op]:
+    def _prompt_argument_review(self, argument: ArgumentReview) -> list[Hitl2Op]:
         self._out(
-            f"\n--- {node.node_id} [type={node.node_type.value} "
-            f"status={node.status.value} para={node.paragraph_id}] ---"
+            f"\n--- {argument.argument_id} [type={argument.argument_type.value} "
+            f"status={argument.status.value} para={argument.paragraph_id}] ---"
         )
-        self._out(f"原文：{node.original_text}")
-        if node.issue_tags:
-            self._out(f"批注：{', '.join(node.issue_tags)}")
-        cand_ids = {c.hypothesis_id for c in node.candidates}
-        activated = set(node.activated_hypothesis_ids)
-        for c in node.candidates:
+        self._out(f"原文：{argument.original_text}")
+        if argument.issue_tags:
+            self._out(f"批注：{', '.join(argument.issue_tags)}")
+        cand_ids = {c.hypothesis_id for c in argument.candidates}
+        activated = set(argument.activated_hypothesis_ids)
+        for c in argument.candidates:
             mark = "★可采纳" if c.hypothesis_id in activated else "弱呈现"
             self._out(
                 f"  [{mark}] {c.hypothesis_id} rel={c.relation.value}"
@@ -225,7 +225,7 @@ class CliHitl2Gate:
                 break
             if low in ("done", "d", "next", "n"):
                 break
-            op = self._parse_op(raw, node, activated, cand_ids)
+            op = self._parse_op(raw, argument, activated, cand_ids)
             if op is None:
                 self._out(f"无法解析或非法：{raw!r}")
                 continue
@@ -236,7 +236,7 @@ class CliHitl2Gate:
     def _parse_op(
         self,
         raw: str,
-        node: NodeReview,
+        argument: ArgumentReview,
         activated: set[str],
         cand_ids: set[str],
     ) -> Hitl2Op | None:
@@ -253,17 +253,17 @@ class CliHitl2Gate:
                 self._out(f"  {hid} 不在可采纳集（仅 ★ 标记可采纳）。")
                 return None
             return AdoptOp(
-                node_id=node.node_id, hypothesis_id=hid, edited_text=edited
+                argument_id=argument.argument_id, hypothesis_id=hid, edited_text=edited
             )
         if low.startswith("reject "):
             hid = text[len("reject ") :].strip()
             if hid not in cand_ids:
                 self._out(f"  {hid} 不在候选集。")
                 return None
-            return RejectOp(node_id=node.node_id, hypothesis_id=hid)
+            return RejectOp(argument_id=argument.argument_id, hypothesis_id=hid)
         if low.startswith("edit-content "):
             content = text[len("edit-content ") :].strip()
             if not content:
                 return None
-            return EditContentOp(node_id=node.node_id, content=content)
+            return EditContentOp(argument_id=argument.argument_id, content=content)
         return None

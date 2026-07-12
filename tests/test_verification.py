@@ -16,22 +16,22 @@ from agents.verification import (
     VerifyVerdict,
     verify,
 )
-from domain import ArgumentationNode, NodeStatus, NodeType
+from domain import Argument, ArgumentStatus, ArgumentType
 from infra.retrieval import (
     RetrievalKind,
     create_mock_retrieval_layer,
 )
 
 
-def _node(
-    node_id: str = "n0",
-    node_type: NodeType = NodeType.EVIDENCE,
+def _argument(
+    argument_id: str = "n0",
+    argument_type: ArgumentType = ArgumentType.EVIDENCE,
     paragraph_id: str = "p0001",
     content: str = "原文论据",
-) -> ArgumentationNode:
-    return ArgumentationNode(
-        node_id=node_id,
-        node_type=node_type,
+) -> Argument:
+    return Argument(
+        argument_id=argument_id,
+        argument_type=argument_type,
         paragraph_id=paragraph_id,
         content=content,
     )
@@ -40,7 +40,7 @@ def _node(
 def test_verify_single_evidence_search_then_conclude_credible():
     """ReAct：一次网络检索 → 结论 credible。节点状态写回 ``credible``。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     llm = FakeVerifyLlmClient(
         script=[
             SearchStep(
@@ -53,10 +53,10 @@ def test_verify_single_evidence_search_then_conclude_credible():
     )
     retrieval = create_mock_retrieval_layer()
 
-    updates = verify(tree, llm, retrieval)
+    updates = verify(argument_tree, llm, retrieval)
 
     assert set(updates) == {"n0"}
-    assert updates["n0"].status is NodeStatus.CREDIBLE
+    assert updates["n0"] is ArgumentStatus.CREDIBLE
 
 
 # --------------------------------------------------------------------------- #
@@ -67,29 +67,29 @@ def test_verify_single_evidence_search_then_conclude_credible():
 def test_verify_doubtful_verdict():
     """LLM 检索后结论 doubtful → 节点落 ``doubtful``。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     llm = FakeVerifyLlmClient(
         script=[
             SearchStep(query="q", channel=RetrievalKind.NETWORK, domain="stats.example.com"),
             ConcludeStep(verdict=VerifyVerdict.DOUBTFUL, reasoning="证据不足"),
         ]
     )
-    updates = verify(tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"].status is NodeStatus.DOUBTFUL
+    updates = verify(argument_tree, llm, create_mock_retrieval_layer())
+    assert updates["n0"] is ArgumentStatus.DOUBTFUL
 
 
 def test_verify_error_verdict_from_conclude():
     """LLM 检索后结论 error（论据自证其伪）→ 节点落 ``error``。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     llm = FakeVerifyLlmClient(
         script=[
             SearchStep(query="q", channel=RetrievalKind.NETWORK, domain="stats.example.com"),
             ConcludeStep(verdict=VerifyVerdict.ERROR, reasoning="比对相悖"),
         ]
     )
-    updates = verify(tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"].status is NodeStatus.ERROR
+    updates = verify(argument_tree, llm, create_mock_retrieval_layer())
+    assert updates["n0"] is ArgumentStatus.ERROR
 
 
 # --------------------------------------------------------------------------- #
@@ -112,10 +112,10 @@ class _RecordingRetrieval:
 def test_verify_adjusts_query_across_multiple_searches():
     """ReAct 自动调整检索词：两次检索 query 不同，observations 累积后结论。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     seen_lengths: list[int] = []
 
-    def factory(node, observations):
+    def factory(argument, observations):
         seen_lengths.append(len(observations))
         if len(observations) == 0:
             return SearchStep(
@@ -128,9 +128,9 @@ def test_verify_adjusts_query_across_multiple_searches():
         return ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
 
     retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    updates = verify(tree, FakeVerifyLlmClient(factory=factory), retrieval)
+    updates = verify(argument_tree, FakeVerifyLlmClient(factory=factory), retrieval)
 
-    assert updates["n0"].status is NodeStatus.CREDIBLE
+    assert updates["n0"] is ArgumentStatus.CREDIBLE
     assert len(retrieval.requests) == 2
     assert retrieval.requests[0].query == "第一版检索词"
     assert retrieval.requests[1].query == "调整后的检索词"
@@ -141,7 +141,7 @@ def test_verify_adjusts_query_across_multiple_searches():
 def test_verify_knowledge_base_channel():
     """知识库通道：用授权 user_id 构造请求、取证后结论。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     llm = FakeVerifyLlmClient(
         script=[
             SearchStep(
@@ -153,8 +153,8 @@ def test_verify_knowledge_base_channel():
         ]
     )
     retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    updates = verify(tree, llm, retrieval)
-    assert updates["n0"].status is NodeStatus.CREDIBLE
+    updates = verify(argument_tree, llm, retrieval)
+    assert updates["n0"] is ArgumentStatus.CREDIBLE
     req = retrieval.requests[0]
     assert req.kind is RetrievalKind.KNOWLEDGE_BASE
     assert req.user_id == "analyst-1"
@@ -168,48 +168,48 @@ def test_verify_knowledge_base_channel():
 def test_verify_llm_exception_lands_error_no_hang():
     """LLM 抛异常 → 节点 ``error``、流程继续（不抛出、不卡死）。"""
 
-    def factory(node, observations):
+    def factory(argument, observations):
         raise RuntimeError("LLM 不可用")
 
-    tree = [_node(), _node(node_id="n1")]
-    updates = verify(tree, FakeVerifyLlmClient(factory=factory), create_mock_retrieval_layer())
-    assert updates["n0"].status is NodeStatus.ERROR
-    assert updates["n1"].status is NodeStatus.ERROR
+    argument_tree = [_argument(), _argument(argument_id="n1")]
+    updates = verify(argument_tree, FakeVerifyLlmClient(factory=factory), create_mock_retrieval_layer())
+    assert updates["n0"] is ArgumentStatus.ERROR
+    assert updates["n1"] is ArgumentStatus.ERROR
 
 
 def test_verify_retrieval_compliance_violation_lands_error():
     """检索合规违规（非白名单域名）→ ComplianceError → 节点 ``error``。"""
 
-    tree = [_node()]
+    argument_tree = [_argument()]
     llm = FakeVerifyLlmClient(
         script=[
             SearchStep(query="q", channel=RetrievalKind.NETWORK, domain="evil.example.com"),
             ConcludeStep(verdict=VerifyVerdict.CREDIBLE),
         ]
     )
-    updates = verify(tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"].status is NodeStatus.ERROR
+    updates = verify(argument_tree, llm, create_mock_retrieval_layer())
+    assert updates["n0"] is ArgumentStatus.ERROR
 
 
 def test_verify_malformed_step_lands_error():
     """LLM 返回非 union 成员（结构非法）→ 节点 ``error``。"""
 
-    tree = [_node()]
-    llm = FakeVerifyLlmClient(factory=lambda node, obs: "garbage")  # type: ignore[arg-type]
-    updates = verify(tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"].status is NodeStatus.ERROR
+    argument_tree = [_argument()]
+    llm = FakeVerifyLlmClient(factory=lambda argument, obs: "garbage")  # type: ignore[arg-type]
+    updates = verify(argument_tree, llm, create_mock_retrieval_layer())
+    assert updates["n0"] is ArgumentStatus.ERROR
 
 
 def test_verify_iteration_cap_lands_error_and_is_bounded():
     """LLM 永不结论（一直检索）→ 迭代硬上限触发 → ``error``；有界、不卡死。"""
 
-    tree = [_node()]
-    always_search = lambda node, obs: SearchStep(  # noqa: E731
+    argument_tree = [_argument()]
+    always_search = lambda argument, obs: SearchStep(  # noqa: E731
         query=f"q{len(obs)}", channel=RetrievalKind.NETWORK, domain="stats.example.com"
     )
     retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    updates = verify(tree, FakeVerifyLlmClient(factory=always_search), retrieval, max_iterations=3)
-    assert updates["n0"].status is NodeStatus.ERROR
+    updates = verify(argument_tree, FakeVerifyLlmClient(factory=always_search), retrieval, max_iterations=3)
+    assert updates["n0"] is ArgumentStatus.ERROR
     assert len(retrieval.requests) == 3  # 恰好 max_iterations 次，不无限
 
 
@@ -218,37 +218,37 @@ def test_verify_iteration_cap_lands_error_and_is_bounded():
 # --------------------------------------------------------------------------- #
 
 
-def _full_tree() -> list[ArgumentationNode]:
+def _full_tree() -> list[Argument]:
     """main_claim / sub_claim / evidence / qualification / background 各一。"""
 
     return [
-        ArgumentationNode(
-            node_id="m",
-            node_type=NodeType.MAIN_CLAIM,
+        Argument(
+            argument_id="m",
+            argument_type=ArgumentType.MAIN_CLAIM,
             paragraph_id="p0001",
             content="主论点",
         ),
-        ArgumentationNode(
-            node_id="s",
-            node_type=NodeType.SUB_CLAIM,
+        Argument(
+            argument_id="s",
+            argument_type=ArgumentType.SUB_CLAIM,
             paragraph_id="p0002",
             content="分论点",
         ),
-        ArgumentationNode(
-            node_id="e",
-            node_type=NodeType.EVIDENCE,
+        Argument(
+            argument_id="e",
+            argument_type=ArgumentType.EVIDENCE,
             paragraph_id="p0003",
             content="论据",
         ),
-        ArgumentationNode(
-            node_id="q",
-            node_type=NodeType.QUALIFICATION,
+        Argument(
+            argument_id="q",
+            argument_type=ArgumentType.QUALIFICATION,
             paragraph_id="p0004",
             content="限定条件",
         ),
-        ArgumentationNode(
-            node_id="b",
-            node_type=NodeType.BACKGROUND,
+        Argument(
+            argument_id="b",
+            argument_type=ArgumentType.BACKGROUND,
             paragraph_id="p0005",
             content="背景",
         ),
@@ -258,34 +258,34 @@ def _full_tree() -> list[ArgumentationNode]:
 def test_verify_covers_claims_and_evidence_skips_qualification_and_shadow():
     """覆盖 main_claim/sub_claim/evidence；qualification 与影子节点不在 updates 中。"""
 
-    tree = _full_tree()
+    argument_tree = _full_tree()
     # 每个核心节点：一次检索后 credible。
     state: dict[str, int] = {}
 
-    def factory(node, observations):
-        c = state.get(node.node_id, 0)
-        state[node.node_id] = c + 1
+    def factory(argument, observations):
+        c = state.get(argument.argument_id, 0)
+        state[argument.argument_id] = c + 1
         if c == 0:
             return SearchStep(
-                query=node.content,
+                query=argument.content,
                 channel=RetrievalKind.NETWORK,
                 domain="stats.example.com",
             )
         return ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
 
-    updates = verify(tree, FakeVerifyLlmClient(factory=factory), create_mock_retrieval_layer())
+    updates = verify(argument_tree, FakeVerifyLlmClient(factory=factory), create_mock_retrieval_layer())
     assert set(updates) == {"m", "s", "e"}
     for nid in ("m", "s", "e"):
-        assert updates[nid].status is NodeStatus.CREDIBLE
+        assert updates[nid] is ArgumentStatus.CREDIBLE
 
 
 def test_verify_does_not_rewrite_content():
-    """体检绝不改写原文：节点 ``content`` 与输入逐字节一致。"""
+    """体检绝不改写原文：partial 只存可信度裁决、不携节点，输入树 content 逐字节不变。"""
 
-    tree = _full_tree()
-    before = {n.node_id: n.content for n in tree}
-    updates = verify(
-        tree,
+    argument_tree = _full_tree()
+    before = {n.argument_id: n.content for n in argument_tree}
+    verify(
+        argument_tree,
         FakeVerifyLlmClient(
             script=[
                 SearchStep(query="q", channel=RetrievalKind.NETWORK, domain="stats.example.com"),
@@ -294,17 +294,17 @@ def test_verify_does_not_rewrite_content():
         ),
         create_mock_retrieval_layer(),
     )
-    for nid, node in updates.items():
-        assert node.content == before[nid]
+    for n in argument_tree:
+        assert n.content == before[n.argument_id]
 
 
 def test_verify_does_not_mutate_input_tree():
     """返回新实例；输入树节点状态不变（``unverified``）、内容不变。"""
 
-    tree = _full_tree()
-    originals = {n.node_id: n.model_copy(deep=True) for n in tree}
+    argument_tree = _full_tree()
+    originals = {n.argument_id: n.model_copy(deep=True) for n in argument_tree}
     verify(
-        tree,
+        argument_tree,
         FakeVerifyLlmClient(
             script=[
                 SearchStep(query="q", channel=RetrievalKind.NETWORK, domain="stats.example.com"),
@@ -313,5 +313,5 @@ def test_verify_does_not_mutate_input_tree():
         ),
         create_mock_retrieval_layer(),
     )
-    for n in tree:
-        assert n == originals[n.node_id], f"输入树被改写：{n.node_id}"
+    for n in argument_tree:
+        assert n == originals[n.argument_id], f"输入树被改写：{n.argument_id}"

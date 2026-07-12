@@ -9,7 +9,7 @@
 待决节点，驱动硬闸门的「一键通过」与「禁自动采纳」分支。
 
 ``confirm`` 流程：
-1. ``build_review(tree, store)``——构建呈现。
+1. ``build_review(argument_tree, original_paragraphs)``——构建呈现。
 2. ``gate.review(review)``——闸门返回决策。
 3. 硬闸门校验（ADR-0010）：``PASS`` 仅当无待决内容；有待决时绝不可 ``PASS``
    （绝不无人拍板自动采纳）。
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from agents.hitl2.contract import (
     AdoptOp,
+    ArgumentReview,
     CandidateView,
     EditContentOp,
     Hitl2Action,
@@ -29,11 +30,10 @@ from agents.hitl2.contract import (
     Hitl2GateError,
     Hitl2Op,
     Hitl2Review,
-    NodeReview,
     RejectOp,
 )
-from domain import ArgumentationNode, NodeStatus
-from raw_store import RawParagraphStore
+from domain import Argument, ArgumentStatus
+from original_paragraphs import OriginalParagraphs
 from status_machine import (
     IllegalStatusTransitionError,
     validate_transition,
@@ -42,21 +42,21 @@ from status_machine import (
 __all__ = ["build_review", "confirm"]
 
 
-_PENDING_STATUSES: frozenset[NodeStatus] = frozenset(
-    {NodeStatus.DOUBTFUL, NodeStatus.ERROR, NodeStatus.INVALID}
+_PENDING_STATUSES: frozenset[ArgumentStatus] = frozenset(
+    {ArgumentStatus.DOUBTFUL, ArgumentStatus.ERROR, ArgumentStatus.INVALID}
 )
 """体检 / 影响传导已下待决终判的状态（矩阵原文侧 + 影响传导上层判决）。"""
 
 _CONFLICT_TAG = "conflict"
 
 
-def _activated_ids(node: ArgumentationNode) -> list[str]:
-    if node.merge_decision is None:
+def _activated_ids(argument: Argument) -> list[str]:
+    if argument.merge_decision is None:
         return []
-    return list(node.merge_decision.activated_hypothesis_ids)
+    return list(argument.merge_decision.activated_hypothesis_ids)
 
 
-def _is_pending(node: ArgumentationNode) -> bool:
+def _is_pending(argument: Argument) -> bool:
     """节点是否需 HITL-2 人判：状态待决、或贴 conflict、或有被激活的候选。
 
     合并矩阵保证：非 conflict 的 ``credible`` 节点激活集为空、状态非待决 → 不呈现
@@ -64,15 +64,15 @@ def _is_pending(node: ArgumentationNode) -> bool:
     conflict 节点虽 ``credible`` 但需人判对立假设 → 呈现。
     """
 
-    if node.status in _PENDING_STATUSES:
+    if argument.status in _PENDING_STATUSES:
         return True
-    if _CONFLICT_TAG in node.issue_tags:
+    if _CONFLICT_TAG in argument.issue_tags:
         return True
-    return bool(_activated_ids(node))
+    return bool(_activated_ids(argument))
 
 
 def build_review(
-    tree: list[ArgumentationNode], store: RawParagraphStore
+    argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
 ) -> Hitl2Review:
     """构建修订确认呈现：待决节点的段落原文 + 批注 + 候选 + 激活集。
 
@@ -82,20 +82,20 @@ def build_review(
     硬闸门的「一键通过」与「禁自动采纳」分支。
     """
 
-    nodes: list[NodeReview] = []
-    for node in tree:
-        if not _is_pending(node):
+    arguments: list[ArgumentReview] = []
+    for argument in argument_tree:
+        if not _is_pending(argument):
             continue
-        original = store.get(node.paragraph_id).decode("utf-8", errors="surrogateescape")
-        nodes.append(
-            NodeReview(
-                node_id=node.node_id,
-                paragraph_id=node.paragraph_id,
+        original = original_paragraphs.get(argument.paragraph_id).decode("utf-8", errors="surrogateescape")
+        arguments.append(
+            ArgumentReview(
+                argument_id=argument.argument_id,
+                paragraph_id=argument.paragraph_id,
                 original_text=original,
-                node_type=node.node_type,
-                status=node.status,
-                issue_tags=list(node.issue_tags),
-                activated_hypothesis_ids=_activated_ids(node),
+                argument_type=argument.argument_type,
+                status=argument.status,
+                issue_tags=list(argument.issue_tags),
+                activated_hypothesis_ids=_activated_ids(argument),
                 candidates=[
                     CandidateView(
                         hypothesis_id=h.hypothesis_id,
@@ -104,22 +104,22 @@ def build_review(
                         status=h.status,
                         confidence=h.confidence,
                     )
-                    for h in node.candidate_hypotheses
+                    for h in argument.candidate_hypotheses
                 ],
             )
         )
-    return Hitl2Review(nodes=nodes, has_pending=bool(nodes))
+    return Hitl2Review(arguments=arguments, has_pending=bool(arguments))
 
 
 def confirm(
-    tree: list[ArgumentationNode],
-    store: RawParagraphStore,
+    argument_tree: list[Argument],
+    original_paragraphs: OriginalParagraphs,
     gate: Hitl2Gate,
-) -> list[ArgumentationNode]:
+) -> list[Argument]:
     """应用 HITL-2 决策，返回确认后的树。
 
     流程：
-    1. ``build_review(tree, store)``——构建呈现。
+    1. ``build_review(argument_tree, original_paragraphs)``——构建呈现。
     2. ``gate.review(review)``——闸门返回决策。
     3. 硬闸门校验（ADR-0010）：``PASS`` 仅当无待决内容；有待决时绝不可 ``PASS``
        （绝不无人拍板自动采纳）。
@@ -128,7 +128,7 @@ def confirm(
        调用方原树不动。
     """
 
-    review = build_review(tree, store)
+    review = build_review(argument_tree, original_paragraphs)
     decision = gate.review(review)
 
     # 硬闸门（ADR-0010）：PASS 仅当闸门内无待办；有待决内容时绝不可一键通过。
@@ -137,38 +137,38 @@ def confirm(
             raise Hitl2GateError(
                 "硬闸门拦截：有待决内容时不可 PASS（绝不在无人拍板时自动采纳）"
             )
-        return [n.model_copy(deep=True) for n in tree]
+        return [n.model_copy(deep=True) for n in argument_tree]
 
     # DECIDE：深拷贝上逐步应用 + 每步校验。
-    working = [n.model_copy(deep=True) for n in tree]
+    working = [n.model_copy(deep=True) for n in argument_tree]
     for op in decision.ops:
         _apply_op(working, op)
     return working
 
 
-def _apply_op(nodes: list[ArgumentationNode], op: Hitl2Op) -> None:
+def _apply_op(arguments: list[Argument], op: Hitl2Op) -> None:
     """应用单个 HITL-2 操作；非法即抛 :class:`Hitl2GateError`。"""
 
     if isinstance(op, AdoptOp):
-        _apply_adopt(nodes, op)
+        _apply_adopt(arguments, op)
     elif isinstance(op, RejectOp):
-        _apply_reject(nodes, op)
+        _apply_reject(arguments, op)
     elif isinstance(op, EditContentOp):
-        _apply_edit_content(nodes, op)
+        _apply_edit_content(arguments, op)
     else:  # pragma: no cover - 判别联合已穷尽
         raise AssertionError(f"未处理的 Hitl2Op：{op!r}")
 
 
-def _require_node(nodes: list[ArgumentationNode], node_id: str) -> ArgumentationNode:
+def _require_argument(arguments: list[Argument], argument_id: str) -> Argument:
     """按 id 取节点；不存在则抛 :class:`Hitl2GateError`。"""
 
-    for node in nodes:
-        if node.node_id == node_id:
-            return node
-    raise Hitl2GateError(f"HITL-2 操作引用不存在的节点：{node_id}")
+    for argument in arguments:
+        if argument.argument_id == argument_id:
+            return argument
+    raise Hitl2GateError(f"HITL-2 操作引用不存在的节点：{argument_id}")
 
 
-def _apply_adopt(nodes: list[ArgumentationNode], op: AdoptOp) -> None:
+def _apply_adopt(arguments: list[Argument], op: AdoptOp) -> None:
     """采纳假设：校验激活集 + 状态机，置 ``adopted`` + 持久化 ``adopted_hypothesis_id``。
 
     校验（任一失败即抛 :class:`Hitl2GateError`、整个决策丢弃）：
@@ -184,33 +184,33 @@ def _apply_adopt(nodes: list[ArgumentationNode], op: AdoptOp) -> None:
     ``edited_text`` 非空时覆写该假设文本（落回 ``candidate_hypotheses``，供回写 #10 幂等重取）。
     """
 
-    node = _require_node(nodes, op.node_id)
-    if not _is_pending(node):
+    argument = _require_argument(arguments, op.argument_id)
+    if not _is_pending(argument):
         raise Hitl2GateError(
-            f"采纳非法：节点 {op.node_id} 非待决态（{node.status.value}），不可采纳"
+            f"采纳非法：节点 {op.argument_id} 非待决态（{argument.status.value}），不可采纳"
         )
     try:
-        validate_transition(node.status, NodeStatus.ADOPTED)
+        validate_transition(argument.status, ArgumentStatus.ADOPTED)
     except IllegalStatusTransitionError as exc:
         raise Hitl2GateError(
-            f"状态机非法变更：节点 {op.node_id} 已为 {node.status.value}，不可重复采纳"
+            f"状态机非法变更：节点 {op.argument_id} 已为 {argument.status.value}，不可重复采纳"
         ) from exc
-    activated = _activated_ids(node)
+    activated = _activated_ids(argument)
     if op.hypothesis_id not in activated:
         raise Hitl2GateError(
-            f"越权采纳：假设 {op.hypothesis_id} 不在节点 {op.node_id} 的激活候选集 "
+            f"越权采纳：假设 {op.hypothesis_id} 不在节点 {op.argument_id} 的激活候选集 "
             f"{activated} 内"
         )
     if op.edited_text is not None:
-        for h in node.candidate_hypotheses:
+        for h in argument.candidate_hypotheses:
             if h.hypothesis_id == op.hypothesis_id:
                 h.text = op.edited_text
                 break
-    node.status = NodeStatus.ADOPTED
-    node.adopted_hypothesis_id = op.hypothesis_id
+    argument.status = ArgumentStatus.ADOPTED
+    argument.adopted_hypothesis_id = op.hypothesis_id
 
 
-def _apply_reject(nodes: list[ArgumentationNode], op: RejectOp) -> None:
+def _apply_reject(arguments: list[Argument], op: RejectOp) -> None:
     """驳回假设：从 ``candidate_hypotheses`` 移除该假设（持久化驳回决策）。
 
     节点 ``status`` 不变（仍待决、原文逐字节保留）；被驳回假设不再参与回写。
@@ -218,19 +218,19 @@ def _apply_reject(nodes: list[ArgumentationNode], op: RejectOp) -> None:
     :class:`Hitl2GateError`（越权 / 不存在）。
     """
 
-    node = _require_node(nodes, op.node_id)
+    argument = _require_argument(arguments, op.argument_id)
     idx = next(
-        (i for i, h in enumerate(node.candidate_hypotheses) if h.hypothesis_id == op.hypothesis_id),
+        (i for i, h in enumerate(argument.candidate_hypotheses) if h.hypothesis_id == op.hypothesis_id),
         None,
     )
     if idx is None:
         raise Hitl2GateError(
-            f"驳回越权：假设 {op.hypothesis_id} 不在节点 {op.node_id} 的候选集内"
+            f"驳回越权：假设 {op.hypothesis_id} 不在节点 {op.argument_id} 的候选集内"
         )
-    node.candidate_hypotheses.pop(idx)
+    argument.candidate_hypotheses.pop(idx)
 
 
-def _apply_edit_content(nodes: list[ArgumentationNode], op: EditContentOp) -> None:
+def _apply_edit_content(arguments: list[Argument], op: EditContentOp) -> None:
     """手动修改节点内容：覆写 ``content``（仅待决节点）。
 
     仅作用于待决节点（``doubtful``/``error``/``invalid`` 或贴 ``conflict``）；可信非冲突
@@ -238,9 +238,9 @@ def _apply_edit_content(nodes: list[ArgumentationNode], op: EditContentOp) -> No
     通道由 #10 据 ``adopted_hypothesis_id`` 与 ``content`` 共同决定。
     """
 
-    node = _require_node(nodes, op.node_id)
-    if not _is_pending(node):
+    argument = _require_argument(arguments, op.argument_id)
+    if not _is_pending(argument):
         raise Hitl2GateError(
-            f"手改非法：节点 {op.node_id} 非待决态（{node.status.value}），不可手改内容"
+            f"手改非法：节点 {op.argument_id} 非待决态（{argument.status.value}），不可手改内容"
         )
-    node.content = op.content
+    argument.content = op.content

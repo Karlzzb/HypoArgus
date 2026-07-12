@@ -31,7 +31,7 @@ from agents.verification.contract import (
     VerifyLlmClient,
     VerifyVerdict,
 )
-from domain import ArgumentationNode, NodeStatus, NodeType
+from domain import Argument, ArgumentStatus, ArgumentType
 from infra.history import HistoryStore
 from infra.retrieval import RetrievalLayer
 from infra.retrieval_tool import RetrievalTool
@@ -40,30 +40,30 @@ from infra.tool_protocol import ToolRegistry
 __all__ = ["verify"]
 
 
-_VERIFY_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.MAIN_CLAIM, NodeType.SUB_CLAIM, NodeType.EVIDENCE}
+_VERIFY_TYPES: frozenset[ArgumentType] = frozenset(
+    {ArgumentType.MAIN_CLAIM, ArgumentType.SUB_CLAIM, ArgumentType.EVIDENCE}
 )
 
 
-def _should_verify(node: ArgumentationNode) -> bool:
+def _should_verify(argument: Argument) -> bool:
     """体检覆盖 claim & evidence；跳过 qualification 与影子节点（保持 ``unverified``）。"""
 
-    return node.node_type in _VERIFY_TYPES
+    return argument.argument_type in _VERIFY_TYPES
 
 
-_VERDICT_TO_STATUS: dict[VerifyVerdict, NodeStatus] = {
-    VerifyVerdict.CREDIBLE: NodeStatus.CREDIBLE,
-    VerifyVerdict.DOUBTFUL: NodeStatus.DOUBTFUL,
-    VerifyVerdict.ERROR: NodeStatus.ERROR,
+_VERDICT_TO_STATUS: dict[VerifyVerdict, ArgumentStatus] = {
+    VerifyVerdict.CREDIBLE: ArgumentStatus.CREDIBLE,
+    VerifyVerdict.DOUBTFUL: ArgumentStatus.DOUBTFUL,
+    VerifyVerdict.ERROR: ArgumentStatus.ERROR,
 }
 
 
-def _verify_node(
-    node: ArgumentationNode,
+def _verify_argument(
+    argument: Argument,
     llm: VerifyLlmClient,
     registry: ToolRegistry,
     max_iterations: int,
-) -> NodeStatus:
+) -> ArgumentStatus:
     """单节点 ReAct 循环： bounded、绝不卡死。异常/超时硬上限 → ``error``。
 
     检索经 ``registry.dispatch("retrieve", step=...)``（ADR-0015）：``SearchStep →
@@ -74,9 +74,9 @@ def _verify_node(
     history = HistoryStore()
     for _ in range(max_iterations):
         try:
-            step = llm.next_step(node, history.compressed_view())
+            step = llm.next_step(argument, history.compressed_view())
         except Exception:
-            return NodeStatus.ERROR
+            return ArgumentStatus.ERROR
         try:
             if isinstance(step, ConcludeStep):
                 return _VERDICT_TO_STATUS[step.verdict]
@@ -84,33 +84,34 @@ def _verify_node(
                 result = registry.dispatch("retrieve", step=step)
                 history.extend(result.sources)
                 continue
-            return NodeStatus.ERROR  # 结构非法（非 union 成员）
+            return ArgumentStatus.ERROR  # 结构非法（非 union 成员）
         except Exception:
-            return NodeStatus.ERROR
-    return NodeStatus.ERROR  # 迭代硬上限（超时）
+            return ArgumentStatus.ERROR
+    return ArgumentStatus.ERROR  # 迭代硬上限（超时）
 
 
 def verify(
-    tree: list[ArgumentationNode],
+    argument_tree: list[Argument],
     llm: VerifyLlmClient,
     retrieval: RetrievalLayer,
     *,
     max_iterations: int = 8,
-) -> dict[str, ArgumentationNode]:
-    """对覆盖范围内的节点跑 ReAct 体检，返回 partial 更新（by ``node_id``）。
+) -> dict[str, ArgumentStatus]:
+    """对覆盖范围内的节点跑 ReAct 体检，返回 partial 更新（by ``argument_id``）。
 
     - 覆盖 ``main_claim / sub_claim / evidence``；``qualification`` 与影子节点不在 dict 中
       （保持 ``unverified``，下游合并/影响据此识别未体检节点）。
     - 每节点写回**恰好一个**终态（``credible / doubtful / error``）；``content`` 不动。
-    - 不修改输入树：返回的节点为 ``model_copy`` 新实例（输入节点状态不变）。
+    - partial 只存可信度裁决本身（``ArgumentStatus``），不再塞整节点——合流由 merge 按
+      ``argument_id`` 取本值写回 ``status``，不修改输入树。
     """
 
-    updates: dict[str, ArgumentationNode] = {}
+    updates: dict[str, ArgumentStatus] = {}
     registry = ToolRegistry()
     registry.register(RetrievalTool(retrieval))
-    for node in tree:
-        if not _should_verify(node):
+    for argument in argument_tree:
+        if not _should_verify(argument):
             continue
-        status = _verify_node(node, llm, registry, max_iterations)
-        updates[node.node_id] = node.model_copy(update={"status": status})
+        status = _verify_argument(argument, llm, registry, max_iterations)
+        updates[argument.argument_id] = status
     return updates

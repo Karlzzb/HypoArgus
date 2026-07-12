@@ -3,7 +3,7 @@
 原先散落在 hitl2（``_apply_adopt``）、writeback（``adopted → corrected`` 翻正）、
 impact（``→ invalid``）各处的内联状态守卫，统一收口到本缝。「非法状态变更一律拦截」
 （PRD §12）由本缝单一定义点兑现，各调用方复用 :func:`validate_transition` /
-:func:`transition_node`，杜绝规则漂移。
+:func:`transition_argument`，杜绝规则漂移。
 
 合法正向边（ADR-0011 状态机全貌）：
 
@@ -24,7 +24,7 @@ corrected`` 由回写成功触发；``credible/doubtful/error/invalid → adopte
 触发（``credible`` 仅贴 ``conflict`` 时方可采纳，该约束由 HITL-2 层 ``_is_pending`` 守，
 不在状态机层）。
 
-紧急通道 :func:`mark_node_error`：PRD §13 授权编排中枢在下游异常 / 超时时「就地置
+紧急通道 :func:`mark_argument_error`：PRD §13 授权编排中枢在下游异常 / 超时时「就地置
 目标节点错误状态」，故 ``→ error`` 从任意态恒合法——与上表的正向 ``error`` 判决分流，
 不走 :func:`validate_transition`，避免把「紧急兜底」误判为「非法跳级」。
 """
@@ -33,14 +33,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from domain import ArgumentationNode, NodeStatus
+from domain import Argument, ArgumentStatus
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "IllegalStatusTransitionError",
-    "mark_node_error",
+    "mark_argument_error",
     "validate_transition",
-    "transition_node",
+    "transition_argument",
 ]
 
 
@@ -53,38 +53,38 @@ class IllegalStatusTransitionError(Exception):
 
 
 # 合法正向迁移表（ADR-0011）。键 = 起始态，值 = 可达终态集合。
-ALLOWED_TRANSITIONS: Mapping[NodeStatus, frozenset[NodeStatus]] = {
-    NodeStatus.UNVERIFIED: frozenset(
+ALLOWED_TRANSITIONS: Mapping[ArgumentStatus, frozenset[ArgumentStatus]] = {
+    ArgumentStatus.UNVERIFIED: frozenset(
         {
-            NodeStatus.PENDING_VERIFICATION,
-            NodeStatus.CREDIBLE,
-            NodeStatus.DOUBTFUL,
-            NodeStatus.ERROR,
-            NodeStatus.INVALID,
+            ArgumentStatus.PENDING_VERIFICATION,
+            ArgumentStatus.CREDIBLE,
+            ArgumentStatus.DOUBTFUL,
+            ArgumentStatus.ERROR,
+            ArgumentStatus.INVALID,
         }
     ),
-    NodeStatus.PENDING_VERIFICATION: frozenset(
+    ArgumentStatus.PENDING_VERIFICATION: frozenset(
         {
-            NodeStatus.CREDIBLE,
-            NodeStatus.DOUBTFUL,
-            NodeStatus.ERROR,
-            NodeStatus.INVALID,
+            ArgumentStatus.CREDIBLE,
+            ArgumentStatus.DOUBTFUL,
+            ArgumentStatus.ERROR,
+            ArgumentStatus.INVALID,
         }
     ),
-    NodeStatus.CREDIBLE: frozenset({NodeStatus.ADOPTED, NodeStatus.INVALID}),
-    NodeStatus.DOUBTFUL: frozenset({NodeStatus.ADOPTED, NodeStatus.INVALID}),
-    NodeStatus.ERROR: frozenset({NodeStatus.ADOPTED, NodeStatus.INVALID}),
-    NodeStatus.INVALID: frozenset({NodeStatus.ADOPTED, NodeStatus.INVALID}),
-    NodeStatus.ADOPTED: frozenset({NodeStatus.CORRECTED}),
-    NodeStatus.CORRECTED: frozenset(),
+    ArgumentStatus.CREDIBLE: frozenset({ArgumentStatus.ADOPTED, ArgumentStatus.INVALID}),
+    ArgumentStatus.DOUBTFUL: frozenset({ArgumentStatus.ADOPTED, ArgumentStatus.INVALID}),
+    ArgumentStatus.ERROR: frozenset({ArgumentStatus.ADOPTED, ArgumentStatus.INVALID}),
+    ArgumentStatus.INVALID: frozenset({ArgumentStatus.ADOPTED, ArgumentStatus.INVALID}),
+    ArgumentStatus.ADOPTED: frozenset({ArgumentStatus.CORRECTED}),
+    ArgumentStatus.CORRECTED: frozenset(),
 }
 
 
-def validate_transition(old: NodeStatus, new: NodeStatus) -> None:
+def validate_transition(old: ArgumentStatus, new: ArgumentStatus) -> None:
     """校验 ``old → new`` 是否合法；非法即抛 :class:`IllegalStatusTransitionError`。
 
     本函数只覆盖**正向**状态机（体检判决 / HITL-2 采纳 / 影响传导失效 / 回写翻正）。
-    编排中枢异常兜底的「就地置 error」走 :func:`mark_node_error` 紧急通道，不经本函数
+    编排中枢异常兜底的「就地置 error」走 :func:`mark_argument_error` 紧急通道，不经本函数
     （PRD §13 授权从任意态 → error）。
     """
 
@@ -96,26 +96,26 @@ def validate_transition(old: NodeStatus, new: NodeStatus) -> None:
         )
 
 
-def transition_node(
-    node: ArgumentationNode, new_status: NodeStatus
-) -> ArgumentationNode:
+def transition_argument(
+    argument: Argument, new_status: ArgumentStatus
+) -> Argument:
     """校验后返回翻正后的节点副本（不修改输入）。
 
     状态机合法迁移的统一写入点：先 :func:`validate_transition` 拦截越权，再
     ``model_copy`` 翻正。调用方不再各自内联守卫，杜绝规则漂移。
     """
 
-    validate_transition(node.status, new_status)
-    return node.model_copy(update={"status": new_status})
+    validate_transition(argument.status, new_status)
+    return argument.model_copy(update={"status": new_status})
 
 
 # 异常兜底错误标签（与 writeback_error 同一 ``issue_tags`` 通道，便于审计一眼识别）。
 ORCHESTRATOR_ERROR_TAG = "orchestrator_error"
 
 
-def mark_node_error(
-    node: ArgumentationNode, reason: str | None = None
-) -> ArgumentationNode:
+def mark_argument_error(
+    argument: Argument, reason: str | None = None
+) -> Argument:
     """编排中枢异常兜底：就地置节点 ``error`` + 贴 ``orchestrator_error`` 标签（PRD §13）。
 
     紧急通道，**从任意态恒合法**——下游异常 / 超时时编排中枢「就地置目标节点错误状态」
@@ -126,9 +126,9 @@ def mark_node_error(
     tag = ORCHESTRATOR_ERROR_TAG
     if reason:
         tag = f"{ORCHESTRATOR_ERROR_TAG}:{reason}"
-    tags = list(node.issue_tags)
+    tags = list(argument.issue_tags)
     if tag not in tags:
         tags.append(tag)
-    return node.model_copy(
-        update={"status": NodeStatus.ERROR, "issue_tags": tags}
+    return argument.model_copy(
+        update={"status": ArgumentStatus.ERROR, "issue_tags": tags}
     )

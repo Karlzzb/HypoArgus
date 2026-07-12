@@ -16,10 +16,10 @@ import pytest
 from agents.hypothesis import Hypothesis, HypothesisRelation, HypothesisStatus
 from agents.merge import apply_partial_updates, merge
 from domain import (
-    ArgumentationNode,
+    Argument,
+    ArgumentStatus,
+    ArgumentType,
     MergeAction,
-    NodeStatus,
-    NodeType,
 )
 
 # --------------------------------------------------------------------------- #
@@ -49,18 +49,18 @@ def _hyp(
     )
 
 
-def _node(
-    status: NodeStatus,
+def _argument(
+    status: ArgumentStatus,
     hypotheses: list[Hypothesis] | None = None,
     *,
-    node_id: str = "n0",
-    node_type: NodeType = NodeType.EVIDENCE,
+    argument_id: str = "n0",
+    argument_type: ArgumentType = ArgumentType.EVIDENCE,
     content: str = "原文",
     issue_tags: list[str] | None = None,
-) -> ArgumentationNode:
-    return ArgumentationNode(
-        node_id=node_id,
-        node_type=node_type,
+) -> Argument:
+    return Argument(
+        argument_id=argument_id,
+        argument_type=argument_type,
         paragraph_id="p0001",
         content=content,
         status=status,
@@ -74,7 +74,7 @@ def _node(
 # --------------------------------------------------------------------------- #
 
 MatrixCase = tuple[
-    NodeStatus,  # 原文 status
+    ArgumentStatus,  # 原文 status
     HypothesisRelation | None,  # 假设关系（None = 无假设 / 不适用）
     HypothesisStatus | None,  # 假设 status（None = 无假设）
     MergeAction,  # 期望节点裁决动作
@@ -85,26 +85,26 @@ MatrixCase = tuple[
 
 MATRIX_CASES: list[MatrixCase] = [
     # ---- credible 行：一律保持原文不动 ----
-    (NodeStatus.CREDIBLE, None, None, MergeAction.KEEP, False, 0, 0),
-    (NodeStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.CONFLICT, True, 1, 1),
-    (NodeStatus.CREDIBLE, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.FREEZE, False, 0, 0),
-    (NodeStatus.CREDIBLE, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.FREEZE, False, 0, 0),
-    (NodeStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 0, 0),
-    (NodeStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.CREDIBLE, None, None, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.CONFLICT, True, 1, 1),
+    (ArgumentStatus.CREDIBLE, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.FREEZE, False, 0, 0),
+    (ArgumentStatus.CREDIBLE, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.FREEZE, False, 0, 0),
+    (ArgumentStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.CREDIBLE, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
     # ---- doubtful 行 ----
-    (NodeStatus.DOUBTFUL, None, None, MergeAction.KEEP, False, 0, 0),
-    (NodeStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.REPLACE, False, 1, 1),
-    (NodeStatus.DOUBTFUL, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.REWRITE, False, 1, 1),
-    (NodeStatus.DOUBTFUL, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.SUPPLEMENT, False, 1, 1),
-    (NodeStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 1, 0),
-    (NodeStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.DOUBTFUL, None, None, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.REPLACE, False, 1, 1),
+    (ArgumentStatus.DOUBTFUL, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.REWRITE, False, 1, 1),
+    (ArgumentStatus.DOUBTFUL, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.SUPPLEMENT, False, 1, 1),
+    (ArgumentStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 1, 0),
+    (ArgumentStatus.DOUBTFUL, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
     # ---- error 行 ----
-    (NodeStatus.ERROR, None, None, MergeAction.KEEP, False, 0, 0),
-    (NodeStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.REPLACE, False, 1, 1),
-    (NodeStatus.ERROR, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.REWRITE, False, 1, 1),
-    (NodeStatus.ERROR, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.SUPPLEMENT, False, 1, 1),
-    (NodeStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 1, 0),
-    (NodeStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.ERROR, None, None, MergeAction.KEEP, False, 0, 0),
+    (ArgumentStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, MergeAction.REPLACE, False, 1, 1),
+    (ArgumentStatus.ERROR, HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, MergeAction.REWRITE, False, 1, 1),
+    (ArgumentStatus.ERROR, HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, MergeAction.SUPPLEMENT, False, 1, 1),
+    (ArgumentStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, MergeAction.KEEP, False, 1, 0),
+    (ArgumentStatus.ERROR, HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, MergeAction.KEEP, False, 0, 0),
 ]
 
 
@@ -123,9 +123,9 @@ def test_merge_matrix_cell_verdict(case):
     hypotheses: list[Hypothesis] = []
     if relation is not None and hstatus is not None:
         hypotheses = [_hyp(relation, hstatus)]
-    node = _node(status, hypotheses)
+    argument = _argument(status, hypotheses)
 
-    [out] = merge([node])
+    [out] = merge([argument])
     decision = out.merge_decision
     assert decision is not None
     assert decision.action is action, f"动作期望 {action}，实际 {decision.action}"
@@ -133,8 +133,8 @@ def test_merge_matrix_cell_verdict(case):
     assert len(out.candidate_hypotheses) == kept
     assert len(decision.activated_hypothesis_ids) == activated
     # credible 行一律保持原文不动：status 与 content 不变、无激活假设。
-    if status is NodeStatus.CREDIBLE:
-        assert out.status is NodeStatus.CREDIBLE
+    if status is ArgumentStatus.CREDIBLE:
+        assert out.status is ArgumentStatus.CREDIBLE
         assert out.content == "原文"
 
 
@@ -147,9 +147,9 @@ def test_merge_credible_oppose_supported_tags_conflict_no_autodecision():
     """credible × 对立 supported → 贴 conflict、保留对立假设、原文不动、不自动采纳。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="对立假设")
-    node = _node(NodeStatus.CREDIBLE, [h], content="原文论点")
+    argument = _argument(ArgumentStatus.CREDIBLE, [h], content="原文论点")
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.CONFLICT
     assert "conflict" in out.issue_tags
     # 原文与对立假设并列推 HITL-2：假设保留为候选。
@@ -157,7 +157,7 @@ def test_merge_credible_oppose_supported_tags_conflict_no_autodecision():
     assert out.candidate_hypotheses[0].hypothesis_id == h.hypothesis_id
     assert out.merge_decision.activated_hypothesis_ids == [h.hypothesis_id]
     # 不自动裁决：节点未进入 adopted、content/status 不动。
-    assert out.status is NodeStatus.CREDIBLE
+    assert out.status is ArgumentStatus.CREDIBLE
     assert out.content == "原文论点"
 
 
@@ -166,9 +166,9 @@ def test_merge_credible_multiple_oppose_supported_all_kept_as_conflict():
 
     h1 = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="对立甲")
     h2 = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="对立乙")
-    node = _node(NodeStatus.CREDIBLE, [h1, h2])
+    argument = _argument(ArgumentStatus.CREDIBLE, [h1, h2])
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.CONFLICT
     assert "conflict" in out.issue_tags
     assert {h.hypothesis_id for h in out.candidate_hypotheses} == {h1.hypothesis_id, h2.hypothesis_id}
@@ -180,9 +180,9 @@ def test_merge_credible_oppose_plus_expand_only_oppose_survives():
 
     oppose = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="对立")
     expand = _hyp(HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, text="扩展")
-    node = _node(NodeStatus.CREDIBLE, [oppose, expand])
+    argument = _argument(ArgumentStatus.CREDIBLE, [oppose, expand])
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.CONFLICT
     assert "conflict" in out.issue_tags
     assert [h.hypothesis_id for h in out.candidate_hypotheses] == [oppose.hypothesis_id]
@@ -199,14 +199,14 @@ def test_merge_credible_advance_or_expand_supported_freezes_original():
 
     advance = _hyp(HypothesisRelation.ADVANCE, HypothesisStatus.SUPPORTED, text="递进")
     expand = _hyp(HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED, text="扩展")
-    node = _node(NodeStatus.CREDIBLE, [advance, expand], content="原文论点")
+    argument = _argument(ArgumentStatus.CREDIBLE, [advance, expand], content="原文论点")
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.FREEZE
     assert "conflict" not in out.issue_tags
     assert out.candidate_hypotheses == []
     assert out.merge_decision.activated_hypothesis_ids == []
-    assert out.status is NodeStatus.CREDIBLE
+    assert out.status is ArgumentStatus.CREDIBLE
     assert out.content == "原文论点"
 
 
@@ -215,7 +215,7 @@ def test_merge_credible_advance_or_expand_supported_freezes_original():
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("status", [NodeStatus.DOUBTFUL, NodeStatus.ERROR])
+@pytest.mark.parametrize("status", [ArgumentStatus.DOUBTFUL, ArgumentStatus.ERROR])
 def test_merge_supported_column_dispatches_by_relation(status):
     """doubtful/error × supported：oppose→REPLACE、advance→REWRITE、expand→SUPPLEMENT。"""
 
@@ -225,8 +225,8 @@ def test_merge_supported_column_dispatches_by_relation(status):
         (HypothesisRelation.EXPAND, MergeAction.SUPPLEMENT),
     ):
         h = _hyp(relation, HypothesisStatus.SUPPORTED)
-        node = _node(status, [h])
-        [out] = merge([node])
+        argument = _argument(status, [h])
+        [out] = merge([argument])
         assert out.merge_decision.action is action, f"{relation.value} 期望 {action}"
         assert out.candidate_hypotheses[0].hypothesis_id == h.hypothesis_id
         assert out.merge_decision.activated_hypothesis_ids == [h.hypothesis_id]
@@ -235,7 +235,7 @@ def test_merge_supported_column_dispatches_by_relation(status):
         assert out.status is status
 
     # 三条同时存在：按最高 confidence 选 primary，其余仍作为候选保留。
-    node = _node(
+    argument = _argument(
         status,
         [
             Hypothesis(hypothesis_id="lo", text="对立低置信", relation=HypothesisRelation.OPPOSE, status=HypothesisStatus.SUPPORTED, confidence=0.2),
@@ -243,7 +243,7 @@ def test_merge_supported_column_dispatches_by_relation(status):
             Hypothesis(hypothesis_id="mid", text="递进中置信", relation=HypothesisRelation.ADVANCE, status=HypothesisStatus.SUPPORTED, confidence=0.5),
         ],
     )
-    [out] = merge([node])
+    [out] = merge([argument])
     # primary = 最高 confidence（扩展 0.9）→ SUPPLEMENT；三条 supported 均激活为候选。
     assert out.merge_decision.action is MergeAction.SUPPLEMENT
     assert set(out.merge_decision.activated_hypothesis_ids) == {"lo", "hi", "mid"}
@@ -255,14 +255,14 @@ def test_merge_supported_column_dispatches_by_relation(status):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("status", [NodeStatus.DOUBTFUL, NodeStatus.ERROR])
+@pytest.mark.parametrize("status", [ArgumentStatus.DOUBTFUL, ArgumentStatus.ERROR])
 def test_merge_doubtful_hypothesis_weakly_presented_not_activated(status):
     """doubtful 假设弱呈现「未证实·供参考」：留 candidate_hypotheses、不计 activated。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.DOUBTFUL, text="存疑假设")
-    node = _node(status, [h])
+    argument = _argument(status, [h])
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.KEEP
     assert out.merge_decision.activated_hypothesis_ids == []
     assert len(out.candidate_hypotheses) == 1
@@ -274,16 +274,16 @@ def test_merge_supported_and_doubtful_mixed_both_kept_only_supported_activated()
 
     sup = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="成立")
     weak = _hyp(HypothesisRelation.EXPAND, HypothesisStatus.DOUBTFUL, text="存疑")
-    node = _node(NodeStatus.DOUBTFUL, [sup, weak])
+    argument = _argument(ArgumentStatus.DOUBTFUL, [sup, weak])
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.REPLACE
     assert out.merge_decision.activated_hypothesis_ids == [sup.hypothesis_id]
     assert {h.hypothesis_id for h in out.candidate_hypotheses} == {sup.hypothesis_id, weak.hypothesis_id}
     # refuted 应被丢弃。
     refuted = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.REFUTED, text="被推翻")
-    node2 = _node(NodeStatus.DOUBTFUL, [sup, weak, refuted])
-    [out2] = merge([node2])
+    argument2 = _argument(ArgumentStatus.DOUBTFUL, [sup, weak, refuted])
+    [out2] = merge([argument2])
     assert {h.hypothesis_id for h in out2.candidate_hypotheses} == {sup.hypothesis_id, weak.hypothesis_id}
 
 
@@ -292,35 +292,35 @@ def test_merge_supported_and_doubtful_mixed_both_kept_only_supported_activated()
 # --------------------------------------------------------------------------- #
 
 
-def test_merge_every_node_annotated_including_shadows_and_no_candidate():
+def test_merge_every_argument_annotated_including_shadows_and_no_candidate():
     """所有节点均附 merge_decision（无候选者、影子、qualification、未裁决均在内）。"""
 
-    tree = [
-        _node(NodeStatus.CREDIBLE, [], node_id="cred", node_type=NodeType.EVIDENCE),
-        _node(NodeStatus.DOUBTFUL, [], node_id="doubt", node_type=NodeType.SUB_CLAIM),
-        _node(NodeStatus.ERROR, [], node_id="err", node_type=NodeType.EVIDENCE),
-        _node(NodeStatus.UNVERIFIED, [], node_id="qual", node_type=NodeType.QUALIFICATION),
-        _node(NodeStatus.UNVERIFIED, [], node_id="bg", node_type=NodeType.BACKGROUND),
-        _node(NodeStatus.UNVERIFIED, [], node_id="ev", node_type=NodeType.EVALUATION),
-        _node(NodeStatus.UNVERIFIED, [], node_id="main", node_type=NodeType.MAIN_CLAIM),
+    argument_tree = [
+        _argument(ArgumentStatus.CREDIBLE, [], argument_id="cred", argument_type=ArgumentType.EVIDENCE),
+        _argument(ArgumentStatus.DOUBTFUL, [], argument_id="doubt", argument_type=ArgumentType.SUB_CLAIM),
+        _argument(ArgumentStatus.ERROR, [], argument_id="err", argument_type=ArgumentType.EVIDENCE),
+        _argument(ArgumentStatus.UNVERIFIED, [], argument_id="qual", argument_type=ArgumentType.QUALIFICATION),
+        _argument(ArgumentStatus.UNVERIFIED, [], argument_id="bg", argument_type=ArgumentType.BACKGROUND),
+        _argument(ArgumentStatus.UNVERIFIED, [], argument_id="ev", argument_type=ArgumentType.EVALUATION),
+        _argument(ArgumentStatus.UNVERIFIED, [], argument_id="main", argument_type=ArgumentType.MAIN_CLAIM),
     ]
-    out = merge(tree)
-    assert len(out) == len(tree)
-    for node in out:
-        assert node.merge_decision is not None, f"{node.node_id} 未标注 merge_decision"
-        assert node.merge_decision.action is MergeAction.KEEP
+    out = merge(argument_tree)
+    assert len(out) == len(argument_tree)
+    for argument in out:
+        assert argument.merge_decision is not None, f"{argument.argument_id} 未标注 merge_decision"
+        assert argument.merge_decision.action is MergeAction.KEEP
     # 无独立人工兜底分支：无节点被丢弃或进入 adopted。
-    assert {n.node_id for n in out} == {n.node_id for n in tree}
-    assert all(n.status is not NodeStatus.ADOPTED for n in out)
+    assert {n.argument_id for n in out} == {n.argument_id for n in argument_tree}
+    assert all(n.status is not ArgumentStatus.ADOPTED for n in out)
 
 
-def test_merge_unverified_node_with_hypotheses_conservative_keep():
+def test_merge_unverified_argument_with_hypotheses_conservative_keep():
     """未裁决节点（体检未覆盖、却带假设）→ 保守 KEEP、不裁剪假设、不自动激活。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED, text="假设")
-    node = _node(NodeStatus.UNVERIFIED, [h], node_type=NodeType.SUB_CLAIM)
+    argument = _argument(ArgumentStatus.UNVERIFIED, [h], argument_type=ArgumentType.SUB_CLAIM)
 
-    [out] = merge([node])
+    [out] = merge([argument])
     assert out.merge_decision.action is MergeAction.KEEP
     assert out.merge_decision.activated_hypothesis_ids == []
     # 保守：不丢假设（无裁决不可裁剪），交 HITL-2。
@@ -337,16 +337,16 @@ def test_merge_does_not_mutate_input_tree():
     """返回新实例；输入树节点（content/status/issue_tags/candidate/merge_decision）原样。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED)
-    tree = [
-        _node(NodeStatus.CREDIBLE, [h], node_id="c", content="C"),
-        _node(NodeStatus.DOUBTFUL, [_hyp(HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED)], node_id="d", content="D"),
+    argument_tree = [
+        _argument(ArgumentStatus.CREDIBLE, [h], argument_id="c", content="C"),
+        _argument(ArgumentStatus.DOUBTFUL, [_hyp(HypothesisRelation.EXPAND, HypothesisStatus.SUPPORTED)], argument_id="d", content="D"),
     ]
-    originals = {n.node_id: n.model_copy(deep=True) for n in tree}
+    originals = {n.argument_id: n.model_copy(deep=True) for n in argument_tree}
 
-    merge(tree)
+    merge(argument_tree)
 
-    for n in tree:
-        assert n == originals[n.node_id], f"输入树被改写：{n.node_id}"
+    for n in argument_tree:
+        assert n == originals[n.argument_id], f"输入树被改写：{n.argument_id}"
         assert n.merge_decision is None  # 输入节点本无 merge_decision
 
 
@@ -354,38 +354,38 @@ def test_merge_preserves_content_and_status_never_adopts():
     """合并只标注、不改 content/status、绝不置 adopted（替人拍板）。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED)
-    tree = [
-        _node(NodeStatus.CREDIBLE, [h], node_id="c", content="cred 原文"),
-        _node(NodeStatus.DOUBTFUL, [h], node_id="d", content="doubt 原文"),
-        _node(NodeStatus.ERROR, [h], node_id="e", content="err 原文"),
+    argument_tree = [
+        _argument(ArgumentStatus.CREDIBLE, [h], argument_id="c", content="cred 原文"),
+        _argument(ArgumentStatus.DOUBTFUL, [h], argument_id="d", content="doubt 原文"),
+        _argument(ArgumentStatus.ERROR, [h], argument_id="e", content="err 原文"),
     ]
-    before = {n.node_id: (n.content, n.status) for n in tree}
+    before = {n.argument_id: (n.content, n.status) for n in argument_tree}
 
-    out = merge(tree)
-    for node in out:
-        assert node.content == before[node.node_id][0]
-        assert node.status is before[node.node_id][1]
-        assert node.status is not NodeStatus.ADOPTED
-        assert node.status is not NodeStatus.CORRECTED
+    out = merge(argument_tree)
+    for argument in out:
+        assert argument.content == before[argument.argument_id][0]
+        assert argument.status is before[argument.argument_id][1]
+        assert argument.status is not ArgumentStatus.ADOPTED
+        assert argument.status is not ArgumentStatus.CORRECTED
 
 
 def test_merge_does_not_drop_existing_issue_tags():
     """合并追加 conflict 时保留既有 issue_tags（不覆盖、不丢、去重）。"""
 
     h = _hyp(HypothesisRelation.OPPOSE, HypothesisStatus.SUPPORTED)
-    node = _node(NodeStatus.CREDIBLE, [h], issue_tags=["stale-tag", "conflict"])
+    argument = _argument(ArgumentStatus.CREDIBLE, [h], issue_tags=["stale-tag", "conflict"])
 
-    [out] = merge([node])
+    [out] = merge([argument])
     # 既有 conflict 不重复追加；既有 stale-tag 保留。
     assert out.issue_tags == ["stale-tag", "conflict"]
 
 
-def test_merge_returns_new_node_instances():
+def test_merge_returns_new_argument_instances():
     """输出节点是新实例、与输入节点不同对象（纯函数、可独立单测）。"""
 
-    node = _node(NodeStatus.CREDIBLE, [], node_id="x")
-    [out] = merge([node])
-    assert out is not node
+    argument = _argument(ArgumentStatus.CREDIBLE, [], argument_id="x")
+    [out] = merge([argument])
+    assert out is not argument
     assert out.merge_decision is not None
 
 
@@ -397,58 +397,45 @@ def test_merge_returns_new_node_instances():
 def test_apply_partial_updates_field_merges_disjoint_partial_channels():
     """体检 status 与开药 candidate_hypotheses 字段级合流到同节点、互不覆盖。"""
 
-    base = _node(NodeStatus.UNVERIFIED, [], node_id="n0", content="原文")
-    verify_partial = ArgumentationNode(
-        node_id="n0",
-        node_type=NodeType.EVIDENCE,
-        paragraph_id="p0001",
-        content="原文",
-        status=NodeStatus.DOUBTFUL,  # 体检只改 status
-    )
-    hypo_partial = ArgumentationNode(
-        node_id="n0",
-        node_type=NodeType.EVIDENCE,
-        paragraph_id="p0001",
-        content="原文",
-        candidate_hypotheses=[  # 开药只改 candidate_hypotheses
-            Hypothesis(
-                hypothesis_id="h1",
-                text="对立",
-                relation=HypothesisRelation.OPPOSE,
-                status=HypothesisStatus.SUPPORTED,
-            )
-        ],
-    )
+    base = _argument(ArgumentStatus.UNVERIFIED, [], argument_id="n0", content="原文")
+    credibility = ArgumentStatus.DOUBTFUL  # 体检 partial 只产可信度裁决
+    hypotheses = [  # 开药 partial 只产候选假设列表
+        Hypothesis(
+            hypothesis_id="h1",
+            text="对立",
+            relation=HypothesisRelation.OPPOSE,
+            status=HypothesisStatus.SUPPORTED,
+        )
+    ]
 
-    [out] = apply_partial_updates([base], {"n0": verify_partial}, {"n0": hypo_partial})
+    [out] = apply_partial_updates([base], {"n0": credibility}, {"n0": hypotheses})
 
     # 两字段共存（非 last-writer-wins 丢字段）。
-    assert out.status is NodeStatus.DOUBTFUL
+    assert out.status is ArgumentStatus.DOUBTFUL
     assert len(out.candidate_hypotheses) == 1
     assert out.candidate_hypotheses[0].hypothesis_id == "h1"
     # 其余字段从原树保留。
     assert out.content == "原文"
-    assert out.node_type is NodeType.EVIDENCE
+    assert out.argument_type is ArgumentType.EVIDENCE
 
 
 def test_apply_partial_updates_pure_does_not_mutate_input():
-    """合流不修改输入树与 partial 节点（返回新实例）。"""
+    """合流不修改输入树（返回新实例）；partial 为标量/列表、不携节点。"""
 
-    base = _node(NodeStatus.UNVERIFIED, [], node_id="n0", content="原文")
+    base = _argument(ArgumentStatus.UNVERIFIED, [], argument_id="n0", content="原文")
     base_copy = base.model_copy(deep=True)
-    verify_partial = _node(NodeStatus.CREDIBLE, [], node_id="n0")
 
-    apply_partial_updates([base], {"n0": verify_partial}, {})
+    apply_partial_updates([base], {"n0": ArgumentStatus.CREDIBLE}, {})
 
     assert base == base_copy  # 原树未变
-    assert base.status is NodeStatus.UNVERIFIED
+    assert base.status is ArgumentStatus.UNVERIFIED
 
 
 def test_apply_partial_updates_missing_partials_keeps_original():
     """无 partial 的节点原样保留（仅浅拷贝）；空 partial dict 无副作用。"""
 
-    node = _node(NodeStatus.CREDIBLE, [], node_id="solo", content="C")
-    [out] = apply_partial_updates([node], {}, {})
-    assert out.status is NodeStatus.CREDIBLE
+    argument = _argument(ArgumentStatus.CREDIBLE, [], argument_id="solo", content="C")
+    [out] = apply_partial_updates([argument], {}, {})
+    assert out.status is ArgumentStatus.CREDIBLE
     assert out.content == "C"
-    assert out is not node
+    assert out is not argument

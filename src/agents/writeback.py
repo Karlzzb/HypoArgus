@@ -25,13 +25,13 @@ from dataclasses import dataclass
 
 from domain import (
     HYPOTHESIS_RELATION_TO_MERGE_ACTION,
-    ArgumentationNode,
+    Argument,
+    ArgumentStatus,
     Hypothesis,
     MergeAction,
-    NodeStatus,
 )
-from raw_store import RawParagraphStore
-from status_machine import transition_node
+from original_paragraphs import OriginalParagraphs
+from status_machine import transition_argument
 
 __all__ = [
     "SUPPLEMENT_AUDIT_MARKER",
@@ -62,17 +62,17 @@ WRITEBACK_ERROR_TAG = "writeback_error"
 class WritebackResult:
     """回写结果：终稿 bytes + 状态翻正后的树（ADR-0011）。
 
-    ``final_doc`` 为按 ``paragraph_id`` 规范顺序缝合的终稿；``tree`` 为同序新树——
+    ``final_document`` 为按 ``paragraph_id`` 规范顺序缝合的终稿；``argument_tree`` 为同序新树——
     成功采纳节点翻 ``corrected``、失败者停留 ``adopted`` 并贴 ``writeback_error``。
-    二者同源推导，故重跑（重试）得同一份 ``final_doc``、状态收敛至 ``corrected``。
+    二者同源推导，故重跑（重试）得同一份 ``final_document``、状态收敛至 ``corrected``。
     """
 
-    final_doc: bytes
-    tree: list[ArgumentationNode]
+    final_document: bytes
+    argument_tree: list[Argument]
 
 
 # --------------------------------------------------------------------------- #
-# 内部：编码/解码（与 raw_store / parser 的 surrogateescape 往返一致）
+# 内部：编码/解码（与 original_paragraphs / parser 的 surrogateescape 往返一致）
 # --------------------------------------------------------------------------- #
 
 
@@ -94,7 +94,7 @@ def _supplement_block(hypothesis: Hypothesis) -> str:
     return f"\n{SUPPLEMENT_AUDIT_MARKER}:{hypothesis.hypothesis_id} -->\n{hypothesis.text}"
 
 
-def _resolve_adopted_hypothesis(node: ArgumentationNode) -> Hypothesis | None:
+def _resolve_adopted_hypothesis(argument: Argument) -> Hypothesis | None:
     """据 ``adopted_hypothesis_id`` 从 ``candidate_hypotheses`` 解析被采纳假设。
 
     HITL-2（#9）采纳即持久化 ``adopted_hypothesis_id``，并保证该 id 在候选集内
@@ -102,10 +102,10 @@ def _resolve_adopted_hypothesis(node: ArgumentationNode) -> Hypothesis | None:
     即数据缺失——回写失败、原文逐字节保留。
     """
 
-    hid = node.adopted_hypothesis_id
+    hid = argument.adopted_hypothesis_id
     if hid is None:
         return None
-    for h in node.candidate_hypotheses:
+    for h in argument.candidate_hypotheses:
         if h.hypothesis_id == hid:
             return h
     return None
@@ -113,7 +113,7 @@ def _resolve_adopted_hypothesis(node: ArgumentationNode) -> Hypothesis | None:
 
 def _apply_relation(
     paragraph: str,
-    node: ArgumentationNode,
+    argument: Argument,
     hypothesis: Hypothesis,
 ) -> str | None:
     """对单段落应用一条被采纳假设的关系分流；返回新段落文本或 ``None``（失败）。
@@ -130,24 +130,24 @@ def _apply_relation(
     if action is MergeAction.SUPPLEMENT:
         return paragraph + _supplement_block(hypothesis)
     # replace / rewrite：定位原句子串。
-    if node.content == "":
+    if argument.content == "":
         # 空原句无法定位——视作错位失败，保护原文。
         return None
-    idx = paragraph.find(node.content)
+    idx = paragraph.find(argument.content)
     if idx < 0:
         return None
     if action is MergeAction.REPLACE:
         replacement = hypothesis.text
     else:  # MergeAction.REWRITE：保留原句、合并假设（局部改写）。
-        replacement = node.content + hypothesis.text
-    return paragraph[:idx] + replacement + paragraph[idx + len(node.content):]
+        replacement = argument.content + hypothesis.text
+    return paragraph[:idx] + replacement + paragraph[idx + len(argument.content):]
 
 
 def _rewrite_paragraph(
     paragraph_id: str,
-    nodes: list[ArgumentationNode],
-    store: RawParagraphStore,
-) -> tuple[bytes, list[ArgumentationNode]]:
+    arguments: list[Argument],
+    original_paragraphs: OriginalParagraphs,
+) -> tuple[bytes, list[Argument]]:
     """重写一条被采纳改动命中的段落，返回 (终版 bytes, 翻正后的节点列表)。
 
     段内多个被采纳节点依次施加关系分流（ADR-0001：整段进入重写通道，段内其他句子不作
@@ -156,80 +156,80 @@ def _rewrite_paragraph(
     单点失败不阻塞同段其他节点，单向向前推进（PRD §13）。
     """
 
-    paragraph = _decode(store.get(paragraph_id))
-    out_nodes: list[ArgumentationNode] = []
-    for node in nodes:
-        touched = node.adopted_hypothesis_id is not None
+    paragraph = _decode(original_paragraphs.get(paragraph_id))
+    out_arguments: list[Argument] = []
+    for argument in arguments:
+        touched = argument.adopted_hypothesis_id is not None
         if not touched:
-            out_nodes.append(node.model_copy())
+            out_arguments.append(argument.model_copy())
             continue
-        hypothesis = _resolve_adopted_hypothesis(node)
+        hypothesis = _resolve_adopted_hypothesis(argument)
         if hypothesis is None:
-            out_nodes.append(_tag_writeback_error(node))
+            out_arguments.append(_tag_writeback_error(argument))
             continue
-        new_paragraph = _apply_relation(paragraph, node, hypothesis)
+        new_paragraph = _apply_relation(paragraph, argument, hypothesis)
         if new_paragraph is None:
-            out_nodes.append(_tag_writeback_error(node))
+            out_arguments.append(_tag_writeback_error(argument))
             continue
         paragraph = new_paragraph
         # 成功：adopted → corrected（经集中状态机子缝校验合法迁移）；已 corrected 者保持
         # （终态，幂等重跑不动）；adopted_hypothesis_id 持久保留。
-        if node.status is NodeStatus.ADOPTED:
-            out_nodes.append(transition_node(node, NodeStatus.CORRECTED))
+        if argument.status is ArgumentStatus.ADOPTED:
+            out_arguments.append(transition_argument(argument, ArgumentStatus.CORRECTED))
         else:
-            out_nodes.append(node.model_copy())
-    return _encode(paragraph), out_nodes
+            out_arguments.append(argument.model_copy())
+    return _encode(paragraph), out_arguments
 
 
-def _tag_writeback_error(node: ArgumentationNode) -> ArgumentationNode:
+def _tag_writeback_error(argument: Argument) -> Argument:
     """回写失败：停留 ``adopted``、追加 ``writeback_error`` 标签（去重）。"""
 
-    tags = list(node.issue_tags)
+    tags = list(argument.issue_tags)
     if WRITEBACK_ERROR_TAG not in tags:
         tags.append(WRITEBACK_ERROR_TAG)
-    return node.model_copy(update={"issue_tags": tags})
+    return argument.model_copy(update={"issue_tags": tags})
 
 
 def writeback(
-    tree: list[ArgumentationNode],
-    store: RawParagraphStore,
+    argument_tree: list[Argument],
+    original_paragraphs: OriginalParagraphs,
 ) -> WritebackResult:
     """产出终稿 bytes + 状态翻正后的树（不修改输入）。
 
-    按 :meth:`RawParagraphStore.paragraph_ids` 的规范顺序遍历每段：
+    按 :meth:`OriginalParagraphs.paragraph_ids` 的规范顺序遍历每段：
 
     - 该段无被采纳节点（``adopted_hypothesis_id`` 全为空）→ 从只读表逐字节拷回（字节级
       无损）；该段节点浅拷入新树。
     - 该段有被采纳节点 → 整段进入重写通道（ADR-0001）：据关系分流缝合，成功节点翻
       ``corrected``、失败节点停留 ``adopted`` 并贴 ``writeback_error``。
 
-    规范顺序遍历保证：只要无采纳改动，``final_doc`` 与原始输入逐字节相等（分区不变式）。
-    幂等：重跑同一棵树得同一份 ``final_doc``；含 ``corrected`` 节点的段同样从原始 bytes
+    规范顺序遍历保证：只要无采纳改动，``final_document`` 与原始输入逐字节相等（分区不变式）。
+    幂等：重跑同一棵树得同一份 ``final_document``；含 ``corrected`` 节点的段同样从原始 bytes
     重新推导，故 supplement 永不累积、状态收敛至 ``corrected``。
     """
 
     # 先按 paragraph_id 索引节点一次，避免逐段全量扫描树（O(N) 而非 O(N×P)）。
-    nodes_by_paragraph: dict[str, list[ArgumentationNode]] = {}
-    for node in tree:
-        nodes_by_paragraph.setdefault(node.paragraph_id, []).append(node)
+    arguments_by_paragraph: dict[str, list[Argument]] = {}
+    for argument in argument_tree:
+        arguments_by_paragraph.setdefault(argument.paragraph_id, []).append(argument)
 
     out = bytearray()
-    new_tree: list[ArgumentationNode] = []
-    for paragraph_id in store.paragraph_ids():
-        nodes = nodes_by_paragraph.get(paragraph_id, [])
-        touched = any(n.adopted_hypothesis_id is not None for n in nodes)
+    new_argument_tree: list[Argument] = []
+    for paragraph_id in original_paragraphs.paragraph_ids():
+        arguments = arguments_by_paragraph.get(paragraph_id, [])
+        touched = any(n.adopted_hypothesis_id is not None for n in arguments)
         if not touched:
-            out += store.get(paragraph_id)
-            new_tree.extend(n.model_copy() for n in nodes)
+            out += original_paragraphs.get(paragraph_id)
+            new_argument_tree.extend(n.model_copy() for n in arguments)
         else:
-            chunk, rewritten_nodes = _rewrite_paragraph(paragraph_id, nodes, store)
+            chunk, rewritten_arguments = _rewrite_paragraph(paragraph_id, arguments, original_paragraphs)
             out += chunk
-            new_tree.extend(rewritten_nodes)
+            new_argument_tree.extend(rewritten_arguments)
 
     # 树中可能出现 paragraph_id 不在只读表的游离节点（结构异常）——守势：浅拷附尾、不动。
-    seen = set(store.paragraph_ids())
-    for node in tree:
-        if node.paragraph_id not in seen:
-            new_tree.append(node.model_copy())
+    seen = set(original_paragraphs.paragraph_ids())
+    for argument in argument_tree:
+        if argument.paragraph_id not in seen:
+            new_argument_tree.append(argument.model_copy())
 
-    return WritebackResult(final_doc=bytes(out), tree=new_tree)
+    return WritebackResult(final_document=bytes(out), argument_tree=new_argument_tree)

@@ -5,7 +5,7 @@
 ## 核心实体
 
 - **论证树 (Argumentation Tree)**：全链路唯一数据主干。将文档解构为具备父子从属关系的逻辑节点树。
-- **论证节点 (Argumentation Node)**：树的基本单元。分为核心逻辑节点与影子节点两类。
+- **论证节点 (Argument)**：树的基本单元。分为核心逻辑节点与影子节点两类。
 - **核心逻辑节点**：`main_claim`（主论点）、`sub_claim`（分论点）、`evidence`（论据）、`qualification`（限定条件）。参与逻辑传导与事实校验。
 - **影子节点 (Shadow Node)**：`background`（背景叙述）、`evaluation`（主观评价）。只读，不参与校验与传导，但提供上下文并参与最终文本拼接。
 
@@ -14,7 +14,7 @@
 - **段落 (Paragraph / `paragraph_id`)**：回写的**唯一原子单位**。见 ADR-0001。
 - **text_span**：节点在原文中的起止偏移量，**仅作段内辅助定位**，回写逻辑不依赖它。
 - **基数约束**：一个段落可含多个节点；一个节点不可跨段落。
-- **只读原文段落表 (Raw Paragraph Store)**：`{ paragraph_id → 原始 bytes }` 的不可变副本。字节级还原、HITL-2 对比左栏、回写拷贝的共同真相源，**永不整篇进 Agent 上下文**。见 ADR-0005。
+- **只读原文段落表 (Original Paragraphs)**：`{ paragraph_id → 原始 bytes }` 的不可变副本。字节级还原、HITL-2 对比左栏、回写拷贝的共同真相源，**永不整篇进 Agent 上下文**。见 ADR-0005。
 - **节点权重 (`argument_weight`)**：0-100 整数，解析器建树时按明文 rubric 赋值——带数据/引源的论据高分、泛泛断言低分，影子节点恒 0。
   供影响传导计算上层论点的剩余支撑率（`surviving_weight / total_weight`），是 `invalid` / `weakening` 判定的依据。见 ADR-0013。
 

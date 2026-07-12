@@ -15,10 +15,10 @@ from types import MappingProxyType
 
 from partition import Paragraph, partition
 
-__all__ = ["RawParagraphStore"]
+__all__ = ["OriginalParagraphs"]
 
 
-class RawParagraphStore:
+class OriginalParagraphs:
     """不可变原文段落表。
 
     构造后冻结：仅暴露按 ``paragraph_id`` 的只读访问，无整篇 dump，故原文 bytes
@@ -35,7 +35,7 @@ class RawParagraphStore:
         )
 
     @classmethod
-    def from_text(cls, text: bytes) -> RawParagraphStore:
+    def from_text(cls, text: bytes) -> OriginalParagraphs:
         """从原始文本构造：先切分（纯代码、无损），再固化。"""
 
         return cls(partition(text))
@@ -64,4 +64,4 @@ class RawParagraphStore:
         return iter(self._order)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
-        return f"RawParagraphStore(paragraphs={len(self._entries)})"
+        return f"OriginalParagraphs(paragraphs={len(self._entries)})"

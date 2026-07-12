@@ -20,7 +20,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import ArgumentationNode, NodeType
+from domain import Argument, ArgumentType
 
 __all__ = [
     "Hitl1Action",
@@ -57,21 +57,21 @@ class MergeOp(BaseModel):
     """
 
     action: Literal["merge"] = "merge"
-    node_ids: list[str]
+    argument_ids: list[str]
 
 
 class SplitOp(BaseModel):
     """拆分节点 → 同段叶兄弟（唯一 id，继承类型/段/父，无子）。"""
 
     action: Literal["split"] = "split"
-    node_id: str
+    argument_id: str
 
 
 class ReparentOp(BaseModel):
     """调整层级：改 ``parent_id``（``new_parent_id=None`` 即提为根）。"""
 
     action: Literal["reparent"] = "reparent"
-    node_id: str
+    argument_id: str
     new_parent_id: str | None
 
 
@@ -79,8 +79,8 @@ class SetTypeOp(BaseModel):
     """改节点类型；权重作为副作用调整（影子→0、影子→核心→50、核心→核心保留）。"""
 
     action: Literal["set_type"] = "set_type"
-    node_id: str
-    new_type: NodeType
+    argument_id: str
+    new_type: ArgumentType
 
 
 class MarkNoOpOp(BaseModel):
@@ -94,7 +94,7 @@ class FixBoundaryOp(BaseModel):
     """修正段内边界——延后实现（domain 无 ``text_span``，ADR-0001）。"""
 
     action: Literal["fix_boundary"] = "fix_boundary"
-    node_id: str
+    argument_id: str
 
 
 Hitl1Op = Annotated[
@@ -123,7 +123,7 @@ class Hitl1Gate(Protocol):
     而非中间编辑态——多步编辑在闸门一次返回、由 ``confirm`` 顺序应用。
     """
 
-    def review(self, tree: list[ArgumentationNode]) -> Hitl1Decision: ...
+    def review(self, argument_tree: list[Argument]) -> Hitl1Decision: ...
 
 
 class FakeHitl1Gate:
@@ -132,5 +132,5 @@ class FakeHitl1Gate:
     def __init__(self, decision: Hitl1Decision) -> None:
         self._decision = decision
 
-    def review(self, tree: list[ArgumentationNode]) -> Hitl1Decision:
+    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
         return self._decision.model_copy(deep=True)

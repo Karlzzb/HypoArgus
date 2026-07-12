@@ -14,7 +14,7 @@ import pytest
 from agents.assembly import create_real_agents, create_stub_agents
 from agents.hitl1 import FakeHitl1Gate, Hitl1Action, Hitl1Decision
 from agents.parser import FakeLlmClient, ParsedNodeProposal, ParseResult
-from domain import NodeType
+from domain import ArgumentType
 from runtime.orchestrator import Orchestrator
 
 _DOC = "主论点。\n\n分论点。\n\n论据。\n".encode()
@@ -26,12 +26,12 @@ def _raise(stage: str):
 
 def _three_core_proposals() -> list[ParsedNodeProposal]:
     return [
-        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM),
+        ParsedNodeProposal(paragraph_id="p0001", argument_type=ArgumentType.MAIN_CLAIM),
         ParsedNodeProposal(
-            paragraph_id="p0002", node_type=NodeType.SUB_CLAIM, parent_index=0
+            paragraph_id="p0002", argument_type=ArgumentType.SUB_CLAIM, parent_index=0
         ),
         ParsedNodeProposal(
-            paragraph_id="p0003", node_type=NodeType.EVIDENCE, parent_index=1
+            paragraph_id="p0003", argument_type=ArgumentType.EVIDENCE, parent_index=1
         ),
     ]
 
@@ -45,71 +45,71 @@ def test_merge_stage_exception_does_not_hang_and_logs():
 
     base = create_stub_agents()
 
-    def throwing_merge(tree):
+    def throwing_merge(argument_tree):
         raise RuntimeError("merge boom")
 
     agents = replace(base, merge=throwing_merge)
     orch = Orchestrator(agents=agents)
     report = orch.run_with_report(_DOC)
 
-    assert report.final_doc == _DOC  # 单点波动不卡死、无人采纳 → 逐字节还原
+    assert report.final_document == _DOC  # 单点波动不卡死、无人采纳 → 逐字节还原
     assert report.errors  # 异常兜底日志非空
     assert any("merge" in e for e in report.errors)
 
 
-def test_verification_wholesale_exception_marks_in_scope_nodes_error():
+def test_verification_wholesale_exception_marks_in_scope_arguments_error():
     """体检整体抛异常 → 覆盖范围内未判决节点就地置 error（PRD §13）、流水线仍推进至终稿。"""
 
     base = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(nodes=_three_core_proposals())),
+        llm=FakeLlmClient(result=ParseResult(proposals=_three_core_proposals())),
         hitl1_gate=_skip_gate(),
     )
 
-    def throwing_verify(tree):
+    def throwing_verify(argument_tree):
         raise RuntimeError("verify boom")
 
     captured: dict = {}
 
-    def wrapping_merge(tree):
-        captured["tree"] = tree  # 体检整体异常后写入 tree 的标记树
-        return base.merge(tree)
+    def wrapping_merge(argument_tree):
+        captured["argument_tree"] = argument_tree  # 体检整体异常后写入 argument_tree 的标记树
+        return base.merge(argument_tree)
 
     agents = replace(base, verification=throwing_verify, merge=wrapping_merge)
     orch = Orchestrator(agents=agents)
     report = orch.run_with_report(_DOC)
 
     # 三核心节点均在体检覆盖范围内、均未判决 → 整体异常后就地置 error + 贴 orchestrator_error。
-    marked = {n.node_id: n for n in captured["tree"]}
+    marked = {n.argument_id: n for n in captured["argument_tree"]}
     for nid in ("n0000", "n0001", "n0002"):
         assert marked[nid].status.value == "error"
         assert any(t.startswith("orchestrator_error:verify") for t in marked[nid].issue_tags)
     # 流水线仍推进至终稿、无人采纳 → 逐字节还原。
-    assert report.final_doc == _DOC
+    assert report.final_document == _DOC
     assert any("verification" in e for e in report.errors)
 
 
 @pytest.mark.parametrize(
     "stage,build_throwing",
     [
-        ("parse", lambda: (lambda store: _raise("parse"))),
-        ("hitl1", lambda: (lambda tree: _raise("hitl1"))),
-        ("impact", lambda: (lambda tree: _raise("impact"))),
-        ("consistency", lambda: (lambda tree: _raise("consistency"))),
-        ("hitl2", lambda: (lambda tree, store: _raise("hitl2"))),
+        ("parse", lambda: (lambda original_paragraphs: _raise("parse"))),
+        ("hitl1", lambda: (lambda argument_tree: _raise("hitl1"))),
+        ("impact", lambda: (lambda argument_tree: _raise("impact"))),
+        ("consistency", lambda: (lambda argument_tree: _raise("consistency"))),
+        ("hitl2", lambda: (lambda argument_tree, original_paragraphs: _raise("hitl2"))),
     ],
 )
 def test_tree_stage_exception_keeps_pipeline_alive_and_logs(stage, build_throwing):
     """任一树形 stage 抛异常 → 单点波动不卡死、终稿逐字节还原、errors 记日志（PRD §13）。"""
 
     base = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(nodes=_three_core_proposals())),
+        llm=FakeLlmClient(result=ParseResult(proposals=_three_core_proposals())),
         hitl1_gate=_skip_gate(),
     )
     agents = replace(base, **{stage: build_throwing()})
     orch = Orchestrator(agents=agents)
     report = orch.run_with_report(_DOC)
 
-    assert report.final_doc == _DOC  # stale 树向前、无人采纳 → 逐字节还原
+    assert report.final_document == _DOC  # stale 树向前、无人采纳 → 逐字节还原
     assert any(stage in e for e in report.errors)
 
 
@@ -120,7 +120,7 @@ def test_hitl2_gate_error_is_hard_stop_not_swallowed():
 
     base = create_stub_agents()
 
-    def gate_error_hitl2(tree, store):
+    def gate_error_hitl2(argument_tree, original_paragraphs):
         raise Hitl2GateError("硬闸门：有待决内容却 PASS")
 
     agents = replace(base, hitl2=gate_error_hitl2)
@@ -134,12 +134,12 @@ def test_writeback_stage_exception_falls_back_to_original_bytes():
 
     base = create_stub_agents()
 
-    def throwing_writeback(tree, store):
+    def throwing_writeback(argument_tree, original_paragraphs):
         raise RuntimeError("writeback boom")
 
     agents = replace(base, writeback=throwing_writeback)
     orch = Orchestrator(agents=agents)
     report = orch.run_with_report(_DOC)
 
-    assert report.final_doc == _DOC  # 回退原文逐字节拼接（分区不变式）
+    assert report.final_document == _DOC  # 回退原文逐字节拼接（分区不变式）
     assert any("writeback" in e for e in report.errors)

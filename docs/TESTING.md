@@ -7,7 +7,7 @@ HypoArgus 的测试遵循 PRD «Testing Decisions»：**黑盒外部行为验证
 
 | 层 | 文件 | 验证 | 数量 |
 |---|---|---|---:|
-| 领域核心 | `test_partition.py` / `test_raw_store.py` / `test_tree_invariants.py` / `test_status_machine.py` | 切分字节级还原 / 只读表 / 树不变式 / 状态机迁移 | 28 / 16 / 8 / 41 |
+| 领域核心 | `test_partition.py` / `test_original_paragraphs.py` / `test_tree_invariants.py` / `test_status_machine.py` | 切分字节级还原 / 只读表 / 树不变式 / 状态机迁移 | 28 / 16 / 8 / 41 |
 | 纯函数子缝 | `test_parser.py` / `test_verification.py` / `test_hypothesis.py` / `test_merge.py` / `test_impact.py` / `test_consistency.py` / `test_writeback.py` / `test_retrieval.py` | 各 agent 纯函数（不经 Orchestrator）+ Fake seam | 17 / 12 / 16 / 36 / 34 / 24 / 26 / 19 |
 | HITL | `test_hitl1.py` / `test_hitl2.py` | 闸门契约 / 硬闸门拦截 / 采纳链 | 19 / 20 |
 | 端到端 | `test_orchestrator_e2e.py` | 全链字节级承诺 + 各 issue 集成（逐个换桩→真实） | 52 |
@@ -88,18 +88,18 @@ pytest -q
 
 ### 5.1 纯函数子缝单测
 
-直接 import 纯函数 + 构造 `Fake*` seam + 手建 `ArgumentationNode` 树：
+直接 import 纯函数 + 构造 `Fake*` seam + 手建 `Argument` 树：
 
 ```python
 from hypoargus.verification import verify, FakeVerifyLlmClient
 from hypoargus.retrieval import create_mock_retrieval_layer
-from hypoargus.domain import ArgumentationNode, NodeType, NodeStatus
+from hypoargus.domain import Argument, ArgumentType, ArgumentStatus
 
-tree = [ArgumentationNode(node_id="n0", node_type=NodeType.MAIN_CLAIM,
-                          paragraph_id="p0001", content="x")]
-llm = FakeVerifyLlmClient(factory=lambda node, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE))
-updates = verify(tree, llm, create_mock_retrieval_layer())
-assert updates["n0"].status is NodeStatus.CREDIBLE
+argument_tree = [Argument(argument_id="n0", argument_type=ArgumentType.MAIN_CLAIM,
+                 paragraph_id="p0001", content="x")]
+llm = FakeVerifyLlmClient(factory=lambda argument, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE))
+updates = verify(argument_tree, llm, create_mock_retrieval_layer())
+assert updates["n0"] is ArgumentStatus.CREDIBLE
 ```
 
 约定：
@@ -114,7 +114,7 @@ assert updates["n0"].status is NodeStatus.CREDIBLE
 
 ### 5.3 异常兜底断言
 
-在 `test_orchestrator_fallback.py` 加：`replace(base, X=lambda *a: raise RuntimeError(...))`，断言 `report.final_doc == _DOC` + `any("X" in e for e in report.errors)`。
+在 `test_orchestrator_fallback.py` 加：`replace(base, X=lambda *a: raise RuntimeError(...))`，断言 `report.final_document == _DOC` + `any("X" in e for e in report.errors)`。
 若该 stage 有特殊降级语义（如 verification 标 scope error），补对应断言。
 
 ### 5.4 拓扑变体断言

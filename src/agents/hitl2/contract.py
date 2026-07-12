@@ -32,7 +32,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import HypothesisRelation, HypothesisStatus, NodeStatus, NodeType
+from domain import ArgumentStatus, ArgumentType, HypothesisRelation, HypothesisStatus
 
 __all__ = [
     "Hitl2Action",
@@ -43,7 +43,7 @@ __all__ = [
     "Hitl2Op",
     "Hitl2Decision",
     "CandidateView",
-    "NodeReview",
+    "ArgumentReview",
     "Hitl2Review",
     "Hitl2Gate",
     "FakeHitl2Gate",
@@ -85,7 +85,7 @@ class AdoptOp(BaseModel):
     """
 
     action: Literal["adopt"] = "adopt"
-    node_id: str
+    argument_id: str
     hypothesis_id: str
     edited_text: str | None = None
 
@@ -98,12 +98,12 @@ class RejectOp(BaseModel):
     """
 
     action: Literal["reject"] = "reject"
-    node_id: str
+    argument_id: str
     hypothesis_id: str
 
 
 class EditContentOp(BaseModel):
-    """手动修改节点内容：直接覆写 ``node.content``。
+    """手动修改节点内容：直接覆写 ``argument.content``。
 
     仅作用于待决节点（``doubtful``/``error``/``invalid`` 或贴 ``conflict``）；可信非冲突
     节点不呈现、不可手改（守住「保护原文」底线）。本 op 不置 ``adopted``——是否进入
@@ -111,7 +111,7 @@ class EditContentOp(BaseModel):
     """
 
     action: Literal["edit_content"] = "edit_content"
-    node_id: str
+    argument_id: str
     content: str
 
 
@@ -143,7 +143,7 @@ class CandidateView(BaseModel):
     confidence: float
 
 
-class NodeReview(BaseModel):
+class ArgumentReview(BaseModel):
     """单节点的修订确认呈现：段落原文 + 批注 + 候选 + 激活集。
 
     ``original_text`` 按 ``paragraph_id`` 从只读原文表取该段原文（ADR-0005 HITL-2
@@ -151,11 +151,11 @@ class NodeReview(BaseModel):
     激活、可被采纳的假设集；``candidates`` 含弱呈现（doubtful）假设供参考。
     """
 
-    node_id: str
+    argument_id: str
     paragraph_id: str
     original_text: str
-    node_type: NodeType
-    status: NodeStatus
+    argument_type: ArgumentType
+    status: ArgumentStatus
     issue_tags: list[str]
     activated_hypothesis_ids: list[str]
     candidates: list[CandidateView]
@@ -164,7 +164,7 @@ class NodeReview(BaseModel):
 class Hitl2Review(BaseModel):
     """HITL-2 闸门看到的呈现：待决节点列表 + 是否有待决内容。"""
 
-    nodes: list[NodeReview]
+    arguments: list[ArgumentReview]
     has_pending: bool
 
 

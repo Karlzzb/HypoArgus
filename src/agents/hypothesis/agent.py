@@ -32,7 +32,7 @@
 排序展示，**绝不**参与取证判决或合并矩阵裁决（ADR-0008 铁律）。
 
 注：体检（#4）写回节点 ``status``、开药（#5）写回 ``candidate_hypotheses``，二者在
-``merge_tree`` reducer 处合流到同一节点；双轨合并算子（#6）据此读
+``merge_argument_tree`` reducer 处合流到同一节点；双轨合并算子（#6）据此读
 ``原文.status × 假设.status`` 矩阵裁决。
 """
 
@@ -47,11 +47,11 @@ from agents.hypothesis.contract import (
     HypothesisVerdict,
 )
 from domain import (
-    ArgumentationNode,
+    Argument,
+    ArgumentType,
     Hypothesis,
     HypothesisRelation,
     HypothesisStatus,
-    NodeType,
 )
 from infra.history import HistoryStore
 from infra.retrieval import RetrievalLayer
@@ -66,15 +66,15 @@ __all__ = ["hypothesize"]
 # --------------------------------------------------------------------------- #
 
 
-_HYPOTHESIS_TYPES: frozenset[NodeType] = frozenset(
-    {NodeType.EVIDENCE, NodeType.SUB_CLAIM}
+_HYPOTHESIS_TYPES: frozenset[ArgumentType] = frozenset(
+    {ArgumentType.EVIDENCE, ArgumentType.SUB_CLAIM}
 )
 
 
-def _should_hypothesize(node: ArgumentationNode) -> bool:
+def _should_hypothesize(argument: Argument) -> bool:
     """开药覆盖 evidence + sub_claim；跳过 main_claim / qualification / 影子节点。"""
 
-    return node.node_type in _HYPOTHESIS_TYPES
+    return argument.argument_type in _HYPOTHESIS_TYPES
 
 
 _VERDICT_TO_STATUS: dict[HypothesisVerdict, HypothesisStatus] = {
@@ -85,7 +85,7 @@ _VERDICT_TO_STATUS: dict[HypothesisVerdict, HypothesisStatus] = {
 
 
 def _hypothesis_id(
-    node_id: str, relation: HypothesisRelation, text: str, idx: int
+    argument_id: str, relation: HypothesisRelation, text: str, idx: int
 ) -> str:
     """确定性 hypothesis_id：节点 id + 关系 + 文本 + 序号派生（非计数器，可重算）。
 
@@ -93,7 +93,7 @@ def _hypothesis_id(
     """
 
     digest = hashlib.blake2b(
-        f"{node_id}|{relation.value}|{text}|{idx}".encode(), digest_size=6
+        f"{argument_id}|{relation.value}|{text}|{idx}".encode(), digest_size=6
     ).hexdigest()
     return f"h-{digest}"
 
@@ -131,30 +131,31 @@ def _verify_hypothesis(
 
 
 def hypothesize(
-    tree: list[ArgumentationNode],
+    argument_tree: list[Argument],
     llm: HypothesisLlmClient,
     retrieval: RetrievalLayer,
     *,
     max_iterations: int = 8,
-) -> dict[str, ArgumentationNode]:
-    """对覆盖范围内的节点跑「投机生成 → 逐条取证」，返回 partial 更新（by ``node_id``）。
+) -> dict[str, list[Hypothesis]]:
+    """对覆盖范围内的节点跑「投机生成 → 逐条取证」，返回 partial 更新（by ``argument_id``）。
 
     - 覆盖 ``evidence / sub_claim``；``main_claim / qualification / 影子`` 节点不在 dict 中
       （保持空 ``candidate_hypotheses``，下游合并据此识别未开药节点）。
     - 每节点写回 ``candidate_hypotheses``（0..N 条，各带取证终态）；``content`` 与
       ``status`` 不动（``status`` 由体检 #4 写回，``candidate_hypotheses`` 由本切片写回，
       二者在 reducer 处合流，供 #6 矩阵裁决）。
-    - 不修改输入树：返回的节点为 ``model_copy`` 新实例（输入节点不变）。
+    - partial 只存候选假设列表本身，不再塞整节点——合流由 merge 按 ``argument_id`` 取本
+      值写回 ``candidate_hypotheses``，不修改输入树。
     """
 
-    updates: dict[str, ArgumentationNode] = {}
+    updates: dict[str, list[Hypothesis]] = {}
     registry = ToolRegistry()
     registry.register(RetrievalTool(retrieval))
-    for node in tree:
-        if not _should_hypothesize(node):
+    for argument in argument_tree:
+        if not _should_hypothesize(argument):
             continue
         try:
-            proposals = llm.propose(node)
+            proposals = llm.propose(argument)
         except Exception:
             proposals = []
         hypotheses: list[Hypothesis] = []
@@ -165,7 +166,7 @@ def hypothesize(
             hypotheses.append(
                 Hypothesis(
                     hypothesis_id=_hypothesis_id(
-                        node.node_id, proposal.relation, proposal.text, idx
+                        argument.argument_id, proposal.relation, proposal.text, idx
                     ),
                     text=proposal.text,
                     relation=proposal.relation,
@@ -173,7 +174,5 @@ def hypothesize(
                     confidence=proposal.confidence,
                 )
             )
-        updates[node.node_id] = node.model_copy(
-            update={"candidate_hypotheses": hypotheses}
-        )
+        updates[argument.argument_id] = hypotheses
     return updates

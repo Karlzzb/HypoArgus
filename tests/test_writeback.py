@@ -20,31 +20,31 @@ from agents.writeback import (
     writeback,
 )
 from domain import (
-    ArgumentationNode,
+    Argument,
+    ArgumentStatus,
+    ArgumentType,
     Hypothesis,
     HypothesisRelation,
     HypothesisStatus,
-    NodeStatus,
-    NodeType,
 )
-from raw_store import RawParagraphStore
+from original_paragraphs import OriginalParagraphs
 
 # --------------------------------------------------------------------------- #
 # 构造小工具
 # --------------------------------------------------------------------------- #
 
 
-def _shadow_tree(store: RawParagraphStore):
+def _shadow_tree(original_paragraphs: OriginalParagraphs):
     """每段一个只读影子节点（与解析桩一致）。"""
 
     return [
-        ArgumentationNode(
-            node_id=f"n-{pid}",
-            node_type=NodeType.BACKGROUND,
+        Argument(
+            argument_id=f"n-{pid}",
+            argument_type=ArgumentType.BACKGROUND,
             paragraph_id=pid,
-            content=store.get(pid).decode("utf-8", errors="surrogateescape"),
+            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
         )
-        for pid in store.paragraph_ids()
+        for pid in original_paragraphs.paragraph_ids()
     ]
 
 
@@ -58,19 +58,19 @@ def _hyp(
     return Hypothesis(hypothesis_id=hid, text=text, relation=relation, status=status)
 
 
-def _adopted_node(
+def _adopted_argument(
     *,
-    node_id: str,
+    argument_id: str,
     paragraph_id: str,
     content: str,
     hypothesis: Hypothesis,
-    status: NodeStatus = NodeStatus.ADOPTED,
-) -> ArgumentationNode:
+    status: ArgumentStatus = ArgumentStatus.ADOPTED,
+) -> Argument:
     """构造一个已采纳节点（adopted 或 corrected），其候选假设含被采纳者。"""
 
-    return ArgumentationNode(
-        node_id=node_id,
-        node_type=NodeType.EVIDENCE,
+    return Argument(
+        argument_id=argument_id,
+        argument_type=ArgumentType.EVIDENCE,
         paragraph_id=paragraph_id,
         content=content,
         status=status,
@@ -88,29 +88,29 @@ def test_writeback_no_adoptions_byte_identical(sample_doc):
     """无采纳改动时，终稿逐字节等于原始输入（含空行/缩进/末尾空格）。"""
 
     _name, doc = sample_doc
-    store = RawParagraphStore.from_text(doc)
-    tree = _shadow_tree(store)
-    assert writeback(tree, store).final_doc == doc
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument_tree = _shadow_tree(original_paragraphs)
+    assert writeback(argument_tree, original_paragraphs).final_document == doc
 
 
 def test_writeback_uses_store_canonical_order_not_tree_order():
     """回写按只读表规范顺序遍历，而非树遍历顺序——保证字节级确定。"""
 
     doc = b"aaa\n\nbbb\n\nccc\n"
-    store = RawParagraphStore.from_text(doc)
-    tree = _shadow_tree(store)
-    # 故意打乱树顺序，回写仍按 store 规范顺序输出。
-    tree.reverse()
-    assert writeback(tree, store).final_doc == doc
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument_tree = _shadow_tree(original_paragraphs)
+    # 故意打乱树顺序，回写仍按 original_paragraphs 规范顺序输出。
+    argument_tree.reverse()
+    assert writeback(argument_tree, original_paragraphs).final_document == doc
 
 
 def test_writeback_preserves_code_fence_block_bytes():
     """代码块段逐字节无损（含栅栏内空行）。"""
 
     doc = b"intro\n\n```python\na = 1\n\nb = 2\n```\n\noutro\n"
-    store = RawParagraphStore.from_text(doc)
-    tree = _shadow_tree(store)
-    assert writeback(tree, store).final_doc == doc
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument_tree = _shadow_tree(original_paragraphs)
+    assert writeback(argument_tree, original_paragraphs).final_document == doc
 
 
 # --------------------------------------------------------------------------- #
@@ -125,31 +125,31 @@ def test_writeback_oppose_replaces_original_sentence():
     """
 
     doc = b"keep\n\nchange\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
-    node = _adopted_node(
-        node_id="n-p0002",
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="change",
         hypothesis=_hyp("h1", text="fixed", relation=HypothesisRelation.OPPOSE),
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     assert isinstance(result, WritebackResult)
     # 未变更段逐字节还原。
-    assert store.get("p0001") in result.final_doc
-    assert store.get("p0003") in result.final_doc
+    assert original_paragraphs.get("p0001") in result.final_document
+    assert original_paragraphs.get("p0003") in result.final_document
     # 对立假设替换原句：新文本在、原句消失。
-    assert b"fixed" in result.final_doc
-    assert b"change" not in result.final_doc
+    assert b"fixed" in result.final_document
+    assert b"change" not in result.final_document
     # 成功置 corrected、adopted_hypothesis_id 保留。
-    out_by_id = {n.node_id: n for n in result.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.CORRECTED
+    out_by_id = {n.argument_id: n for n in result.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
     assert out_by_id["n-p0002"].adopted_hypothesis_id == "h1"
 
 
@@ -160,28 +160,28 @@ def test_writeback_advance_rewrites_merging_hypothesis():
     """
 
     doc = b"keep\n\nchange\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
-    node = _adopted_node(
-        node_id="n-p0002",
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="change",
         hypothesis=_hyp("h1", text="more", relation=HypothesisRelation.ADVANCE),
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     # 原句保留、假设文本内联合并。
-    assert b"change" in result.final_doc
-    assert b"more" in result.final_doc
+    assert b"change" in result.final_document
+    assert b"more" in result.final_document
     # 变更段缝合后原句与假设同段共存。
-    assert b"changemore" in result.final_doc
-    out_by_id = {n.node_id: n for n in result.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.CORRECTED
+    assert b"changemore" in result.final_document
+    out_by_id = {n.argument_id: n for n in result.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
 
 
 def test_writeback_expand_supplements_with_audit_marker():
@@ -192,32 +192,32 @@ def test_writeback_expand_supplements_with_audit_marker():
     """
 
     doc = b"keep\n\nbase\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
-    node = _adopted_node(
-        node_id="n-p0002",
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="base",
         hypothesis=_hyp("h9", text="addendum", relation=HypothesisRelation.EXPAND),
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     # 原段逐字节保留。
-    assert store.get("p0002") in result.final_doc
+    assert original_paragraphs.get("p0002") in result.final_document
     # 补充内容在段尾：审计标识（含 hypothesis_id）+ 假设文本。
-    assert SUPPLEMENT_AUDIT_MARKER.encode() in result.final_doc
-    assert b"ha-supplement:h9" in result.final_doc
-    assert b"addendum" in result.final_doc
+    assert SUPPLEMENT_AUDIT_MARKER.encode() in result.final_document
+    assert b"ha-supplement:h9" in result.final_document
+    assert b"addendum" in result.final_document
     # 标识领起补充文本（标识在文本之前）。
-    marker_pos = result.final_doc.find(SUPPLEMENT_AUDIT_MARKER.encode())
-    assert result.final_doc.find(b"addendum") > marker_pos
-    out_by_id = {n.node_id: n for n in result.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.CORRECTED
+    marker_pos = result.final_document.find(SUPPLEMENT_AUDIT_MARKER.encode())
+    assert result.final_document.find(b"addendum") > marker_pos
+    out_by_id = {n.argument_id: n for n in result.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
 
 
 # --------------------------------------------------------------------------- #
@@ -232,53 +232,53 @@ def test_writeback_non_changed_paragraphs_byte_identical(sample_doc):
     """
 
     _name, doc = sample_doc
-    store = RawParagraphStore.from_text(doc)
-    pids = store.paragraph_ids()
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    pids = original_paragraphs.paragraph_ids()
     # 无至少两段时可改的样例直接跳过（本测试要求可改中间段）。
     if len(pids) < 3:
         pytest.skip("样例不足三段，无法改中间段")
     target_pid = pids[len(pids) // 2]
-    target_bytes = store.get(target_pid)
+    target_bytes = original_paragraphs.get(target_pid)
     # content 取该段一个非空子串作为可定位原句。
     content = target_bytes.rstrip(b"\n").decode("utf-8", errors="surrogateescape")
     if content == "":
         pytest.skip("目标段无可用原句子串")
 
-    node = _adopted_node(
-        node_id=f"n-{target_pid}",
+    argument = _adopted_argument(
+        argument_id=f"n-{target_pid}",
         paragraph_id=target_pid,
         content=content,
         hypothesis=_hyp("h1", text="REPLACED", relation=HypothesisRelation.OPPOSE),
     )
-    tree = [
-        ArgumentationNode(
-            node_id=f"n-{pid}",
-            node_type=NodeType.BACKGROUND,
+    argument_tree = [
+        Argument(
+            argument_id=f"n-{pid}",
+            argument_type=ArgumentType.BACKGROUND,
             paragraph_id=pid,
-            content=store.get(pid).decode("utf-8", errors="surrogateescape"),
+            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
         )
         for pid in pids
         if pid != target_pid
     ]
-    tree.append(node)
-    # 故意打乱顺序，回写仍按 store 规范顺序、非变更段逐字节还原。
-    tree.reverse()
+    argument_tree.append(argument)
+    # 故意打乱顺序，回写仍按 original_paragraphs 规范顺序、非变更段逐字节还原。
+    argument_tree.reverse()
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     # 每个非变更段逐字节还原（含空行/缩进/末尾空格）。
     for pid in pids:
         if pid == target_pid:
             continue
-        assert store.get(pid) in result.final_doc
+        assert original_paragraphs.get(pid) in result.final_document
     # 变更段：原句消失、替换文本就位。
-    assert b"REPLACED" in result.final_doc
-    assert content.encode("utf-8", errors="surrogateescape") not in result.final_doc.replace(
+    assert b"REPLACED" in result.final_document
+    assert content.encode("utf-8", errors="surrogateescape") not in result.final_document.replace(
         b"REPLACED", b""
     )
     # 整体字节长度仍与原文同阶（替换段长度变化，但未变更段零增减）。
-    others_len = sum(len(store.get(pid)) for pid in pids if pid != target_pid)
-    assert others_len == sum(len(store.get(pid)) for pid in pids if pid != target_pid)
+    others_len = sum(len(original_paragraphs.get(pid)) for pid in pids if pid != target_pid)
+    assert others_len == sum(len(original_paragraphs.get(pid)) for pid in pids if pid != target_pid)
 
 
 def test_writeback_unresolvable_hypothesis_stays_adopted_with_error_tag():
@@ -286,32 +286,32 @@ def test_writeback_unresolvable_hypothesis_stays_adopted_with_error_tag():
     + 贴 writeback_error、原文逐字节保留（保护原文底线）。"""
 
     doc = b"keep\n\noriginal\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
+    original_paragraphs = OriginalParagraphs.from_text(doc)
     # adopted_hypothesis_id 指向不存在的假设——数据缺失（HITL-2 异常 / 树损坏）。
-    node = ArgumentationNode(
-        node_id="n-p0002",
-        node_type=NodeType.EVIDENCE,
+    argument = Argument(
+        argument_id="n-p0002",
+        argument_type=ArgumentType.EVIDENCE,
         paragraph_id="p0002",
         content="original",
-        status=NodeStatus.ADOPTED,
+        status=ArgumentStatus.ADOPTED,
         candidate_hypotheses=[
             _hyp("h1", text="x", relation=HypothesisRelation.OPPOSE),
         ],
         adopted_hypothesis_id="missing-hid",
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     # 失败：原文逐字节保留、未注入假设文本。
-    assert store.get("p0002") in result.final_doc
-    assert b"x" not in result.final_doc
-    out_by_id = {n.node_id: n for n in result.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.ADOPTED
+    assert original_paragraphs.get("p0002") in result.final_document
+    assert b"x" not in result.final_document
+    out_by_id = {n.argument_id: n for n in result.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.ADOPTED
     assert WRITEBACK_ERROR_TAG in out_by_id["n-p0002"].issue_tags
 
 
@@ -321,128 +321,128 @@ def test_writeback_unresolvable_hypothesis_stays_adopted_with_error_tag():
 
 
 def test_writeback_idempotent_re_run_produces_same_bytes():
-    """重跑同一棵（已翻正的）树得同一份 final_doc——supplement 永不累积。"""
+    """重跑同一棵（已翻正的）树得同一份 final_document——supplement 永不累积。"""
 
     doc = b"keep\n\nbase\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
-    node = _adopted_node(
-        node_id="n-p0002",
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="base",
         hypothesis=_hyp("h9", text="addendum", relation=HypothesisRelation.EXPAND),
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
 
-    first = writeback(tree, store)
-    # 重跑：输入 first.tree（含 corrected 节点，仍携 adopted_hypothesis_id）。
-    second = writeback(first.tree, store)
+    first = writeback(argument_tree, original_paragraphs)
+    # 重跑：输入 first.argument_tree（含 corrected 节点，仍携 adopted_hypothesis_id）。
+    second = writeback(first.argument_tree, original_paragraphs)
 
-    assert first.final_doc == second.final_doc
+    assert first.final_document == second.final_document
     # 补充块只出现一次（不重复注入）。
-    assert second.final_doc.count(SUPPLEMENT_AUDIT_MARKER.encode()) == 1
+    assert second.final_document.count(SUPPLEMENT_AUDIT_MARKER.encode()) == 1
     # 状态收敛：被采纳节点翻正为 corrected（影子节点保持原状、未被触及）。
-    out_by_id = {n.node_id: n for n in second.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.CORRECTED
+    out_by_id = {n.argument_id: n for n in second.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
 
 
 def test_writeback_resumes_from_partial_run_no_double_injection():
     """模拟中断后重试：树含 adopted + corrected 混合（前次部分翻正）。
 
-    断言：corrected 段不重复注入、adopted 段续跑翻正、final_doc 与全量重跑一致、
+    断言：corrected 段不重复注入、adopted 段续跑翻正、final_document 与全量重跑一致、
     状态收敛至 corrected。
     """
 
     doc = b"keep\n\nseg-a\n\nseg-b\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
+    original_paragraphs = OriginalParagraphs.from_text(doc)
     h_a = _hyp("ha", text="AddA", relation=HypothesisRelation.EXPAND)
     h_b = _hyp("hb", text="AddB", relation=HypothesisRelation.EXPAND)
     # 前次已翻正 n-p0002（corrected）、n-p0003 仍 adopted（中断）。
-    seg_a = _adopted_node(
-        node_id="n-p0002",
+    seg_a = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="seg-a",
         hypothesis=h_a,
-        status=NodeStatus.CORRECTED,
+        status=ArgumentStatus.CORRECTED,
     )
-    seg_b = _adopted_node(
-        node_id="n-p0003",
+    seg_b = _adopted_argument(
+        argument_id="n-p0003",
         paragraph_id="p0003",
         content="seg-b",
         hypothesis=h_b,
-        status=NodeStatus.ADOPTED,
+        status=ArgumentStatus.ADOPTED,
     )
     tree_partial = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
         seg_a,
         seg_b,
-        ArgumentationNode(node_id="n-p0004", node_type=NodeType.BACKGROUND, paragraph_id="p0004", content="keep2"),
+        Argument(argument_id="n-p0004", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0004", content="keep2"),
     ]
 
     # 全量基线：两段皆 adopted。
     tree_fresh = [
         tree_partial[0],
-        _adopted_node(
-            node_id="n-p0002",
+        _adopted_argument(
+            argument_id="n-p0002",
             paragraph_id="p0002",
             content="seg-a",
             hypothesis=h_a,
-            status=NodeStatus.ADOPTED,
+            status=ArgumentStatus.ADOPTED,
         ),
-        _adopted_node(
-            node_id="n-p0003",
+        _adopted_argument(
+            argument_id="n-p0003",
             paragraph_id="p0003",
             content="seg-b",
             hypothesis=h_b,
-            status=NodeStatus.ADOPTED,
+            status=ArgumentStatus.ADOPTED,
         ),
         tree_partial[3],
     ]
 
-    baseline = writeback(tree_fresh, store)
-    resumed = writeback(tree_partial, store)
+    baseline = writeback(tree_fresh, original_paragraphs)
+    resumed = writeback(tree_partial, original_paragraphs)
 
     # 重试与全量重跑终稿一致（corrected 段不重复注入、adopted 段续跑缝合）。
-    assert resumed.final_doc == baseline.final_doc
+    assert resumed.final_document == baseline.final_document
     # 每条补充块恰好一次。
-    assert resumed.final_doc.count(b"ha-supplement:ha") == 1
-    assert resumed.final_doc.count(b"ha-supplement:hb") == 1
+    assert resumed.final_document.count(b"ha-supplement:ha") == 1
+    assert resumed.final_document.count(b"ha-supplement:hb") == 1
     # 状态收敛至 corrected。
-    out_by_id = {n.node_id: n for n in resumed.tree}
-    assert out_by_id["n-p0002"].status is NodeStatus.CORRECTED
-    assert out_by_id["n-p0003"].status is NodeStatus.CORRECTED
+    out_by_id = {n.argument_id: n for n in resumed.argument_tree}
+    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
+    assert out_by_id["n-p0003"].status is ArgumentStatus.CORRECTED
 
 
 def test_writeback_does_not_mutate_input_tree():
     """回写不修改输入树：输入节点 status / issue_tags / content 不变。"""
 
     doc = b"keep\n\nchange\n\nkeep2\n"
-    store = RawParagraphStore.from_text(doc)
-    node = _adopted_node(
-        node_id="n-p0002",
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    argument = _adopted_argument(
+        argument_id="n-p0002",
         paragraph_id="p0002",
         content="change",
         hypothesis=_hyp("h1", text="fixed", relation=HypothesisRelation.OPPOSE),
     )
-    tree = [
-        ArgumentationNode(node_id="n-p0001", node_type=NodeType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        node,
-        ArgumentationNode(node_id="n-p0003", node_type=NodeType.BACKGROUND, paragraph_id="p0003", content="keep2"),
+    argument_tree = [
+        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
+        argument,
+        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
     ]
-    before_statuses = [n.status for n in tree]
-    before_tags = [list(n.issue_tags) for n in tree]
-    before_contents = [n.content for n in tree]
+    before_statuses = [n.status for n in argument_tree]
+    before_tags = [list(n.issue_tags) for n in argument_tree]
+    before_contents = [n.content for n in argument_tree]
 
-    result = writeback(tree, store)
+    result = writeback(argument_tree, original_paragraphs)
 
     # 输入未变；输出是新实例。
-    assert [n.status for n in tree] == before_statuses
-    assert [list(n.issue_tags) for n in tree] == before_tags
-    assert [n.content for n in tree] == before_contents
-    assert all(out is not inp for out, inp in zip(result.tree, tree, strict=True))
+    assert [n.status for n in argument_tree] == before_statuses
+    assert [list(n.issue_tags) for n in argument_tree] == before_tags
+    assert [n.content for n in argument_tree] == before_contents
+    assert all(out is not inp for out, inp in zip(result.argument_tree, argument_tree, strict=True))
     # 输入 adopted 节点仍 adopted；输出对应节点已 corrected。
-    assert tree[1].status is NodeStatus.ADOPTED
-    assert result.tree[1].status is NodeStatus.CORRECTED
+    assert argument_tree[1].status is ArgumentStatus.ADOPTED
+    assert result.argument_tree[1].status is ArgumentStatus.CORRECTED

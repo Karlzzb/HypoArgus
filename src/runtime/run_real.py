@@ -37,7 +37,7 @@ __all__ = ["run_real_pipeline", "main"]
 
 
 def run_real_pipeline(
-    raw_text: bytes,
+    original_doc: bytes,
     *,
     chat_model: BaseChatModel | None = None,
     retrieval: RetrievalLayer | None = None,
@@ -62,7 +62,7 @@ def run_real_pipeline(
         hitl2_gate=hitl2_gate or CliHitl2Gate(),  # type: ignore[arg-type]
         max_iterations=max_iterations,
     )
-    return Orchestrator(agents=agents).run_with_report(raw_text)
+    return Orchestrator(agents=agents).run_with_report(original_doc)
 
 
 def _read_input(path: str | None) -> bytes:
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         chat_model=build_qwen_chat_model(args.model),
         max_iterations=args.max_iterations,
     )
-    _write_output(args.output, report.final_doc)
+    _write_output(args.output, report.final_document)
     for err in report.errors:
         print(err, file=sys.stderr)
     return 0

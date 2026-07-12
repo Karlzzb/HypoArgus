@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import ArgumentationNode
+from domain import Argument
 from infra.retrieval import RetrievalKind, Source
 
 __all__ = [
@@ -82,7 +82,7 @@ class VerifyLlmClient(Protocol):
     """
 
     def next_step(
-        self, node: ArgumentationNode, observations: list[Source]
+        self, argument: Argument, observations: list[Source]
     ) -> SearchStep | ConcludeStep: ...
 
 
@@ -90,9 +90,9 @@ class FakeVerifyLlmClient:
     """离线 ReAct LLM 桩。provider-free、确定（供单测）。
 
     三种注入：
-    - ``script``：``list[VerifyStep]``，按序返回（忽略 node/observations），用尽即抛
+    - ``script``：``list[VerifyStep]``，按序返回（忽略 argument/observations），用尽即抛
       （模拟 LLM 未给结论 → 由迭代硬上限兜底为 ``error``）。
-    - ``factory``：``callable(node, observations) -> VerifyStep``，可据输入动态决策。
+    - ``factory``：``callable(argument, observations) -> VerifyStep``，可据输入动态决策。
     - 二者皆无 → 立即结论 ``credible``（无检索，等价于不校验的最简桩）。
     """
 
@@ -100,7 +100,7 @@ class FakeVerifyLlmClient:
         self,
         script: list[SearchStep | ConcludeStep] | None = None,
         *,
-        factory: Callable[[ArgumentationNode, list[Source]], SearchStep | ConcludeStep]
+        factory: Callable[[Argument, list[Source]], SearchStep | ConcludeStep]
         | None = None,
     ) -> None:
         self._factory = factory
@@ -108,10 +108,10 @@ class FakeVerifyLlmClient:
         self._cursor = 0
 
     def next_step(
-        self, node: ArgumentationNode, observations: list[Source]
+        self, argument: Argument, observations: list[Source]
     ) -> SearchStep | ConcludeStep:
         if self._factory is not None:
-            return self._factory(node, observations)
+            return self._factory(argument, observations)
         if self._script is not None:
             if self._cursor >= len(self._script):
                 raise RuntimeError("script 用尽未给结论（应由迭代硬上限兜底）")

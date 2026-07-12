@@ -22,22 +22,22 @@ from agents.hitl1 import (
     Hitl1Gate,
     confirm,
 )
-from domain import ArgumentationNode, NodeType
+from domain import Argument, ArgumentType
 from tree_invariants import TreeInvariantError
 
 
-def _node(
-    node_id: str,
+def _argument(
+    argument_id: str,
     *,
     parent_id: str | None = None,
     children_ids: list[str] | None = None,
     paragraph_id: str = "p0001",
-    node_type: NodeType = NodeType.EVIDENCE,
+    argument_type: ArgumentType = ArgumentType.EVIDENCE,
     argument_weight: int = 50,
-) -> ArgumentationNode:
-    return ArgumentationNode(
-        node_id=node_id,
-        node_type=node_type,
+) -> Argument:
+    return Argument(
+        argument_id=argument_id,
+        argument_type=argument_type,
         parent_id=parent_id,
         children_ids=list(children_ids or []),
         paragraph_id=paragraph_id,
@@ -45,13 +45,13 @@ def _node(
     )
 
 
-def _abc_tree() -> list[ArgumentationNode]:
+def _abc_tree() -> list[Argument]:
     """A 根，B、C 均为 A 的子（同段 p0001）。"""
 
     return [
-        _node("a", node_type=NodeType.MAIN_CLAIM, children_ids=["b", "c"]),
-        _node("b", parent_id="a"),
-        _node("c", parent_id="a"),
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, children_ids=["b", "c"]),
+        _argument("b", parent_id="a"),
+        _argument("c", parent_id="a"),
     ]
 
 
@@ -67,27 +67,27 @@ def _gate(decision: Hitl1Decision) -> Hitl1Gate:
 def test_confirm_skip_returns_tree_unchanged():
     """skip → 树原样返回（不改动原文一个字）。"""
 
-    tree = _abc_tree()
-    out = confirm(tree, _gate(Hitl1Decision(action=Hitl1Action.SKIP)))
-    assert [n.model_dump() for n in out] == [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.SKIP)))
+    assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
 def test_confirm_accept_returns_tree_unchanged():
     """accept → 树原样返回。"""
 
-    tree = _abc_tree()
-    out = confirm(tree, _gate(Hitl1Decision(action=Hitl1Action.ACCEPT)))
-    assert [n.model_dump() for n in out] == [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.ACCEPT)))
+    assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
 def test_confirm_validates_input_tree():
     """输入树本身非法 → 抛 TreeInvariantError，且 gate.review 从未被调用。"""
 
-    bad_tree = [_node("a", parent_id="ghost")]
+    bad_tree = [_argument("a", parent_id="ghost")]
     reviewed = []
 
     class _Spy:
-        def review(self, tree):
+        def review(self, argument_tree):
             reviewed.append(True)
             return Hitl1Decision(action=Hitl1Action.SKIP)
 
@@ -99,18 +99,18 @@ def test_confirm_validates_input_tree():
 def test_confirm_edit_with_empty_ops_unchanged():
     """edit + 空 ops → 树不变（但返回深拷贝，不与输入同对象）。"""
 
-    tree = _abc_tree()
-    out = confirm(tree, _gate(Hitl1Decision(action=Hitl1Action.EDIT, ops=[])))
-    assert [n.model_dump() for n in out] == [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.EDIT, ops=[])))
+    assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
 def test_confirm_does_not_mutate_caller_tree():
     """confirm 在深拷贝上工作，调用方的树对象永不被改动。"""
 
-    tree = _abc_tree()
-    snapshot = [n.model_copy(deep=True) for n in tree]
+    argument_tree = _abc_tree()
+    snapshot = [n.model_copy(deep=True) for n in argument_tree]
     confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
@@ -118,7 +118,7 @@ def test_confirm_does_not_mutate_caller_tree():
             )
         ),
     )
-    assert [n.model_dump() for n in tree] == [n.model_dump() for n in snapshot]
+    assert [n.model_dump() for n in argument_tree] == [n.model_dump() for n in snapshot]
 
 
 # --------------------------------------------------------------------------- #
@@ -126,21 +126,21 @@ def test_confirm_does_not_mutate_caller_tree():
 # --------------------------------------------------------------------------- #
 
 
-def _reparent(node_id: str, new_parent_id: str | None) -> Hitl1Decision:
+def _reparent(argument_id: str, new_parent_id: str | None) -> Hitl1Decision:
     from agents.hitl1 import ReparentOp
 
     return Hitl1Decision(
         action=Hitl1Action.EDIT,
-        ops=[ReparentOp(node_id=node_id, new_parent_id=new_parent_id)],
+        ops=[ReparentOp(argument_id=argument_id, new_parent_id=new_parent_id)],
     )
 
 
 def test_confirm_reparent_updates_parent_and_children():
     """reparent C 到 B 下：C.parent=B，B.children 含 C，A.children 释放 C。"""
 
-    tree = _abc_tree()
-    out = confirm(tree, _gate(_reparent("c", "b")))
-    by_id = {n.node_id: n for n in out}
+    argument_tree = _abc_tree()
+    out = confirm(argument_tree, _gate(_reparent("c", "b")))
+    by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id == "b"
     assert "c" in by_id["b"].children_ids
     assert "c" not in by_id["a"].children_ids
@@ -149,9 +149,9 @@ def test_confirm_reparent_updates_parent_and_children():
 def test_confirm_reparent_to_none_makes_root():
     """reparent C 到 None → C 成为根。"""
 
-    tree = _abc_tree()
-    out = confirm(tree, _gate(_reparent("c", None)))
-    by_id = {n.node_id: n for n in out}
+    argument_tree = _abc_tree()
+    out = confirm(argument_tree, _gate(_reparent("c", None)))
+    by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id is None
     assert "c" not in by_id["a"].children_ids
 
@@ -159,19 +159,19 @@ def test_confirm_reparent_to_none_makes_root():
 def test_confirm_reparent_creating_cycle_raises_and_leaves_caller_untouched():
     """reparent A 到其后代 C → 成环 → 抛错；调用方原树不变。"""
 
-    tree = _abc_tree()
-    snapshot = [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    snapshot = [n.model_dump() for n in argument_tree]
     with pytest.raises(TreeInvariantError):
-        confirm(tree, _gate(_reparent("a", "c")))
-    assert [n.model_dump() for n in tree] == snapshot
+        confirm(argument_tree, _gate(_reparent("a", "c")))
+    assert [n.model_dump() for n in argument_tree] == snapshot
 
 
 def test_confirm_reparent_to_missing_parent_raises():
     """reparent 到不存在的节点 → 抛错。"""
 
-    tree = _abc_tree()
+    argument_tree = _abc_tree()
     with pytest.raises(TreeInvariantError):
-        confirm(tree, _gate(_reparent("c", "ghost")))
+        confirm(argument_tree, _gate(_reparent("c", "ghost")))
 
 
 # --------------------------------------------------------------------------- #
@@ -185,22 +185,22 @@ def test_confirm_merge_same_paragraph_unions_children():
     from agents.hitl1 import MergeOp
 
     # a 根 → b（p0001）、c（p0001），c 有子 d。
-    tree = [
-        _node("a", node_type=NodeType.MAIN_CLAIM, children_ids=["b", "c"]),
-        _node("b", parent_id="a", paragraph_id="p0001"),
-        _node("c", parent_id="a", paragraph_id="p0001", children_ids=["d"]),
-        _node("d", parent_id="c", paragraph_id="p0001"),
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, children_ids=["b", "c"]),
+        _argument("b", parent_id="a", paragraph_id="p0001"),
+        _argument("c", parent_id="a", paragraph_id="p0001", children_ids=["d"]),
+        _argument("d", parent_id="c", paragraph_id="p0001"),
     ]
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
-                ops=[MergeOp(node_ids=["b", "c"])],
+                ops=[MergeOp(argument_ids=["b", "c"])],
             )
         ),
     )
-    by_id = {n.node_id: n for n in out}
+    by_id = {n.argument_id: n for n in out}
     assert "c" not in by_id  # 被合并删除
     assert "d" in by_id
     assert by_id["d"].parent_id == "b"  # d 改挂幸存者 b
@@ -213,23 +213,23 @@ def test_confirm_merge_cross_paragraph_rejected():
 
     from agents.hitl1 import MergeOp
 
-    tree = [
-        _node("a", node_type=NodeType.MAIN_CLAIM, children_ids=["b", "c"]),
-        _node("b", parent_id="a", paragraph_id="p0001"),
-        _node("c", parent_id="a", paragraph_id="p0002"),
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, children_ids=["b", "c"]),
+        _argument("b", parent_id="a", paragraph_id="p0001"),
+        _argument("c", parent_id="a", paragraph_id="p0002"),
     ]
-    snapshot = [n.model_dump() for n in tree]
+    snapshot = [n.model_dump() for n in argument_tree]
     with pytest.raises(TreeInvariantError, match="跨段|paragraph"):
         confirm(
-            tree,
+            argument_tree,
             _gate(
                 Hitl1Decision(
                     action=Hitl1Action.EDIT,
-                    ops=[MergeOp(node_ids=["b", "c"])],
+                    ops=[MergeOp(argument_ids=["b", "c"])],
                 )
             ),
         )
-    assert [n.model_dump() for n in tree] == snapshot
+    assert [n.model_dump() for n in argument_tree] == snapshot
 
 
 def test_confirm_split_creates_sibling_same_paragraph():
@@ -237,26 +237,26 @@ def test_confirm_split_creates_sibling_same_paragraph():
 
     from agents.hitl1 import SplitOp
 
-    tree = _abc_tree()
+    argument_tree = _abc_tree()
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
-                ops=[SplitOp(node_id="b")],
+                ops=[SplitOp(argument_id="b")],
             )
         ),
     )
-    new_nodes = [n for n in out if n.node_id not in {"a", "b", "c"}]
-    assert len(new_nodes) == 1
-    new = new_nodes[0]
-    by_id = {n.node_id: n for n in out}
+    new_arguments = [n for n in out if n.argument_id not in {"a", "b", "c"}]
+    assert len(new_arguments) == 1
+    new = new_arguments[0]
+    by_id = {n.argument_id: n for n in out}
     # 新节点与源节点同段、同类型、同父（叶兄弟），唯一 id
     assert new.paragraph_id == by_id["b"].paragraph_id
-    assert new.node_type == by_id["b"].node_type
+    assert new.argument_type == by_id["b"].argument_type
     assert new.parent_id == by_id["b"].parent_id  # 同父兄弟
     assert new.children_ids == []  # 叶
-    assert new.node_id in by_id["a"].children_ids  # 父认子
+    assert new.argument_id in by_id["a"].children_ids  # 父认子
 
 
 def test_confirm_split_twice_yields_distinct_ids():
@@ -264,17 +264,17 @@ def test_confirm_split_twice_yields_distinct_ids():
 
     from agents.hitl1 import SplitOp
 
-    tree = _abc_tree()
+    argument_tree = _abc_tree()
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
-                ops=[SplitOp(node_id="b"), SplitOp(node_id="b")],
+                ops=[SplitOp(argument_id="b"), SplitOp(argument_id="b")],
             )
         ),
     )
-    new_ids = [n.node_id for n in out if n.node_id not in {"a", "b", "c"}]
+    new_ids = [n.argument_id for n in out if n.argument_id not in {"a", "b", "c"}]
     assert len(new_ids) == 2
     assert len(set(new_ids)) == 2  # 互不相同
 
@@ -289,22 +289,22 @@ def test_confirm_set_type_demote_to_shadow_zeros_weight():
 
     from agents.hitl1 import SetTypeOp
 
-    tree = [
-        _node("a", node_type=NodeType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
-        _node("b", parent_id="a", node_type=NodeType.EVIDENCE, argument_weight=85),
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
+        _argument("b", parent_id="a", argument_type=ArgumentType.EVIDENCE, argument_weight=85),
     ]
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
-                ops=[SetTypeOp(node_id="b", new_type=NodeType.BACKGROUND)],
+                ops=[SetTypeOp(argument_id="b", new_type=ArgumentType.BACKGROUND)],
             )
         ),
     )
-    by_id = {n.node_id: n for n in out}
-    assert by_id["b"].node_type == NodeType.BACKGROUND
-    assert by_id["b"].node_type.is_shadow
+    by_id = {n.argument_id: n for n in out}
+    assert by_id["b"].argument_type == ArgumentType.BACKGROUND
+    assert by_id["b"].argument_type.is_shadow
     assert by_id["b"].argument_weight == 0
 
 
@@ -313,22 +313,22 @@ def test_confirm_set_type_promote_shadow_to_core_sets_default_weight():
 
     from agents.hitl1 import SetTypeOp
 
-    tree = [
-        _node("a", node_type=NodeType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
-        _node("b", parent_id="a", node_type=NodeType.BACKGROUND, argument_weight=0),
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, argument_weight=80, children_ids=["b"]),
+        _argument("b", parent_id="a", argument_type=ArgumentType.BACKGROUND, argument_weight=0),
     ]
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
-                ops=[SetTypeOp(node_id="b", new_type=NodeType.SUB_CLAIM)],
+                ops=[SetTypeOp(argument_id="b", new_type=ArgumentType.SUB_CLAIM)],
             )
         ),
     )
-    by_id = {n.node_id: n for n in out}
-    assert by_id["b"].node_type == NodeType.SUB_CLAIM
-    assert not by_id["b"].node_type.is_shadow
+    by_id = {n.argument_id: n for n in out}
+    assert by_id["b"].argument_type == ArgumentType.SUB_CLAIM
+    assert not by_id["b"].argument_type.is_shadow
     assert by_id["b"].argument_weight == 50
 
 
@@ -337,18 +337,18 @@ def test_confirm_mark_no_op_converts_paragraph_to_shadow():
 
     from agents.hitl1 import MarkNoOpOp
 
-    tree = [
-        _node(
+    argument_tree = [
+        _argument(
             "a",
-            node_type=NodeType.MAIN_CLAIM,
+            argument_type=ArgumentType.MAIN_CLAIM,
             argument_weight=80,
             children_ids=["b", "c"],
         ),
-        _node("b", parent_id="a", paragraph_id="p0001", node_type=NodeType.EVIDENCE, argument_weight=70),
-        _node("c", parent_id="a", paragraph_id="p0002", node_type=NodeType.EVIDENCE, argument_weight=60),
+        _argument("b", parent_id="a", paragraph_id="p0001", argument_type=ArgumentType.EVIDENCE, argument_weight=70),
+        _argument("c", parent_id="a", paragraph_id="p0002", argument_type=ArgumentType.EVIDENCE, argument_weight=60),
     ]
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
@@ -356,14 +356,14 @@ def test_confirm_mark_no_op_converts_paragraph_to_shadow():
             )
         ),
     )
-    by_id = {n.node_id: n for n in out}
+    by_id = {n.argument_id: n for n in out}
     # p0001 的节点（a、b）转影子、权重 0
-    assert by_id["a"].node_type == NodeType.BACKGROUND
+    assert by_id["a"].argument_type == ArgumentType.BACKGROUND
     assert by_id["a"].argument_weight == 0
-    assert by_id["b"].node_type == NodeType.BACKGROUND
+    assert by_id["b"].argument_type == ArgumentType.BACKGROUND
     assert by_id["b"].argument_weight == 0
     # p0002 的 c 不受影响
-    assert by_id["c"].node_type == NodeType.EVIDENCE
+    assert by_id["c"].argument_type == ArgumentType.EVIDENCE
     assert by_id["c"].argument_weight == 60
     # 结构不变
     assert by_id["a"].children_ids == ["b", "c"]
@@ -380,19 +380,19 @@ def test_confirm_fix_boundary_raises_deferred():
 
     from agents.hitl1 import FixBoundaryOp
 
-    tree = _abc_tree()
-    snapshot = [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    snapshot = [n.model_dump() for n in argument_tree]
     with pytest.raises(NotImplementedError, match="text_span"):
         confirm(
-            tree,
+            argument_tree,
             _gate(
                 Hitl1Decision(
                     action=Hitl1Action.EDIT,
-                    ops=[FixBoundaryOp(node_id="b")],
+                    ops=[FixBoundaryOp(argument_id="b")],
                 )
             ),
         )
-    assert [n.model_dump() for n in tree] == snapshot
+    assert [n.model_dump() for n in argument_tree] == snapshot
 
 
 def test_confirm_edit_sequence_applied_in_order_and_validated():
@@ -400,28 +400,28 @@ def test_confirm_edit_sequence_applied_in_order_and_validated():
 
     from agents.hitl1 import ReparentOp
 
-    tree = _abc_tree()
+    argument_tree = _abc_tree()
     # 第一步 split b → 新节点 new；第二步 reparent new 到 c（需先知道 new 的 id）。
     # 由于 id 由实现决定，第二步用 split 产出的节点——这里改用更简单的序列：
     # reparent c 到 b，再 set b 为 sub_claim（无关结构变更，验证多步不冲突）。
     from agents.hitl1 import SetTypeOp
 
     out = confirm(
-        tree,
+        argument_tree,
         _gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
                 ops=[
-                    ReparentOp(node_id="c", new_parent_id="b"),
-                    SetTypeOp(node_id="b", new_type=NodeType.SUB_CLAIM),
+                    ReparentOp(argument_id="c", new_parent_id="b"),
+                    SetTypeOp(argument_id="b", new_type=ArgumentType.SUB_CLAIM),
                 ],
             )
         ),
     )
-    by_id = {n.node_id: n for n in out}
+    by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id == "b"
     assert "c" in by_id["b"].children_ids
-    assert by_id["b"].node_type == NodeType.SUB_CLAIM
+    assert by_id["b"].argument_type == ArgumentType.SUB_CLAIM
     assert "c" not in by_id["a"].children_ids
 
 
@@ -430,20 +430,20 @@ def test_confirm_edit_sequence_invalid_step_rejects_wholesale():
 
     from agents.hitl1 import ReparentOp, SetTypeOp
 
-    tree = _abc_tree()
-    snapshot = [n.model_dump() for n in tree]
+    argument_tree = _abc_tree()
+    snapshot = [n.model_dump() for n in argument_tree]
     # 第一步合法（set b 类型），第二步非法（reparent a 到后代 c 成环）
     with pytest.raises(TreeInvariantError):
         confirm(
-            tree,
+            argument_tree,
             _gate(
                 Hitl1Decision(
                     action=Hitl1Action.EDIT,
                     ops=[
-                        SetTypeOp(node_id="b", new_type=NodeType.SUB_CLAIM),
-                        ReparentOp(node_id="a", new_parent_id="c"),
+                        SetTypeOp(argument_id="b", new_type=ArgumentType.SUB_CLAIM),
+                        ReparentOp(argument_id="a", new_parent_id="c"),
                     ],
                 )
             ),
         )
-    assert [n.model_dump() for n in tree] == snapshot
+    assert [n.model_dump() for n in argument_tree] == snapshot

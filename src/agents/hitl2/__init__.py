@@ -10,6 +10,7 @@ ADR-0014 子包拆分：``contract.py`` 放会话级决策 + 操作 op 判别联
 from agents.hitl2.agent import build_review, confirm
 from agents.hitl2.contract import (
     AdoptOp,
+    ArgumentReview,
     CandidateView,
     ConservativeHitl2Gate,
     EditContentOp,
@@ -20,7 +21,6 @@ from agents.hitl2.contract import (
     Hitl2GateError,
     Hitl2Op,
     Hitl2Review,
-    NodeReview,
     RejectOp,
 )
 
@@ -33,7 +33,7 @@ __all__ = [
     "Hitl2Op",
     "Hitl2Decision",
     "CandidateView",
-    "NodeReview",
+    "ArgumentReview",
     "Hitl2Review",
     "Hitl2Gate",
     "FakeHitl2Gate",

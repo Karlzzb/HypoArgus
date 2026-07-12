@@ -17,6 +17,8 @@ from hypoargus.consistency import consistency as consistency_fn
 from hypoargus.domain import ArgumentationNode, NodeType
 from hypoargus.hitl1 import Hitl1Gate
 from hypoargus.hitl1 import confirm as hitl1_confirm
+from hypoargus.hitl2 import ConservativeHitl2Gate, Hitl2Gate
+from hypoargus.hitl2 import confirm as hitl2_confirm
 from hypoargus.hypothesis import HypothesisLlmClient
 from hypoargus.hypothesis import hypothesize as hypothesize_fn
 from hypoargus.impact import impact as impact_fn
@@ -92,9 +94,14 @@ class ConsistencyFn(Protocol):
 
 
 class Hitl2Fn(Protocol):
-    """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。返回采纳后的树。"""
+    """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。
 
-    def __call__(self, tree: list[ArgumentationNode]) -> list[ArgumentationNode]: ...
+    接收标注完成的树 + 只读原文表（HITL-2 对比左栏数据源，ADR-0005），返回采纳后的树。
+    """
+
+    def __call__(
+        self, tree: list[ArgumentationNode], store: RawParagraphStore
+    ) -> list[ArgumentationNode]: ...
 
 
 class WritebackFn(Protocol):
@@ -201,14 +208,17 @@ def _consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     return consistency_fn(tree)
 
 
-def _stub_hitl2(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """HITL-2 桩：无待决内容时一键通过（无人采纳、原文全可信）。
+def _stub_hitl2(
+    tree: list[ArgumentationNode], store: RawParagraphStore
+) -> list[ArgumentationNode]:
+    """HITL-2 桩（委托保守默认闸门 :class:`ConservativeHitl2Gate`）。
 
-    真实硬闸门（#9）将在此呈现 doubtful/error 段落与候选假设、逐条采纳；
-    本桩只证明「无待决 → 无修订 → 逐字节拷回」的回路成立。
+    无待决内容时一键通过（PASS）；桩路径下解析产出每段一个 ``background`` 影子节点，
+    无 ``doubtful``/``error``/``conflict``/激活候选 → 一律 PASS、无人采纳 → 逐字节拷回。
+    真实人判 ``interrupt`` + checkpointer 属 #11。
     """
 
-    return tree
+    return hitl2_confirm(tree, store, ConservativeHitl2Gate())
 
 
 def _stub_writeback(
@@ -245,16 +255,17 @@ def create_real_agents(
     verify_llm: VerifyLlmClient | None = None,
     hypothesis_llm: HypothesisLlmClient | None = None,
     retrieval: RetrievalLayer | None = None,
+    hitl2_gate: Hitl2Gate | None = None,
     max_iterations: int = 8,
 ) -> Agents:
     """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 真实影响传导 +
-    下游桩」的智能体组。
+    真实一致性校验 + 真实 HITL-2 + 回写桩」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（HITL-2 / 回写分流）
-    仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出
-    真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）、影响传导（#7）与一致性校验
-    （#8）均为确定性纯函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents` 真实接入，
-    此处不再替换。
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现，回写分流（#10）仍为桩——故
+    「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出真实树、
+    HITL-1 可编辑结构、HITL-2 默认保守闸门不采纳）。合并算子（#6）、影响传导（#7）与
+    一致性校验（#8）均为确定性纯函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents`
+    真实接入，此处不再替换。
 
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
     注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
@@ -268,7 +279,10 @@ def create_real_agents(
     / 贴 ``weakening``、复用既有成立假设激活，亦不改 ``content`` / 不新建假设；一致性校验
     （#8）在影响传导之后、HITL-2 之前单次扫描那棵标注完成的树，只追加 ``issue_tags`` 批注
     （去重）、不打回、不改 ``content`` / ``status`` / ``merge_decision``——字节级承诺依然
-    成立。其余下游桩待 #9/#10 接入。
+    成立。HITL-2（#9）为不可跳过的硬闸门：``hitl2_gate`` 缺省时用 :class:`ConservativeHitl2Gate`
+    （无待决→一键通过、有待决→全驳回、绝不自动采纳，ADR-0010）；HITL-2 采纳即置 ``adopted``
+    + 持久化 ``adopted_hypothesis_id``（ADR-0011），故注入会采纳的闸门时需配 #10 真实回写。
+    其余下游桩待 #10 接入。
     """
 
     stubs = create_stub_agents()
@@ -276,6 +290,7 @@ def create_real_agents(
         stubs,
         parse=lambda store: parse_fn(store, llm),
         hitl1=lambda tree: hitl1_confirm(tree, hitl1_gate),
+        hitl2=lambda tree, store: hitl2_confirm(tree, store, hitl2_gate or ConservativeHitl2Gate()),
     )
     if verify_llm is not None and retrieval is not None:
         agents = replace(

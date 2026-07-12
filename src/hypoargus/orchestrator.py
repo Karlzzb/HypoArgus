@@ -159,9 +159,12 @@ class Orchestrator:
             return {"tree": agents.consistency(state["tree"])}
 
         def hitl2_node(state: PipelineState) -> dict[str, object]:
-            """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。"""
+            """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。
 
-            return {"tree": agents.hitl2(state["tree"])}
+            接收标注完成的树 + 只读原文表（HITL-2 对比左栏数据源，ADR-0005），返回采纳后的树。
+            """
+
+            return {"tree": agents.hitl2(state["tree"], state["store"])}
 
         def writeback_node(state: PipelineState) -> dict[str, object]:
             """修订回写（#10 接入真实分流·幂等）。"""

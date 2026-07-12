@@ -19,6 +19,11 @@ from hypoargus.hitl1 import (
     Hitl1Decision,
     ReparentOp,
 )
+from hypoargus.hitl2 import (
+    FakeHitl2Gate,
+    Hitl2Action,
+    Hitl2Decision,
+)
 from hypoargus.hypothesis import (
     FakeHypothesisLlmClient,
     HypothesisConcludeStep,
@@ -645,3 +650,161 @@ def test_real_consistency_tags_issue_but_byte_identity_holds():
     assert all("multi_main_claim" in n.issue_tags for n in mains)
     # 不替人拍板：无人进入 adopted。
     assert all(n.status.value != "adopted" for n in captured["out"])
+
+
+# --------------------------------------------------------------------------- #
+# 真实 HITL-2 修订确认硬闸门接入（issue #9 集成）
+#
+# create_stub_agents 的 HITL-2 桩已替换为真实 confirm + ConservativeHitl2Gate（#9）。
+# 一致性校验之后的树经 HITL-2 呈现待决节点（doubtful/error/conflict + 激活候选），
+# 保守闸门无待决→一键通过、有待决→全驳回（绝不自动采纳，ADR-0010）；采纳即置 adopted
+# + 持久化 adopted_hypothesis_id（ADR-0011）。回写分流（#10）仍为桩，故采纳路径需配
+# 假回写以观察 HITL-2 输出（真实回写待 #10）。
+# --------------------------------------------------------------------------- #
+
+
+def _pending_merge_agents(hitl2_gate=None):
+    """sub_claim credible（→conflict）+ evidence doubtful（→replace），均带激活候选。"""
+
+    return create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(
+                verdict=VerifyVerdict.DOUBTFUL
+                if node.node_id == "n0001"
+                else VerifyVerdict.CREDIBLE
+            )
+        ),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda node: [
+                HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)
+            ],
+            verify_factory=lambda text, obs: HypothesisConcludeStep(
+                verdict=HypothesisVerdict.SUPPORTED
+            ),
+        ),
+        retrieval=create_mock_retrieval_layer(),
+        hitl2_gate=hitl2_gate,
+    )
+
+
+def test_real_hitl2_conservative_default_rejects_all_byte_identity():
+    """有待决内容 + 保守默认闸门 → 全驳回、无采纳 → 终稿逐字节等于原文。
+
+    sub_claim（credible×对立成立→conflict）+ evidence（doubtful×对立成立→replace）均待决；
+    保守闸门 DECIDE 空 ops（绝不自动采纳），HITL-2 仍被调用、收到待决呈现。
+    """
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = _pending_merge_agents()  # 默认保守闸门
+    captured: dict = {}
+
+    def wrapped_hitl2(tree, store):
+        captured["in"] = tree
+        out = agents.hitl2(tree, store)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, hitl2=wrapped_hitl2))
+    out = orch.run(doc)
+
+    assert out == doc  # 保守闸门全驳回 → 无采纳 → 逐字节还原。
+    # HITL-2 收到待决内容（两个节点都有激活候选）。
+    in_nodes = {n.node_id: n for n in captured["in"]}
+    assert in_nodes["n0000"].merge_decision.activated_hypothesis_ids != []
+    assert in_nodes["n0001"].merge_decision.activated_hypothesis_ids != []
+    # 输出无采纳。
+    assert all(n.status.value != "adopted" for n in captured["out"])
+    assert all(n.adopted_hypothesis_id is None for n in captured["out"])
+
+
+def test_real_hitl2_all_credible_pass_path_byte_identity():
+    """全核心节点 credible → 无待决 → 保守闸门 PASS 一键通过 → 逐字节还原。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_weighted_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    captured: dict = {}
+
+    def wrapped_hitl2(tree, store):
+        out = agents.hitl2(tree, store)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, hitl2=wrapped_hitl2))
+    assert orch.run(doc) == doc
+    # 一键通过：无人采纳。
+    assert all(n.status.value != "adopted" for n in captured["out"])
+
+
+def test_real_hitl2_pass_on_pending_raises_hard_gate_e2e():
+    """有待决内容时闸门返回 PASS → 硬闸门在流水线内拦截（绝不无人拍板自动采纳）。"""
+
+    from hypoargus.hitl2 import Hitl2GateError
+
+    doc = "分论点。\n\n论据。\n".encode()
+    # 显式注入一个越权 PASS 闸门。
+    agents = _pending_merge_agents(
+        hitl2_gate=FakeHitl2Gate(Hitl2Decision(action=Hitl2Action.PASS))
+    )
+    orch = Orchestrator(agents=agents)
+    with pytest.raises(Hitl2GateError, match="硬闸门"):
+        orch.run(doc)
+
+
+def test_real_hitl2_adopting_gate_persists_adoption_in_pipeline():
+    """采纳闸门在流水线内把激活候选置 adopted + 持久化 adopted_hypothesis_id。
+
+    回写分流（#10）仍为桩，故注入假回写（返回原文 bytes）以观察 HITL-2 输出——
+    真实回写→终稿断言属 #10。本测试断言 HITL-2 采纳链在编排内正确落地。
+    """
+
+    from hypoargus.hitl2 import AdoptOp, Hitl2Action, Hitl2Decision, Hitl2Gate
+
+    class _AdoptFirstGate(Hitl2Gate):
+        """对每个有激活候选的待决节点，采纳其首条激活假设。"""
+
+        def review(self, review):
+            ops = []
+            for n in review.nodes:
+                if n.activated_hypothesis_ids:
+                    ops.append(
+                        AdoptOp(
+                            node_id=n.node_id,
+                            hypothesis_id=n.activated_hypothesis_ids[0],
+                        )
+                    )
+            return Hitl2Decision(action=Hitl2Action.DECIDE, ops=ops)
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = _pending_merge_agents(hitl2_gate=_AdoptFirstGate())
+    captured: dict = {}
+
+    def wrapped_hitl2(tree, store):
+        out = agents.hitl2(tree, store)
+        captured["out"] = out
+        return out
+
+    # 假回写：返回原文 bytes（#10 真实分流待接入），只为让流水线跑至 END。
+    def fake_writeback(tree, store):
+        return b"".join(store.get(p) for p in store.paragraph_ids())
+
+    orch = Orchestrator(
+        agents=replace(
+            agents, hitl2=wrapped_hitl2, writeback=fake_writeback
+        )
+    )
+    orch.run(doc)
+
+    out_nodes = {n.node_id: n for n in captured["out"]}
+    # sub_claim（conflict）与 evidence（replace）均被采纳。
+    for nid in ("n0000", "n0001"):
+        assert out_nodes[nid].status.value == "adopted"
+        assert out_nodes[nid].adopted_hypothesis_id is not None

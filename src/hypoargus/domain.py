@@ -150,6 +150,11 @@ class ArgumentationNode(BaseModel):
     ``merge_decision`` 由双轨合并算子（#6）写回——据体检 ``status`` × 开药
     ``candidate_hypotheses`` 矩阵裁决；合并前为 ``None``。合并只标注、绝不替人拍板
     （不置 ``adopted``、不写 ``adopted_hypothesis_id``，那由 HITL-2 #9 负责）。
+
+    ``adopted_hypothesis_id`` 由 HITL-2（#9）在用户采纳某条假设时**立即持久化**
+    （ADR-0011 采纳链）：节点 ``status`` 置 ``adopted``、本字段指向被采纳假设 id。
+    回写（#10）失败重试时据本字段扫「``adopted`` 且未 ``corrected``」的节点续跑、
+    不重复注入，故用户决策不丢失。采纳前为 ``None``。
     """
 
     node_id: str
@@ -163,3 +168,4 @@ class ArgumentationNode(BaseModel):
     issue_tags: list[str] = Field(default_factory=list)
     candidate_hypotheses: list[Hypothesis] = Field(default_factory=list)
     merge_decision: MergeDecision | None = None
+    adopted_hypothesis_id: str | None = None

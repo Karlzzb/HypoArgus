@@ -25,6 +25,25 @@ from hypoargus.hitl1 import (
 from hypoargus.hitl1 import (
     confirm as hitl1_confirm,
 )
+from hypoargus.hitl2 import (
+    AdoptOp,
+    CandidateView,
+    ConservativeHitl2Gate,
+    EditContentOp,
+    FakeHitl2Gate,
+    Hitl2Action,
+    Hitl2Decision,
+    Hitl2Gate,
+    Hitl2GateError,
+    Hitl2Op,
+    Hitl2Review,
+    NodeReview,
+    RejectOp,
+)
+from hypoargus.hitl2 import build_review as build_hitl2_review
+from hypoargus.hitl2 import (
+    confirm as hitl2_confirm,
+)
 from hypoargus.hypothesis import (
     FakeHypothesisLlmClient,
     Hypothesis,
@@ -110,6 +129,22 @@ __all__ = [
     "Hitl1Op",
     "FakeHitl1Gate",
     "hitl1_confirm",
+    # HITL-2 修订确认硬闸门（PRD §10 节点 2、issue #9、ADR-0010/0011）。
+    "Hitl2Action",
+    "Hitl2Decision",
+    "Hitl2Op",
+    "AdoptOp",
+    "RejectOp",
+    "EditContentOp",
+    "Hitl2Gate",
+    "FakeHitl2Gate",
+    "ConservativeHitl2Gate",
+    "Hitl2Review",
+    "NodeReview",
+    "CandidateView",
+    "Hitl2GateError",
+    "build_hitl2_review",
+    "hitl2_confirm",
     "TreeInvariantError",
     "validate_tree",
     # 公共检索层（PRD §6、issue #3）：契约 + Mock 桩。

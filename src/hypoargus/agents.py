@@ -29,7 +29,7 @@ from hypoargus.raw_store import RawParagraphStore
 from hypoargus.retrieval import RetrievalLayer
 from hypoargus.verification import VerifyLlmClient
 from hypoargus.verification import verify as verify_fn
-from hypoargus.writeback import writeback
+from hypoargus.writeback import WritebackResult, writeback
 
 __all__ = [
     "ParseFn",
@@ -41,6 +41,7 @@ __all__ = [
     "ConsistencyFn",
     "Hitl2Fn",
     "WritebackFn",
+    "WritebackResult",
     "Agents",
     "create_stub_agents",
     "create_real_agents",
@@ -105,11 +106,17 @@ class Hitl2Fn(Protocol):
 
 
 class WritebackFn(Protocol):
-    """修订回写（#10 接入真实分流·幂等）。返回终稿 bytes。"""
+    """修订回写（#10 真实分流·幂等）。返回终稿 bytes + 状态翻正后的树。
+
+    接收修订确认后的终版树 + 只读原文表，按段落原子缝合（ADR-0001/0005/0011）：
+    未变更段逐字节拷回、变更段按被采纳假设的关系分流（对立→替换、递进→改写、
+    扩展→段尾追加带审计标识）；成功置 ``corrected``、失败停留 ``adopted`` 并贴
+    ``writeback_error``，重跑幂等不重复注入。
+    """
 
     def __call__(
         self, tree: list[ArgumentationNode], store: RawParagraphStore
-    ) -> bytes: ...
+    ) -> WritebackResult: ...
 
 
 @dataclass
@@ -223,10 +230,13 @@ def _stub_hitl2(
 
 def _stub_writeback(
     tree: list[ArgumentationNode], store: RawParagraphStore
-) -> bytes:
-    """回写桩（委托纯函数 :func:`hypoargus.writeback.writeback`）。
+) -> WritebackResult:
+    """回写算子（委托纯函数 :func:`hypoargus.writeback.writeback`）。
 
-    #1：无采纳改动 → 全部逐字节拷回。分流（replace/rewrite/supplement）由 #10 接入。
+    回写是确定性纯函数、无 LLM / 检索依赖（ADR-0001/0005/0011、PRD §11 纯函数子缝），
+    故无桩——tracer bullet 与真实装配共用同一实现。桩路径下解析产出每段一个
+    ``background`` 影子节点、无人采纳 → 全部逐字节拷回，``final_doc`` 逐字节等于原文；
+    采纳路径下（HITL-2 #9 注入会采纳的闸门时）按关系分流缝合、翻 ``corrected``。
     """
 
     return writeback(tree, store)
@@ -259,14 +269,13 @@ def create_real_agents(
     max_iterations: int = 8,
 ) -> Agents:
     """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 真实影响传导 +
-    真实一致性校验 + 真实 HITL-2 + 回写桩」的智能体组。
+    真实一致性校验 + 真实 HITL-2 + 真实回写」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现，回写分流（#10）仍为桩——故
-    「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出真实树、
-    HITL-1 可编辑结构、HITL-2 默认保守闸门不采纳）。合并算子（#6）、影响传导（#7）与
-    一致性校验（#8）均为确定性纯函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents`
-    真实接入，此处不再替换。
-
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现。合并算子（#6）、影响传导（#7）、
+    一致性校验（#8）与回写（#10）均为确定性纯函数、无 LLM / 检索依赖，已随
+    :func:`create_stub_agents` 真实接入（桩路径与真实装配共用同一实现），此处不再替换——
+    故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出真实树、
+    HITL-1 可编辑结构、HITL-2 默认保守闸门不采纳）。
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
     注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
     ``retrieval`` 同时给出时，体检桩（#4）替换为真实 ReAct 实现——体检只写回节点状态、
@@ -281,8 +290,11 @@ def create_real_agents(
     （去重）、不打回、不改 ``content`` / ``status`` / ``merge_decision``——字节级承诺依然
     成立。HITL-2（#9）为不可跳过的硬闸门：``hitl2_gate`` 缺省时用 :class:`ConservativeHitl2Gate`
     （无待决→一键通过、有待决→全驳回、绝不自动采纳，ADR-0010）；HITL-2 采纳即置 ``adopted``
-    + 持久化 ``adopted_hypothesis_id``（ADR-0011），故注入会采纳的闸门时需配 #10 真实回写。
-    其余下游桩待 #10 接入。
+    + 持久化 ``adopted_hypothesis_id``（ADR-0011）。回写（#10）据 ``adopted_hypothesis_id``
+    按关系分流缝合（对立→替换、递进→改写、扩展→段尾追加带审计标识），成功翻 ``corrected``、
+    失败停留 ``adopted`` 并贴 ``writeback_error``、重跑幂等不重复注入——故注入会采纳的闸门时
+    终稿不再逐字节等于原文（变更段已缝合），未变更段仍逐字节还原。真实人判 ``interrupt`` +
+    ``Command(resume)`` + checkpointer 属 #11。
     """
 
     stubs = create_stub_agents()

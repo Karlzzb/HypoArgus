@@ -101,7 +101,12 @@ from hypoargus.verification import (
     VerifyVerdict,
 )
 from hypoargus.verification import verify as verify
-from hypoargus.writeback import writeback
+from hypoargus.writeback import (
+    SUPPLEMENT_AUDIT_MARKER,
+    WRITEBACK_ERROR_TAG,
+    WritebackResult,
+    writeback,
+)
 
 __all__ = [
     "ArgumentationNode",
@@ -111,6 +116,10 @@ __all__ = [
     "RawParagraphStore",
     "partition",
     "writeback",
+    # 修订回写 Agent（PRD §11、issue #10）：段落原子缝合·幂等·纯函数 seam。
+    "WritebackResult",
+    "SUPPLEMENT_AUDIT_MARKER",
+    "WRITEBACK_ERROR_TAG",
     # 智能体契约与装配（issue #1/#2）。
     "Agents",
     "create_stub_agents",

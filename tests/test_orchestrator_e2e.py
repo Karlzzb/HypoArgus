@@ -658,8 +658,8 @@ def test_real_consistency_tags_issue_but_byte_identity_holds():
 # create_stub_agents 的 HITL-2 桩已替换为真实 confirm + ConservativeHitl2Gate（#9）。
 # 一致性校验之后的树经 HITL-2 呈现待决节点（doubtful/error/conflict + 激活候选），
 # 保守闸门无待决→一键通过、有待决→全驳回（绝不自动采纳，ADR-0010）；采纳即置 adopted
-# + 持久化 adopted_hypothesis_id（ADR-0011）。回写分流（#10）仍为桩，故采纳路径需配
-# 假回写以观察 HITL-2 输出（真实回写待 #10）。
+# + 持久化 adopted_hypothesis_id（ADR-0011）。回写（#10）真实分流·幂等：采纳后按关系
+# 缝合终稿、翻正 adopted→corrected。
 # --------------------------------------------------------------------------- #
 
 
@@ -760,10 +760,12 @@ def test_real_hitl2_pass_on_pending_raises_hard_gate_e2e():
 
 
 def test_real_hitl2_adopting_gate_persists_adoption_in_pipeline():
-    """采纳闸门在流水线内把激活候选置 adopted + 持久化 adopted_hypothesis_id。
+    """采纳闸门在流水线内把激活候选置 adopted + 持久化 adopted_hypothesis_id，回写（#10）
+    据此按关系分流缝合终稿、翻正 adopted→corrected（ADR-0011）。
 
-    回写分流（#10）仍为桩，故注入假回写（返回原文 bytes）以观察 HITL-2 输出——
-    真实回写→终稿断言属 #10。本测试断言 HITL-2 采纳链在编排内正确落地。
+    sub_claim（credible×对立成立→conflict）与 evidence（doubful×对立成立→replace）均被
+    采纳对立假设（text="x"）；回写对立→替换原句，故终稿不再逐字节等于原文、原句消失、
+    假设文本就位、两节点翻 corrected。
     """
 
     from hypoargus.hitl2 import AdoptOp, Hitl2Action, Hitl2Decision, Hitl2Gate
@@ -792,19 +794,29 @@ def test_real_hitl2_adopting_gate_persists_adoption_in_pipeline():
         captured["out"] = out
         return out
 
-    # 假回写：返回原文 bytes（#10 真实分流待接入），只为让流水线跑至 END。
-    def fake_writeback(tree, store):
-        return b"".join(store.get(p) for p in store.paragraph_ids())
+    def wrapped_writeback(tree, store):
+        out = agents.writeback(tree, store)
+        captured["writeback"] = out
+        return out
 
     orch = Orchestrator(
         agents=replace(
-            agents, hitl2=wrapped_hitl2, writeback=fake_writeback
+            agents, hitl2=wrapped_hitl2, writeback=wrapped_writeback
         )
     )
-    orch.run(doc)
+    final_doc = orch.run(doc)
 
     out_nodes = {n.node_id: n for n in captured["out"]}
-    # sub_claim（conflict）与 evidence（replace）均被采纳。
+    # HITL-2 采纳链：sub_claim（conflict）与 evidence（replace）均被采纳。
     for nid in ("n0000", "n0001"):
         assert out_nodes[nid].status.value == "adopted"
         assert out_nodes[nid].adopted_hypothesis_id is not None
+
+    # 回写：对立→替换原句，两节点翻 corrected、终稿含假设文本、原句消失。
+    wb_nodes = {n.node_id: n for n in captured["writeback"].tree}
+    for nid in ("n0000", "n0001"):
+        assert wb_nodes[nid].status.value == "corrected"
+        assert wb_nodes[nid].adopted_hypothesis_id is not None
+    assert b"x" in final_doc
+    assert "分论点".encode() not in final_doc
+    assert "论据".encode() not in final_doc

@@ -167,9 +167,15 @@ class Orchestrator:
             return {"tree": agents.hitl2(state["tree"], state["store"])}
 
         def writeback_node(state: PipelineState) -> dict[str, object]:
-            """修订回写（#10 接入真实分流·幂等）。"""
+            """修订回写（#10 接入真实分流·幂等）。
 
-            return {"final_doc": agents.writeback(state["tree"], state["store"])}
+            按段落原子缝合终稿 bytes、翻正采纳节点状态。``final_doc`` 流向终稿、
+            ``tree`` 回写状态（``adopted → corrected``）经 ``tree`` channel reducer
+            按 ``node_id`` upsert 落地。
+            """
+
+            result = agents.writeback(state["tree"], state["store"])
+            return {"final_doc": result.final_doc, "tree": result.tree}
 
         graph = StateGraph(PipelineState)
         graph.add_node("partition", partition_node)

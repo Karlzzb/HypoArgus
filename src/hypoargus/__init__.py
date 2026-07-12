@@ -67,8 +67,14 @@ from hypoargus.impact import (
     impact,
     verdict_for_ratio,
 )
-from hypoargus.merge import apply_partial_updates, merge
-from hypoargus.orchestrator import Orchestrator, RunResult
+from hypoargus.merge import apply_partial_updates, merge, merge_with_partials
+from hypoargus.orchestrator import (
+    NodeFn,
+    Orchestrator,
+    RunResult,
+    StageSpec,
+    default_pipeline,
+)
 from hypoargus.parser import (
     WEIGHT_RUBRIC,
     FakeLlmClient,
@@ -125,6 +131,10 @@ __all__ = [
     "RunResult",
     "partition",
     "writeback",
+    # 拓扑 seam（issue #11 后置重构）：数据驱动的流水线描述。
+    "NodeFn",
+    "StageSpec",
+    "default_pipeline",
     # 修订回写 Agent（PRD §11、issue #10）：段落原子缝合·幂等·纯函数 seam。
     "WritebackResult",
     "SUPPLEMENT_AUDIT_MARKER",
@@ -208,6 +218,7 @@ __all__ = [
     "MergeDecision",
     "merge",
     "apply_partial_updates",
+    "merge_with_partials",
     # 影响传导 Agent（PRD §8、issue #7）：串行·不产文本·剩余支撑率失效判定纯函数。
     "ImpactVerdict",
     "ResidualSupport",

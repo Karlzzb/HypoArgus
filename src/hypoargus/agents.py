@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Protocol
 
 from hypoargus.consistency import consistency as consistency_fn
@@ -301,22 +302,30 @@ def create_real_agents(
     stubs = create_stub_agents()
     agents = replace(
         stubs,
-        parse=lambda store: parse_fn(store, llm),
-        hitl1=lambda tree: hitl1_confirm(tree, hitl1_gate),
-        hitl2=lambda tree, store: hitl2_confirm(tree, store, hitl2_gate or ConservativeHitl2Gate()),
+        parse=partial(parse_fn, llm=llm),
+        hitl1=partial(hitl1_confirm, gate=hitl1_gate),
+        hitl2=partial(
+            hitl2_confirm, gate=hitl2_gate or ConservativeHitl2Gate()
+        ),
     )
     if verify_llm is not None and retrieval is not None:
         agents = replace(
             agents,
-            verification=lambda tree: verify_fn(
-                tree, verify_llm, retrieval, max_iterations=max_iterations
+            verification=partial(
+                verify_fn,
+                llm=verify_llm,
+                retrieval=retrieval,
+                max_iterations=max_iterations,
             ),
         )
     if hypothesis_llm is not None and retrieval is not None:
         agents = replace(
             agents,
-            hypothesis=lambda tree: hypothesize_fn(
-                tree, hypothesis_llm, retrieval, max_iterations=max_iterations
+            hypothesis=partial(
+                hypothesize_fn,
+                llm=hypothesis_llm,
+                retrieval=retrieval,
+                max_iterations=max_iterations,
             ),
         )
     return agents

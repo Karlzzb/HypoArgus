@@ -8,7 +8,7 @@
 控制流落代码而非 prompt 散文（``docs/langgraph-dev-guide.md`` §0 铁律）：
 - 迭代硬上限（``max_iterations``，超时硬上限）为参数、非 prompt 请求——绝不卡死流程。
 - 任何异常（LLM 抛、检索抛、结构非法）→ 节点落 ``error``，单向推进到下一节点（PRD §13）。
-- ``content`` 永不被改写（节点文本只来自只读表，``parser.py`` 先例，by construction）。
+- ``content`` 永不被改写（节点文本只来自只读表，``parser`` 先例，by construction）。
 
 取证经公共检索层契约（``infra.retrieval``，#3）：按 ``SearchStep`` 构造 ``RetrievalRequest``
 发出，合规（白名单/权限/模板）由检索层在接口层强制。返回的 ``Source`` 累积为 observations
@@ -21,134 +21,23 @@
 状态语义（ADR-0008 对称、ADR-0011 状态机）：体检产出原文侧 ``credible / doubtful / error``
 （↔ 开药假设侧 ``supported / doubtful / refuted``）。绝不产出 ``invalid``（影响传导 #7 的上层
 判决）、``adopted`` / ``corrected``（HITL-2 #9 + 回写 #10）。
-
-``VerifyLlmClient`` 为注入 seam：真实适配器用 ``with_structured_output(VerifyStep)`` 保证
-结构合法（dev-guide §6.3）；本切片提供 ``FakeVerifyLlmClient`` 供离线单测——provider-free、
-确定、可断言。
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from enum import StrEnum
-from typing import Annotated, Literal, Protocol
-
-from pydantic import BaseModel, Field
-
+from agents.verification.contract import (
+    ConcludeStep,
+    SearchStep,
+    VerifyLlmClient,
+    VerifyVerdict,
+)
 from domain import ArgumentationNode, NodeStatus, NodeType
 from infra.history import HistoryStore
-from infra.retrieval import RetrievalKind, RetrievalLayer, Source
+from infra.retrieval import RetrievalLayer
 from infra.retrieval_tool import RetrievalTool
 from infra.tool_protocol import ToolRegistry
 
-__all__ = [
-    "VerifyVerdict",
-    "SearchStep",
-    "ConcludeStep",
-    "VerifyStep",
-    "VerifyLlmClient",
-    "FakeVerifyLlmClient",
-    "verify",
-]
-
-
-# --------------------------------------------------------------------------- #
-# 结构化 ReAct 步（discriminated union · dev-guide §6.3）
-# --------------------------------------------------------------------------- #
-
-
-class VerifyVerdict(StrEnum):
-    """体检终判（原文侧三态，ADR-0008/0011）。"""
-
-    CREDIBLE = "credible"
-    DOUBTFUL = "doubtful"
-    ERROR = "error"
-
-
-class SearchStep(BaseModel):
-    """继续检索：调整检索词、选通道、附通道特有参数。
-
-    ``channel`` 为 ``network`` 或 ``knowledge_base``（体检聚焦查清事实的两类正向检索）；
-    结构化数据检索（``structured``）不在体检通道内，:class:`infra.retrieval_tool.RetrievalTool`
-    拒绝 → 节点 ``error``。
-    """
-
-    action: Literal["search"] = "search"
-    query: str
-    channel: RetrievalKind
-    domain: str | None = None  # 网络检索白名单域名
-    user_id: str | None = None  # 知识库检索授权用户
-    type_filter: str | None = None
-    time_filter: str | None = None
-
-
-class ConcludeStep(BaseModel):
-    """就地结论：写回终判 + 简短理由（可复算、可解释，ADR-0013 rationale 同精神）。"""
-
-    action: Literal["conclude"] = "conclude"
-    verdict: VerifyVerdict
-    reasoning: str = ""
-
-
-VerifyStep = Annotated[SearchStep | ConcludeStep, Field(discriminator="action")]
-"""单步 ReAct 决策：检索或结论（按 ``action`` 判别）。"""
-
-
-# --------------------------------------------------------------------------- #
-# LLM seam + 离线桩（provider-free，供单测）
-# --------------------------------------------------------------------------- #
-
-
-class VerifyLlmClient(Protocol):
-    """体检 LLM seam：节点 + 已累积 observations → 下一步 ReAct 决策。
-
-    真实适配器用 ``with_structured_output(VerifyStep)`` 保证结构合法（dev-guide §6.3），
-    并据节点 ``content`` 与 observations 推理。本 seam 不绑任何 provider。
-    """
-
-    def next_step(
-        self, node: ArgumentationNode, observations: list[Source]
-    ) -> SearchStep | ConcludeStep: ...
-
-
-class FakeVerifyLlmClient:
-    """离线 ReAct LLM 桩。provider-free、确定（供单测）。
-
-    三种注入：
-    - ``script``：``list[VerifyStep]``，按序返回（忽略 node/observations），用尽即抛
-      （模拟 LLM 未给结论 → 由迭代硬上限兜底为 ``error``）。
-    - ``factory``：``callable(node, observations) -> VerifyStep``，可据输入动态决策。
-    - 二者皆无 → 立即结论 ``credible``（无检索，等价于不校验的最简桩）。
-    """
-
-    def __init__(
-        self,
-        script: list[SearchStep | ConcludeStep] | None = None,
-        *,
-        factory: Callable[[ArgumentationNode, list[Source]], SearchStep | ConcludeStep]
-        | None = None,
-    ) -> None:
-        self._factory = factory
-        self._script = list(script) if script is not None else None
-        self._cursor = 0
-
-    def next_step(
-        self, node: ArgumentationNode, observations: list[Source]
-    ) -> SearchStep | ConcludeStep:
-        if self._factory is not None:
-            return self._factory(node, observations)
-        if self._script is not None:
-            if self._cursor >= len(self._script):
-                raise RuntimeError("script 用尽未给结论（应由迭代硬上限兜底）")
-            step = self._script[self._cursor]
-            self._cursor += 1
-            return step
-        return ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
-
-
-# --------------------------------------------------------------------------- #
-# 主逻辑：纯函数 seam，可独立单测
-# --------------------------------------------------------------------------- #
+__all__ = ["verify"]
 
 
 _VERIFY_TYPES: frozenset[NodeType] = frozenset(

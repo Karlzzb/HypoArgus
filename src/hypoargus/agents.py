@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from hypoargus.consistency import consistency as consistency_fn
 from hypoargus.domain import ArgumentationNode, NodeType
 from hypoargus.hitl1 import Hitl1Gate
 from hypoargus.hitl1 import confirm as hitl1_confirm
@@ -188,10 +189,16 @@ def _impact(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
     return impact_fn(tree)
 
 
-def _stub_consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
-    """一致性校验桩：不贴批注（批注门禁·不打回）。"""
+def _consistency(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
+    """一致性校验算子（委托纯函数 :func:`hypoargus.consistency.consistency`）。
 
-    return tree
+    一致性校验是确定性纯函数、无 LLM / 检索依赖（ADR-0012 批注门禁·单次扫描·
+    只贴 ``issue_tags``），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下
+    解析产出每段一个 ``background`` 影子节点：无混段、无多根、无主论点重复、无重复
+    限定，一致性校验不贴任何标签，「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
+    """
+
+    return consistency_fn(tree)
 
 
 def _stub_hitl2(tree: list[ArgumentationNode]) -> list[ArgumentationNode]:
@@ -225,7 +232,7 @@ def create_stub_agents() -> Agents:
         hypothesis=_stub_hypothesis,
         merge=_merge,
         impact=_impact,
-        consistency=_stub_consistency,
+        consistency=_consistency,
         hitl2=_stub_hitl2,
         writeback=_stub_writeback,
     )
@@ -243,10 +250,11 @@ def create_real_agents(
     """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 真实影响传导 +
     下游桩」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（一致性 / HITL-2 / 回写分流）
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现，下游（HITL-2 / 回写分流）
     仍为桩——故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出
-    真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）与影响传导（#7）均为确定性纯
-    函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents` 真实接入，此处不再替换。
+    真实树、HITL-1 可编辑结构，但无人采纳）。合并算子（#6）、影响传导（#7）与一致性校验
+    （#8）均为确定性纯函数、无 LLM / 检索依赖，已随 :func:`create_stub_agents` 真实接入，
+    此处不再替换。
 
     ``llm`` 为解析 seam（具体 provider 适配器属生产装配）；``hitl1_gate`` 为 HITL-1
     注入闸门（真实 interrupt+checkpointer 属 #11）。当且仅当 ``verify_llm`` 与
@@ -257,8 +265,10 @@ def create_real_agents(
     ADR-0002），字节级承诺依然成立。合并（#6）读两线路合流后的 ``status`` ×
     ``candidate_hypotheses`` 矩阵裁决，只贴 ``merge_decision`` / ``issue_tags`` / 裁剪假设、
     不置 ``adopted``、不改 ``content``；影响传导（#7）读合并后的树按剩余支撑率判 ``invalid``
-    / 贴 ``weakening``、复用既有成立假设激活，亦不改 ``content`` / 不新建假设——字节级承诺依然
-    成立。其余下游桩待 #8/#9/#10 接入。
+    / 贴 ``weakening``、复用既有成立假设激活，亦不改 ``content`` / 不新建假设；一致性校验
+    （#8）在影响传导之后、HITL-2 之前单次扫描那棵标注完成的树，只追加 ``issue_tags`` 批注
+    （去重）、不打回、不改 ``content`` / ``status`` / ``merge_decision``——字节级承诺依然
+    成立。其余下游桩待 #9/#10 接入。
     """
 
     stubs = create_stub_agents()

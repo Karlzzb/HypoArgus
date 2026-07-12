@@ -574,3 +574,74 @@ def test_real_impact_all_credible_unaffected_byte_identity():
     )
     orch = Orchestrator(agents=agents)
     assert orch.run(doc) == doc  # 全可信 → 无失效/弱化 → 逐字节还原
+
+
+# --------------------------------------------------------------------------- #
+# 真实一致性校验接入（issue #8 集成）
+#
+# create_stub_agents 已把一致性校验桩替换为真实纯函数（#8 无 LLM/检索依赖，批注门禁·
+# 单次扫描·只贴 issue_tags）。影响传导之后的树经一致性校验单次扫描、按段落级
+# （自洽性/边界匹配）与全局（跨段论点一致/术语定义一致）规则贴 issue_tags；不改
+# content/status/merge_decision、不置 adopted → 终稿逐字节等于原文（批注不影响回写）。
+# --------------------------------------------------------------------------- #
+
+
+def test_real_consistency_clean_tree_no_tags_byte_identity():
+    """正常三核心节点树无一致性瑕疵 → 不贴批注、终稿逐字节等于原文。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=_weighted_three_core_proposals())),
+        hitl1_gate=_skip_gate(),
+        verify_llm=FakeVerifyLlmClient(
+            factory=lambda node, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+        ),
+        retrieval=create_mock_retrieval_layer(),
+    )
+    captured: dict = {}
+
+    def wrapped_consistency(tree):
+        out = agents.consistency(tree)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, consistency=wrapped_consistency))
+    out = orch.run(doc)
+    assert out == doc  # 字节级承诺：一致性只贴 issue_tags、不动文本。
+    # 三核心节点各占一段、单一主论点、无混段、无重复限定 → 不贴任何标签。
+    assert all(n.issue_tags == [] for n in captured["out"])
+
+
+def test_real_consistency_tags_issue_but_byte_identity_holds():
+    """一致性校验贴批注（multi_main_claim）仍逐字节还原——批注不影响回写。
+
+    构造两个 main_claim 的解析提议（跨段论点一致瑕疵），一致性校验在影响传导之后
+    单次扫描、给两个 main_claim 贴 ``multi_main_claim``；但 issue_tags 不进回写文本，
+    故终稿仍逐字节等于原文。
+    """
+
+    doc = "主论点一。\n\n主论点二。\n".encode()
+    proposals = [
+        ParsedNodeProposal(paragraph_id="p0001", node_type=NodeType.MAIN_CLAIM),
+        ParsedNodeProposal(paragraph_id="p0002", node_type=NodeType.MAIN_CLAIM),
+    ]
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(nodes=proposals)),
+        hitl1_gate=_skip_gate(),
+    )
+    captured: dict = {}
+
+    def wrapped_consistency(tree):
+        out = agents.consistency(tree)
+        captured["out"] = out
+        return out
+
+    orch = Orchestrator(agents=replace(agents, consistency=wrapped_consistency))
+    out = orch.run(doc)
+    assert out == doc  # 批注不进文本 → 逐字节还原。
+    nodes = {n.node_id: n for n in captured["out"]}
+    mains = [n for n in nodes.values() if n.node_type is NodeType.MAIN_CLAIM]
+    assert len(mains) == 2
+    assert all("multi_main_claim" in n.issue_tags for n in mains)
+    # 不替人拍板：无人进入 adopted。
+    assert all(n.status.value != "adopted" for n in captured["out"])

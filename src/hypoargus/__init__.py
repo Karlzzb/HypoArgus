@@ -7,6 +7,13 @@
 """
 
 from hypoargus.agents import Agents, create_real_agents, create_stub_agents
+from hypoargus.consistency import (
+    DUPLICATE_QUALIFICATION_TAG,
+    MIXED_PARAGRAPH_KIND_TAG,
+    MULTI_MAIN_CLAIM_TAG,
+    MULTI_PRIMARY_PER_PARAGRAPH_TAG,
+    consistency,
+)
 from hypoargus.domain import ArgumentationNode, MergeAction, MergeDecision, NodeStatus, NodeType
 from hypoargus.hitl1 import (
     FakeHitl1Gate,
@@ -149,4 +156,10 @@ __all__ = [
     "compute_residual_support",
     "verdict_for_ratio",
     "impact",
+    # 一致性校验 Agent（PRD §9、issue #8）：批注门禁·单次扫描·只贴 issue_tags 纯函数。
+    "MIXED_PARAGRAPH_KIND_TAG",
+    "MULTI_PRIMARY_PER_PARAGRAPH_TAG",
+    "MULTI_MAIN_CLAIM_TAG",
+    "DUPLICATE_QUALIFICATION_TAG",
+    "consistency",
 ]

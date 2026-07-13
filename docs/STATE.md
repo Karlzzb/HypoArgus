@@ -21,17 +21,17 @@
 
 定义于 `src/runtime/orchestrator.py:99`，是一个 `TypedDict(total=False)`，共 7 个顶层字段。
 顶层字段是 **StateGraph channel**——带 reducer，子智能体不直接共享可变对象，而是写 channel、reducer 合流。
-reducer 见 `orchestrator.py:61-96`。
+reducer 见 `runtime/orchestrator.py:61-96`。
 
 | 字段 | 类型 | reducer | 来源（创建者） | 谁读 | 证据 |
 |---|---|---|---|---|---|
-| `original_doc` | `bytes` | — | `【用户】` 入口注入 | partition | `orchestrator.py` invoke；`run_real.py` |
-| `original_paragraphs` | `OriginalParagraphs` | — | `【代码】` partition 构造 | parse / hitl2 / writeback（皆只读旁路） | `assembly.py` partition 闭包；`original_paragraphs.py:21` |
-| `argument_tree` | `list[Argument]` | `merge_argument_tree`（按 `argument_id` upsert 整树） | `【代码】` partition 初始化 `[]`；`【LLM】` parse 建初始树；`【代码】` merge/impact/consistency；`【HITL】` hitl2 | parse→hitl1→(体检∥开药)→merge→…→writeback 全程 | 写点见 §3 各子智能体；reducer `orchestrator.py:61` |
-| `argument_credibility` | `dict[str, ArgumentStatus]` | `_merge_dict` | `【LLM】` verification（partial，**只存可信度裁决**） | merge（读后合流，不回写本 channel） | 写 `assembly.py` verification 闭包；读 `assembly.py` merge 闭包 |
-| `hypotheses` | `dict[str, list[Hypothesis]]` | `_merge_dict` | `【LLM】` hypothesis（partial，**只存候选假设列表**） | merge | 写 `assembly.py` hypothesis 闭包；读 `assembly.py` merge 闭包 |
-| `final_document` | `bytes` | — | `【代码】` writeback 产出 | `run_with_report` 出口 | `assembly.py` writeback 闭包（兜底回退原文拼接）；`orchestrator.py` 出口 |
-| `errors` | `list[str]` | `_append_errors` | `【代码】` `_guarded` 兜底写入（9 个下游 stage 任一异常） | `run_with_report` 出口 | `assembly.py` `_log_error_patch`；`orchestrator.py` 出口 |
+| `original_doc` | `bytes` | — | `【用户】` 入口注入 | partition | `runtime/orchestrator.py` invoke；`runtime/run_real.py` |
+| `original_paragraphs` | `OriginalParagraphs` | — | `【代码】` partition 构造 | parse / hitl2 / writeback（皆只读旁路） | `agents/assembly.py` partition 闭包；`original_paragraphs.py:21` |
+| `argument_tree` | `list[Argument]` | `merge_argument_tree`（按 `argument_id` upsert 整树） | `【代码】` partition 初始化 `[]`；`【LLM】` parse 建初始树；`【代码】` merge/impact/consistency；`【HITL】` hitl2 | parse→hitl1→(体检∥开药)→merge→…→writeback 全程 | 写点见 §3 各子智能体；reducer `runtime/orchestrator.py:61` |
+| `argument_credibility` | `dict[str, ArgumentStatus]` | `_merge_dict` | `【LLM】` verification（partial，**只存可信度裁决**） | merge（读后合流，不回写本 channel） | 写 `agents/assembly.py` verification 闭包；读 `agents/assembly.py` merge 闭包 |
+| `hypotheses` | `dict[str, list[Hypothesis]]` | `_merge_dict` | `【LLM】` hypothesis（partial，**只存候选假设列表**） | merge | 写 `agents/assembly.py` hypothesis 闭包；读 `agents/assembly.py` merge 闭包 |
+| `final_document` | `bytes` | — | `【代码】` writeback 产出 | `run_with_report` 出口 | `agents/assembly.py` writeback 闭包（兜底回退原文拼接）；`runtime/orchestrator.py` 出口 |
+| `errors` | `list[str]` | `_append_errors` | `【代码】` `_guarded` 兜底写入（9 个下游 stage 任一异常） | `run_with_report` 出口 | `agents/assembly.py` `_log_error_patch`；`runtime/orchestrator.py` 出口 |
 
 **channel 三类**（理解路由的关键）：
 
@@ -58,18 +58,18 @@ reducer 见 `orchestrator.py:61-96`。
 
 | 字段 | 类型 | 来源（写入者） | 进 LLM? | 证据 |
 |---|---|---|---|---|
-| `argument_id` | `str` | `【代码】` parse 铸造（`n{idx}` 或 `bg-{pid}`）；HITL-1 合并/拆分可改 | 否 | `parser/agent.py` |
-| `argument_type` | `ArgumentType` | `【LLM】` parse 提议；`【HITL】` hitl1 可 `SetTypeOp` | 是（parse 全量提议；verify/hypo 只读 `argument_type.value` 进 prompt） | `parser/contract.py`；`llm_adapters.py` |
-| `parent_id` | `str \| None` | `【代码】` parse 据 LLM `parent_index` 解析（越界/自指→根）；`【HITL】` hitl1 `ReparentOp` | 否 | `parser/agent.py` |
-| `children_ids` | `list[str]` | `【代码】` parse 回填 + 断环 `_break_cycles` | 否 | `parser/agent.py` |
-| `paragraph_id` | `str` | `【代码】` parse 从只读表对齐拷入 | 是（parse 进 prompt 的 `[paragraph_id] 文本`） | `parser/agent.py`；`llm_adapters.py` |
-| `content` | `str` | `【代码】` parse 逐字节从 `original_paragraphs` 拷回（**LLM 无权改写**）；`【HITL】` hitl2 `EditContentOp` 可覆写 | 是（verify/hypo 进 prompt 的核心输入） | `parser/agent.py`；`llm_adapters.py` |
-| `argument_weight` | `int 0-100` | `【LLM】` parse 提议 → `【代码】` clamp 至 [0,100]（影子恒 0）；HITL-1 合并时按规则调 | 否 | `parser/agent.py` |
-| `status` | `ArgumentStatus` | `【LLM】` verify 取证终判（`credible/doubtful/error`）；`【代码】` impact 判 `invalid`；`【HITL】` hitl2 置 `adopted`；`【代码】` writeback 翻 `corrected` | 否（不进任何 LLM） | verify `agent.py`；impact `agent.py`；hitl2 `agent.py`；writeback `agent.py` |
-| `issue_tags` | `list[str]` | `【代码】` merge 追加 `conflict`；`【代码】` consistency 扫贴；`【代码】` impact 追加 `weakening`；`【代码】` writeback 失败贴 `writeback_error` | 否 | `merge.py`；`consistency.py`；`impact.py`；`writeback.py` |
-| `candidate_hypotheses` | `list[Hypothesis]` | `【LLM】` hypothesis 生成 + 取证铸造；`【HITL】` hitl2 `RejectOp` 可移除单条 | 否（hypothesis 取证时只把 `proposal.text` 进 prompt，不回灌 `candidate_hypotheses`） | `hypothesis/agent.py` |
-| `merge_decision` | `MergeDecision \| None` | `【代码】` merge 12 格矩阵裁决；`【代码】` impact 复用 supported 假设激活 | 否 | `merge.py`；`impact.py` |
-| `adopted_hypothesis_id` | `str \| None` | `【HITL】` hitl2 `AdoptOp` 立即持久化 | 否 | `hitl2/agent.py` |
+| `argument_id` | `str` | `【代码】` parse 铸造（`n{idx}` 或 `bg-{pid}`）；HITL-1 合并/拆分可改 | 否 | `agents/parser/agent.py` |
+| `argument_type` | `ArgumentType` | `【LLM】` parse 提议；`【HITL】` hitl1 可 `SetTypeOp` | 是（parse 全量提议；verify/hypo 只读 `argument_type.value` 进 prompt） | `agents/parser/contract.py`；`infra/llm_adapters.py` |
+| `parent_id` | `str \| None` | `【代码】` parse 据 LLM `parent_index` 解析（越界/自指→根）；`【HITL】` hitl1 `ReparentOp` | 否 | `agents/parser/agent.py` |
+| `children_ids` | `list[str]` | `【代码】` parse 回填 + 断环 `_break_cycles` | 否 | `agents/parser/agent.py` |
+| `paragraph_id` | `str` | `【代码】` parse 从只读表对齐拷入 | 是（parse 进 prompt 的 `[paragraph_id] 文本`） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
+| `content` | `str` | `【代码】` parse 逐字节从 `original_paragraphs` 拷回（**LLM 无权改写**）；`【HITL】` hitl2 `EditContentOp` 可覆写 | 是（verify/hypo 进 prompt 的核心输入） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
+| `argument_weight` | `int 0-100` | `【LLM】` parse 提议 → `【代码】` clamp 至 [0,100]（影子恒 0）；HITL-1 合并时按规则调 | 否 | `agents/parser/agent.py` |
+| `status` | `ArgumentStatus` | `【LLM】` verify 取证终判（`credible/doubtful/error`）；`【代码】` impact 判 `invalid`；`【HITL】` hitl2 置 `adopted`；`【代码】` writeback 翻 `corrected` | 否（不进任何 LLM） | verify `agents/verification/agent.py`；impact `agents/impact.py`；hitl2 `agents/hitl2/agent.py`；writeback `agents/writeback.py` |
+| `issue_tags` | `list[str]` | `【代码】` merge 追加 `conflict`；`【代码】` consistency 扫贴；`【代码】` impact 追加 `weakening`；`【代码】` writeback 失败贴 `writeback_error` | 否 | `agents/merge.py`；`agents/consistency.py`；`agents/impact.py`；`agents/writeback.py` |
+| `candidate_hypotheses` | `list[Hypothesis]` | `【LLM】` hypothesis 生成 + 取证铸造；`【HITL】` hitl2 `RejectOp` 可移除单条 | 否（hypothesis 取证时只把 `proposal.text` 进 prompt，不回灌 `candidate_hypotheses`） | `agents/hypothesis/agent.py` |
+| `merge_decision` | `MergeDecision \| None` | `【代码】` merge 12 格矩阵裁决；`【代码】` impact 复用 supported 假设激活 | 否 | `agents/merge.py`；`agents/impact.py` |
+| `adopted_hypothesis_id` | `str \| None` | `【HITL】` hitl2 `AdoptOp` 立即持久化 | 否 | `agents/hitl2/agent.py` |
 
 ### 2.1 `Hypothesis`（`candidate_hypotheses` 元素，`domain.py:124`）
 
@@ -97,16 +97,16 @@ reducer 见 `orchestrator.py:61-96`。
 
 | stage | 输入（主 state 字段） | 输出（写回主 state） | LLM? | 纯函数签名 / 证据 |
 |---|---|---|---|---|
-| partition | `original_doc` | `original_paragraphs`, `argument_tree=[]` | 否（纯代码） | `assembly.py` `_partition_node` |
-| parse | `original_paragraphs` | `argument_tree` | **是** | `parse(original_paragraphs, llm) -> list[Argument]` `parser/agent.py` |
-| hitl1 | `argument_tree` | `argument_tree` | 否（HITL 桩） | `confirm(argument_tree, gate) -> list[Argument]` `hitl1/agent.py` |
-| verification | `argument_tree` | `argument_credibility` | **是** | `verify(argument_tree, llm, retrieval, max_iterations=8) -> dict[str, ArgumentStatus]` `verification/agent.py` |
-| hypothesis | `argument_tree` | `hypotheses` | **是** | `hypothesize(argument_tree, llm, retrieval, max_iterations=8) -> dict[str, list[Hypothesis]]` `hypothesis/agent.py` |
-| merge | `argument_tree` + `argument_credibility` + `hypotheses` | `argument_tree` | 否（纯函数） | `merge_with_partials(...)` `merge.py` |
-| impact | `argument_tree` | `argument_tree` | 否（纯函数） | `impact(argument_tree) -> list[Argument]` `impact.py` |
-| consistency | `argument_tree` | `argument_tree` | 否（纯函数） | `consistency(argument_tree) -> list[Argument]` `consistency.py` |
-| hitl2 | `argument_tree` + `original_paragraphs` | `argument_tree` | 否（HITL 桩） | `confirm(argument_tree, original_paragraphs, gate) -> list[Argument]` `hitl2/agent.py` |
-| writeback | `argument_tree` + `original_paragraphs` | `final_document` + `argument_tree` | 否（纯函数） | `writeback(argument_tree, original_paragraphs) -> WritebackResult` `writeback.py` |
+| partition | `original_doc` | `original_paragraphs`, `argument_tree=[]` | 否（纯代码） | `agents/assembly.py` `_partition_node` |
+| parse | `original_paragraphs` | `argument_tree` | **是** | `parse(original_paragraphs, llm) -> list[Argument]` `agents/parser/agent.py` |
+| hitl1 | `argument_tree` | `argument_tree` | 否（HITL 桩） | `confirm(argument_tree, gate) -> list[Argument]` `agents/hitl1/agent.py` |
+| verification | `argument_tree` | `argument_credibility` | **是** | `verify(argument_tree, llm, retrieval, max_iterations=8) -> dict[str, ArgumentStatus]` `agents/verification/agent.py` |
+| hypothesis | `argument_tree` | `hypotheses` | **是** | `hypothesize(argument_tree, llm, retrieval, max_iterations=8) -> dict[str, list[Hypothesis]]` `agents/hypothesis/agent.py` |
+| merge | `argument_tree` + `argument_credibility` + `hypotheses` | `argument_tree` | 否（纯函数） | `merge_with_partials(...)` `agents/merge.py` |
+| impact | `argument_tree` | `argument_tree` | 否（纯函数） | `impact(argument_tree) -> list[Argument]` `agents/impact.py` |
+| consistency | `argument_tree` | `argument_tree` | 否（纯函数） | `consistency(argument_tree) -> list[Argument]` `agents/consistency.py` |
+| hitl2 | `argument_tree` + `original_paragraphs` | `argument_tree` | 否（HITL 桩） | `confirm(argument_tree, original_paragraphs, gate) -> list[Argument]` `agents/hitl2/agent.py` |
+| writeback | `argument_tree` + `original_paragraphs` | `final_document` + `argument_tree` | 否（纯函数） | `writeback(argument_tree, original_paragraphs) -> WritebackResult` `agents/writeback.py` |
 
 > **覆写规则**：verification 只产 `ArgumentStatus`、hypothesis 只产 `list[Hypothesis]`——二者写 partial channel，merge 字段级合流（`status` ← 体检、`candidate_hypotheses` ← 开药）后整树写 `argument_tree`。
 > merge/impact/consistency/hitl2/writeback 直接整树覆盖写 `argument_tree`，但各自只动自己负责的字段、**不碰 `content`**（HITL-2 `EditContentOp` 例外）。
@@ -131,14 +131,14 @@ merge / impact / consistency / writeback / hitl1 / hitl2 均**无 LLM**（纯函
 
 > **输入压缩铁律**：三条 LLM seam **只把「原文文本 + 检索 snippet」喂给 LLM**，绝不回灌 `status` / `argument_weight` / `parent_id` / `children_ids` / `issue_tags` / `merge_decision` 等内部状态字段。
 > parse 按段喂、不整篇 dump；verify/hypothesis 只注 `argument_type + content` + 压缩后 observations（≤20 条）。
-> 真实 adapter 用扁平信封（`_VerifyEnvelope` / `_HypothesisVerifyEnvelope` / `_ProposalsEnvelope`）规避部分 provider 对 `oneOf` 判别联合的不稳（`llm_adapters.py` 模块 docstring），逻辑等价于 contract 的判别联合。
+> 真实 adapter 用扁平信封（`_VerifyEnvelope` / `_HypothesisVerifyEnvelope` / `_ProposalsEnvelope`）规避部分 provider 对 `oneOf` 判别联合的不稳（`infra/llm_adapters.py` 模块 docstring），逻辑等价于 contract 的判别联合。
 
 | # | stage | Protocol 方法（contract 定义） | 进 LLM 的 state 字段 | 输入形式 | structured output 模型 | 写回字段 | 证据 |
 |---|---|---|---|---|---|---|---|
-| 1 | parse | `LlmClient.parse(paragraphs: list[ParagraphView]) -> ParseResult`（`parser/contract.py`） | `original_paragraphs` 的段落原文 | prompt 拼接：每段 `[paragraph_id] 文本`，多段 `\n\n` 拼，内嵌 `WEIGHT_RUBRIC` 明文 rubric | `ParseResult`（`proposals: list[ParsedNodeProposal]`，字段 `paragraph_id/argument_type/parent_index/argument_weight`，**不含 content**） | `argument_tree`（agent 据返回铸 `Argument`，逐字节拷回 `content`） | `llm_adapters.py` `QwenParseLlmClient`；调用 `parser/agent.py` |
-| 2 | verification | `VerifyLlmClient.next_step(argument, observations) -> SearchStep \| ConcludeStep`（`verification/contract.py`） | `argument.argument_type.value` + `argument.content`；累积 `list[Source]`（来自 `HistoryStore.compressed_view()`） | prompt 拼接：注入 `argument_type` + `content` + observations 压缩列表（`Source.kind/origin/title/snippet`，≤20 条）；**手写 ReAct 循环**（非 langchain tool-calling），LLM 每步产 `SearchStep \| ConcludeStep`，循环外调 `RetrievalTool` 执行检索 | `_VerifyEnvelope`（扁平信封）→ `to_step()` 映射回 `VerifyStep` | `argument_credibility`（仅写 `ArgumentStatus`，映射 `_VERDICT_TO_STATUS`） | `llm_adapters.py` `QwenVerifyLlmClient`；调用 `verification/agent.py` |
-| 3 | hypothesis / propose | `HypothesisLlmClient.propose(argument) -> list[HypothesisProposal]`（`hypothesis/contract.py`） | `argument.argument_type` + `argument.content` | prompt 拼接：注入 `argument_type` + `content`，要求 0..N 条可证伪假设，每条恰一种 relation | `_ProposalsEnvelope`（包 `list[HypothesisProposal]`：`text/relation/confidence`） | `hypotheses`（agent 铸 `Hypothesis`，写候选假设列表） | `llm_adapters.py` `QwenHypothesisLlmClient`；调用 `hypothesis/agent.py` |
-| 4 | hypothesis / 逐条取证 | `HypothesisLlmClient.next_verify_step(hypothesis_text, observations) -> HypothesisSearchStep \| HypothesisConcludeStep`（`hypothesis/contract.py`） | `proposal.text`（**假设文本，非 `argument.content`**） + 累积 `list[Source]` | prompt 拼接：注入 `hypothesis_text` + observations 列表；同 #2 手写 ReAct 循环 + `RetrievalTool` | `_HypothesisVerifyEnvelope` → `to_step()` 映射回 `HypothesisVerifyStep`（`verdict: supported/doubted/refuted`） | `hypotheses`（写 `Hypothesis.status`，随假设列表一并落回） | `llm_adapters.py` `QwenHypothesisLlmClient`；调用 `hypothesis/agent.py` |
+| 1 | parse | `LlmClient.parse(paragraphs: list[ParagraphView]) -> ParseResult`（`agents/parser/contract.py`） | `original_paragraphs` 的段落原文 | prompt 拼接：每段 `[paragraph_id] 文本`，多段 `\n\n` 拼，内嵌 `WEIGHT_RUBRIC` 明文 rubric | `ParseResult`（`proposals: list[ParsedNodeProposal]`，字段 `paragraph_id/argument_type/parent_index/argument_weight`，**不含 content**） | `argument_tree`（agent 据返回铸 `Argument`，逐字节拷回 `content`） | `infra/llm_adapters.py` `QwenParseLlmClient`；调用 `agents/parser/agent.py` |
+| 2 | verification | `VerifyLlmClient.next_step(argument, observations) -> SearchStep \| ConcludeStep`（`agents/verification/contract.py`） | `argument.argument_type.value` + `argument.content`；累积 `list[Source]`（来自 `HistoryStore.compressed_view()`） | prompt 拼接：注入 `argument_type` + `content` + observations 压缩列表（`Source.kind/origin/title/snippet`，≤20 条）；**手写 ReAct 循环**（非 langchain tool-calling），LLM 每步产 `SearchStep \| ConcludeStep`，循环外调 `RetrievalTool` 执行检索 | `_VerifyEnvelope`（扁平信封）→ `to_step()` 映射回 `VerifyStep` | `argument_credibility`（仅写 `ArgumentStatus`，映射 `_VERDICT_TO_STATUS`） | `infra/llm_adapters.py` `QwenVerifyLlmClient`；调用 `agents/verification/agent.py` |
+| 3 | hypothesis / propose | `HypothesisLlmClient.propose(argument) -> list[HypothesisProposal]`（`agents/hypothesis/contract.py`） | `argument.argument_type` + `argument.content` | prompt 拼接：注入 `argument_type` + `content`，要求 0..N 条可证伪假设，每条恰一种 relation | `_ProposalsEnvelope`（包 `list[HypothesisProposal]`：`text/relation/confidence`） | `hypotheses`（agent 铸 `Hypothesis`，写候选假设列表） | `infra/llm_adapters.py` `QwenHypothesisLlmClient`；调用 `agents/hypothesis/agent.py` |
+| 4 | hypothesis / 逐条取证 | `HypothesisLlmClient.next_verify_step(hypothesis_text, observations) -> HypothesisSearchStep \| HypothesisConcludeStep`（`agents/hypothesis/contract.py`） | `proposal.text`（**假设文本，非 `argument.content`**） + 累积 `list[Source]` | prompt 拼接：注入 `hypothesis_text` + observations 列表；同 #2 手写 ReAct 循环 + `RetrievalTool` | `_HypothesisVerifyEnvelope` → `to_step()` 映射回 `HypothesisVerifyStep`（`verdict: supported/doubted/refuted`） | `hypotheses`（写 `Hypothesis.status`，随假设列表一并落回） | `infra/llm_adapters.py` `QwenHypothesisLlmClient`；调用 `agents/hypothesis/agent.py` |
 
 ### 4.1 ReAct 历史载体说明
 
@@ -149,7 +149,7 @@ merge / impact / consistency / writeback / hitl1 / hitl2 均**无 LLM**（纯函
 
 ## 5. 维护与扩展约定
 
-- **新增 state 字段**：在 `PipelineState`（`orchestrator.py:99`）加键 + reducer（多写者必需），并在 §1 表格补一行，注明创建者 stage 与读者。
+- **新增 state 字段**：在 `PipelineState`（`runtime/orchestrator.py:99`）加键 + reducer（多写者必需），并在 §1 表格补一行，注明创建者 stage 与读者。
 - **新增 argument 字段**：在 `Argument`（`domain.py:140`）加字段，在 §2 表格补一行，标注唯一写入者（**单写者优先**，避免字段级合流歧义）。
 - **新增/变更 LLM seam**：在 §4 总表补一行，写清进 LLM 的 state 字段与输入形式；同步更新该子智能体 contract 的 `*LlmClient` Protocol。
 - **本文不重复解释业务逻辑**：裁决矩阵、状态机迁移、回写分流等规则见对应 ADR 与 `domain.py` docstring，本文只给字段流向。

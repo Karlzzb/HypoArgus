@@ -1,6 +1,6 @@
 # HypoArgus
 
-论证驱动型文档修订多智能体系统。本文件只承载 Agent skills 配置；项目规范与术语见 `CONTEXT.md`，架构决策见 `docs/adr/`，完整需求见 `prd_v2.0.md`。
+论证驱动型文档修订多智能体系统。本文件只承载 Agent skills 配置；项目规范与术语见 `CONTEXT.md`，架构决策见 `docs/adr/`，状态树字段流向见 `docs/STATE.md`，模块边界与装配见 `docs/DEVELOPMENT.md`。
 
 ## Agent skills
 

@@ -58,4 +58,4 @@
 - 状态树字段流向（主/子智能体 state、字段来源、LLM seam 输入形式）：`docs/STATE.md`。
 - 模块边界、seam、装配与扩展点：`docs/DEVELOPMENT.md`。
 - 架构决策记录：`docs/adr/`。
-- 完整需求：`prd_v2.0.md`。
+- 新增子智能体接入指南：`docs/adding-an-agent.md`。

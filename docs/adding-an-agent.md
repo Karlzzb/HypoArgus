@@ -6,18 +6,18 @@ manifest 驱动下触点为 **3**（ADR-0014），无需改 `runtime/orchestrato
 
 ## 0. 心智模型：一条 `AgentEntry` = 一个 stage
 
-每条 `agents/assembly.py:AgentEntry`（`assembly.py:542`）四字段，把「agent 实现」与「图拓扑」收口为一行：
+每条 `agents/assembly.py:AgentEntry`（`agents/assembly.py:542`）四字段，把「agent 实现」与「图拓扑」收口为一行：
 
 | 字段 | 含义 | 举例（`verification`） |
 |---|---|---|
 | `name` | 图节点名 / stage 名（拓扑标识） | `"verification"` |
 | `field` | `Agents` dataclass 字段名（`partition` 无 agent → `None`） | `"verification"` |
 | `stub` | 桩 fn（tracer bullet 用；纯函数 agent 此处即真实实现） | `_stub_verification` |
-| `real` | 条件替换工厂 `RealDeps → fn | None`（返 `None` 保留桩；纯函数 agent 为 `None`） | 见 `assembly.py:591` |
+| `real` | 条件替换工厂 `RealDeps → fn | None`（返 `None` 保留桩；纯函数 agent 为 `None`） | 见 `agents/assembly.py:591` |
 | `deps` | 上游 stage 名（`()` 接 START） | `("hitl1",)` |
-| `build` | `Agents → NodeFn` 闭包（含 `_guarded` 兜底） | `_verification_node`（`assembly.py:382`） |
+| `build` | `Agents → NodeFn` 闭包（含 `_guarded` 兜底） | `_verification_node`（`agents/assembly.py:382`） |
 
-`MANIFEST`（`assembly.py:562`）是单一装配真相源，同时驱动 typed `Agents` 构造（`create_stub_agents`/`create_real_agents`，`assembly.py:666`/`679`）与 `default_pipeline()` 拓扑派生（`runtime/orchestrator.py:158`：`StageSpec(name, build, deps)` per entry）。
+`MANIFEST`（`agents/assembly.py:562`）是单一装配真相源，同时驱动 typed `Agents` 构造（`create_stub_agents`/`create_real_agents`，`agents/assembly.py:666`/`679`）与 `default_pipeline()` 拓扑派生（`runtime/orchestrator.py:158`：`StageSpec(name, build, deps)` per entry）。
 故新增 agent = **新子包/模块 + `Agents` 字段 + 一条 `MANIFEST` 条目**，三触点。
 
 ## 1. 两种 agent 形态
@@ -51,8 +51,8 @@ provider-free，可被 `agent.py` 与外部测试独立 import。
 
 三个触点落于此文件：
 
-1. **`Agents` 字段**（`assembly.py:157`）：`verification: VerifyFn`（typed，保 `agents.verification: VerifyFn` 字段访问类型安全）。
-2. **`MANIFEST` 条目**（`assembly.py:587-603`）：
+1. **`Agents` 字段**（`agents/assembly.py:157`）：`verification: VerifyFn`（typed，保 `agents.verification: VerifyFn` 字段访问类型安全）。
+2. **`MANIFEST` 条目**（`agents/assembly.py:587-603`）：
 
    ```python
    AgentEntry(
@@ -70,8 +70,8 @@ provider-free，可被 `agent.py` 与外部测试独立 import。
    )
    ```
 
-   `real` 工厂读 `RealDeps`（`assembly.py:529`）：仅当 `verify_llm + retrieval` 同时给出才返非 `None`，否则保留桩。
-3. **build 闭包** `_verification_node`（`assembly.py:382-399`）：经 `_guarded("verification", body, fallback)` 兜底——body 产 `argument_credibility` partial，异常降级为 `_mark_verify_scope_error`（覆盖范围内未判决节点置 `error`）。
+   `real` 工厂读 `RealDeps`（`agents/assembly.py:529`）：仅当 `verify_llm + retrieval` 同时给出才返非 `None`，否则保留桩。
+3. **build 闭包** `_verification_node`（`agents/assembly.py:382-399`）：经 `_guarded("verification", body, fallback)` 兜底——body 产 `argument_credibility` partial，异常降级为 `_mark_verify_scope_error`（覆盖范围内未判决节点置 `error`）。
 
 `__init__.py`（`agents/verification/__init__.py`）re-export `verify`/`VerifyLlmClient`/`FakeVerifyLlmClient`/`VerifyStep` 等，保外部 import 路径。
 
@@ -158,7 +158,7 @@ AgentEntry(
   AgentEntry(name="impact", field="impact", stub=_impact, real=None,
              deps=("merge",), build=_impact_node)
   ```
-- `build` 闭包仍用 `_guarded` 兜底（`assembly.py:444` 为 `_impact_node` 范例）。
+- `build` 闭包仍用 `_guarded` 兜底（`agents/assembly.py:444` 为 `_impact_node` 范例）。
 - 无 seam、无 Fake、无 provider 适配——单测直接 `from agents.impact import impact; impact(tree)`。
 
 ## 5. 单独调用与调测

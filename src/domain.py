@@ -3,7 +3,7 @@
 本切片承载解析所需字段子集（``argument_weight`` 已补全，ADR-0013）；
 ``candidate_hypotheses`` 由开药 Agent（#5）补全（ADR-0007/0008）；
 ``adopted_hypothesis_id`` 由 HITL-2（#9）补全（ADR-0011 采纳链）。
-节点形状沿用 prd_v2.0.md §4 决策的 ``Argument``（形状为决策、非最终代码）。
+节点形状 ``Argument``（形状为决策、非最终代码，术语见 ``CONTEXT.md``「核心实体」）。
 """
 
 from __future__ import annotations

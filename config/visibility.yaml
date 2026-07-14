@@ -1,0 +1,9 @@
+# 步骤可见性 override（PRD §7.3 / §10.1 · T-02）。
+#
+# 部署时改、**不重启代码**、不做运行时热切（build_graph_view 调用时读取本文件）。
+# hidden 列出的节点不出现在 graph_view 输出、其前后可见节点补直连边；
+# 回放边若因此收缩成自环则丢弃（流水线执行照跑——可见性仅影响展示）。
+#
+# interrupt 节点（hitl1 / hitl2）强制可见——此处隐藏会被忽略并告警（HITL 不可对前端隐身）。
+hidden:
+  - parse+partition

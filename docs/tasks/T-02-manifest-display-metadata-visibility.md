@@ -1,8 +1,8 @@
 ---
 id: T-02
 title: MANIFEST 展示元数据 + 可见性旋钮 + 图结构内省
-status: todo
-assignee: ""
+status: done
+assignee: "claude"
 blocked_by: []
 covers_adr: []
 covers_prd: ["§10.1", "§5.4", "§7.3"]
@@ -47,12 +47,43 @@ type: prefactor
 
 ## Acceptance criteria
 
-- [ ] `AgentEntry` 含 `label` / `node_type` / `color` / `desc` / `visible`（均带缺省，向后兼容现有构造）。
-- [ ] `hitl1` / `hitl2` 节点标注 `interrupt: true` 且强制 `visible=True`，配置 override 时告警并忽略。
-- [ ] `config/visibility.yaml` 生效：`hidden` 节点不出现在 `build_graph_view` 输出、其前后可见节点补直连边、回放边自环被丢弃。
-- [ ] `build_graph_view(...)` 输出形状满足 §5.4 响应示例（节点 / 边字段齐备），含 `hitl1→parse+partition` 回放边。
-- [ ] `build_graph_view` 为纯函数且有单元测试覆盖：默认全可见、隐藏中间节点补直连、回放边自环丢弃、HITL 强制可见告警。
-- [ ] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+- [x] `AgentEntry` 含 `label` / `node_type` / `color` / `desc` / `visible`（均带缺省，向后兼容现有构造）。
+- [x] `hitl1` / `hitl2` 节点标注 `interrupt: true` 且强制 `visible=True`，配置 override 时告警并忽略。
+- [x] `config/visibility.yaml` 生效：`hidden` 节点不出现在 `build_graph_view` 输出、其前后可见节点补直连边、回放边自环被丢弃。
+- [x] `build_graph_view(...)` 输出形状满足 §5.4 响应示例（节点 / 边字段齐备），含 `hitl1→parse+partition` 回放边。
+- [x] `build_graph_view` 为纯函数且有单元测试覆盖：默认全可见、隐藏中间节点补直连、回放边自环丢弃、HITL 强制可见告警。
+- [x] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+
+## 验收输出
+
+落地物：
+
+- `src/agents/assembly.py`：`AgentEntry` 增 `label` / `node_type` / `color` / `desc` / `visible` / `interrupt` 六个可选字段（均带缺省、向后兼容）；`MANIFEST` 7 条各补展示元数据，`hitl1` / `hitl2` 标 `interrupt=True`。
+- `src/api_layer/__init__.py` + `src/api_layer/graph_view.py`：`GraphNode` / `GraphEdge` / `GraphView` / `VisibilityConfig` 类型 + 纯函数 `build_graph_view(manifest, visibility)` + `load_visibility(path)`。拓扑（START / END / 受控回放边）全部从 `MANIFEST` 单一源推导，不另写拓扑。
+- `config/visibility.yaml`：`hidden: [parse+partition]`，部署时改、不重启、不热切。
+- `tests/test_graph_view.py`：14 个用例覆盖默认全可见 / 节点名不透明 / 线性链 + 起止边 / 回放边 / 隐藏中间节点补直连 / 隐藏 parse+partition 回放边自环丢弃 / HITL 强制可见告警 / 纯函数性 / `load_visibility` 端到端。
+- `pyproject.toml`：补 `pyyaml>=6.0`（运行时）+ `types-PyYAML>=6.0`（dev，mypy --strict 类型桩）依赖。
+
+真实质量门输出（conda 环境 `HypoArgus`）：
+
+```
+$ ruff check src tests
+All checks passed!
+
+$ mypy --strict src
+Success: no issues found in 39 source files
+
+$ pytest -q
+........................................................................ [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 50%]
+........................................................................ [ 67%]
+..................................................s..................... [ 84%]
+.................................................................ss      [100%]
+424 passed, 3 skipped in 13.71s
+```
+
+skip 均为既有 real-LLM / 样例不足用例，与本切片无关。
 
 ## Blocked by
 

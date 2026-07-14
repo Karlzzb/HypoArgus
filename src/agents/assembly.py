@@ -730,6 +730,15 @@ class AgentEntry:
     :attr:`build` 据 :class:`Agents` 产出 :data:`runtime.orchestrator.NodeFn`（含
     :func:`_guarded` 兜底）；:attr:`route` / :attr:`max_replays` 见 :class:`runtime.orchestrator.StageSpec`
     （条件路由 seam + 循环预算，ADR-0018；多数 stage 为 ``None`` / ``0``）。
+
+    展示元数据（PRD §10.1 / §7.3 · T-02）：:attr:`label` / :attr:`node_type` /
+    :attr:`color` / :attr:`desc` / :attr:`visible` / :attr:`interrupt` 供
+    :func:`api_layer.graph_view.build_graph_view` 单一源摊成 ``GraphView``——
+    供后续 ``GET /api/agent/graph``（T-04）与 WS ``graph_static``（T-06）共享，避免漂移。
+    :attr:`label` 缺省从 :attr:`name` 推导；:attr:`visible` 为单一可见性旋钮（缺省 ``True``）；
+    :attr:`interrupt` 标 HITL 硬闸门节点（``hitl1`` / ``hitl2``），由
+    :func:`api_layer.graph_view.build_graph_view` 强制 ``visible=True``——配置 override
+    隐藏 interrupt 节点会被忽略并告警（HITL 不可对前端隐身）。
     """
 
     name: str
@@ -740,6 +749,12 @@ class AgentEntry:
     build: Callable[[Agents], NodeFn]
     route: Callable[[PipelineState], str | list[str] | None] | None = None
     max_replays: int = 0
+    label: str | None = None
+    node_type: str | None = None
+    color: str | None = None
+    desc: str | None = None
+    visible: bool = True
+    interrupt: bool = False
 
 
 MANIFEST: tuple[AgentEntry, ...] = (
@@ -750,6 +765,10 @@ MANIFEST: tuple[AgentEntry, ...] = (
         real=lambda d: partial(parse_fn, llm=d.llm),
         deps=(),
         build=_parse_partition_node,
+        label="解析+切分",
+        node_type="parse",
+        color="#4A90D9",
+        desc="原文切分为只读段落表 + LLM 建初始论证树（顺产 query_time_range / paragraph_summaries）",
     ),
     AgentEntry(
         name="hitl1",
@@ -760,6 +779,11 @@ MANIFEST: tuple[AgentEntry, ...] = (
         build=_hitl1_node,
         route=_hitl1_route,
         max_replays=DEFAULT_MAX_PARTITION_RETRIES,
+        label="HITL-1 切分确认",
+        node_type="hitl1",
+        color="#D97706",
+        desc="人确认段落切分；不合理则按 prompt 有界打回重跑 parse+partition（max 3）",
+        interrupt=True,
     ),
     AgentEntry(
         name="hypothesis_propose",
@@ -772,6 +796,10 @@ MANIFEST: tuple[AgentEntry, ...] = (
         ),
         deps=("hitl1",),
         build=_hypothesis_propose_node,
+        label="假设生成",
+        node_type="hypothesis",
+        color="#9B59B6",
+        desc="逐节点在原文边界内仅 propose pending 候选修订假说（取证移至 judgment）",
     ),
     AgentEntry(
         name="retrieval",
@@ -780,6 +808,10 @@ MANIFEST: tuple[AgentEntry, ...] = (
         real=None,  # 真实批量检索后端后续切片接入（PRD §8 / Out of Scope）；当前伪代码桩产空 citations。
         deps=("hypothesis_propose",),
         build=_retrieval_node,
+        label="检索",
+        node_type="retrieval",
+        color="#16A085",
+        desc="批量检索 citations（当前伪代码桩、产空；真实后端后续切片接入）",
     ),
     AgentEntry(
         name="judgment",
@@ -792,6 +824,10 @@ MANIFEST: tuple[AgentEntry, ...] = (
         ),
         deps=("retrieval",),
         build=_judgment_node,
+        label="裁决",
+        node_type="judgment",
+        color="#C0392B",
+        desc="五合一：吃 citations 判 per-argument / per-hypothesis 终态 + 串联 merge/impact/consistency",
     ),
     AgentEntry(
         name="rewrite_loop",
@@ -804,6 +840,10 @@ MANIFEST: tuple[AgentEntry, ...] = (
         ),
         deps=("judgment",),
         build=_rewrite_loop_node,
+        label="重写循环",
+        node_type="rewrite",
+        color="#8E44AD",
+        desc="对被触达段逐段提议重写文本、产 proposed_rewrites；未触达段省略",
     ),
     AgentEntry(
         name="hitl2",
@@ -814,6 +854,11 @@ MANIFEST: tuple[AgentEntry, ...] = (
         ),
         deps=("rewrite_loop",),
         build=_hitl2_node,
+        label="HITL-2 终稿确认",
+        node_type="hitl2",
+        color="#D97706",
+        desc="逐段确认 / 编辑 / 驳回 proposed_rewrites 后拼装终稿 final_document（不可跳过）",
+        interrupt=True,
     ),
 )
 

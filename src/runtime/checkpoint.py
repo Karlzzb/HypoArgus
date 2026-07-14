@@ -16,6 +16,11 @@ ADR-0022 把图从「同步注入、无 checkpointer」改造为 ``interrupt()``
    其余值原样委托父类；``loads_typed`` 据哨兵键还原。``OriginalParagraphs`` 在
    ``PipelineState`` 中仅作为顶层 ``original_paragraphs`` channel 值出现（不嵌套于
    任何 pydantic 模型 / dict），故顶层变换充分。
+3. **msgpack 类型 allowlist**（:func:`_allowed_msgpack_types`）：``langgraph`` 默认对
+   未登记类型走 import-by-name 解码并打告警（未来版本改为默认阻断）。把
+   ``PipelineState`` 中以 ext 类型往返的领域类型（``domain`` / hitl 契约 /
+   ``infra.retrieval``）登记进 :class:`HypoArgusSerializer` 的
+   ``allowed_msgpack_modules``，既消告警噪声又与未来 strict 默认前向兼容。
 
 :func:`build_async_checkpointer` 据 DSN 产 :class:`AsyncPostgresSaver`（async 上下文
 管理器；``ainvoke`` / ``aget_state`` 需 async checkpointer——同步 ``PostgresSaver``
@@ -26,16 +31,39 @@ ADR-0022 把图从「同步注入、无 checkpointer」改造为 ``interrupt()``
 
 from __future__ import annotations
 
+import enum
+import importlib
+import inspect
 import os
 from contextlib import AbstractAsyncContextManager
+from functools import lru_cache
 from typing import Any
 
+import pydantic
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.base import SerializerProtocol
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from original_paragraphs import OriginalParagraphs
 from partition import Paragraph
+
+#: ``langgraph`` 的 ``JsonPlusSerializer`` 在解码时对未登记类型走 import-by-name 路径，
+#: 经 ``langgraph.checkpoint.serde.jsonplus`` logger 打 ``Deserializing unregistered
+#: type X from checkpoint`` 告警（未来版本将翻转为默认阻断）。把它登记进
+#: ``allowed_msgpack_modules`` 后，已登记类型静默解码、未登记类型被阻断——既消除告警
+#: 噪声，又与 LangGraph 未来 strict 默认前向兼容。
+#:
+#: 此处列出的是 ``PipelineState`` 各 channel 中以原生 msgpack ext 类型往返的领域类型
+#: 所属模块；:func:`_allowed_msgpack_types` 自动发现其中所有公开可序列化类型
+#: （pydantic 模型 / Enum / dataclass），故新增类型无需逐个登记。注意 ``Source`` 生活在
+#: ``infra.retrieval``（非 ``domain``）——这正是逐个手填易漏、改用模块级自动发现的理由。
+#: 新增 state channel 值类型时，若其定义模块不在下表，须补入。
+_MSGPACK_TYPE_MODULES: tuple[str, ...] = (
+    "domain",
+    "agents.hitl1.contract",
+    "agents.hitl2.contract",
+    "infra.retrieval",
+)
 
 __all__ = [
     "CheckpointConfigError",
@@ -53,8 +81,39 @@ class CheckpointConfigError(RuntimeError):
     """Postgres checkpointer 连接配置缺失 / 非法。"""
 
 
+@lru_cache(maxsize=1)
+def _allowed_msgpack_types() -> tuple[type, ...]:
+    """收集 ``_MSGPACK_TYPE_MODULES`` 中所有公开可序列化类型（pydantic / Enum / dataclass）。
+
+    惰性导入：首次构造 :class:`HypoArgusSerializer` 时才 import 这些模块，避免
+    ``runtime.checkpoint`` 在 app 引导早期被 import 时引入 agents / infra 的传递依赖
+    （潜在循环导入）。``__module__`` 须等于模块自身名，排除再导出的借居类型（如
+    某模块 ``from domain import Argument`` 后 ``Argument.__module__`` 仍为 ``domain``）。
+    """
+
+    collected: list[type] = []
+    for modname in _MSGPACK_TYPE_MODULES:
+        module = importlib.import_module(modname)
+        for attr in dir(module):
+            if attr.startswith("_"):
+                continue
+            candidate: object = getattr(module, attr, None)
+            if not inspect.isclass(candidate):
+                continue
+            if getattr(candidate, "__module__", None) != modname:
+                continue
+            if (
+                issubclass(candidate, enum.Enum)
+                or issubclass(candidate, pydantic.BaseModel)
+                or hasattr(candidate, "__dataclass_fields__")
+            ):
+                collected.append(candidate)
+    return tuple(dict.fromkeys(collected))
+
+
 class HypoArgusSerializer(JsonPlusSerializer):
-    """为 ``OriginalParagraphs`` 注册自定义编解码的 ``JsonPlusSerializer`` 子类。
+    """为 ``OriginalParagraphs`` 注册自定义编解码 + 登记 msgpack 类型 allowlist 的
+    ``JsonPlusSerializer`` 子类。
 
     仅顶层处理 ``OriginalParagraphs``（``original_paragraphs`` channel 值，不嵌套）：
     encode 摊成 ``{_DECODE_TAG: {"order": [pid...], "entries": {pid: bytes}}}`` 纯数据
@@ -62,8 +121,13 @@ class HypoArgusSerializer(JsonPlusSerializer):
     ``OriginalParagraphs([Paragraph(...)])`` 构造器，不改 ``OriginalParagraphs`` 自身）。
     其余 state 值（pydantic 模型 / bytes / dict / 原生）原样委托父类——
     :class:`JsonPlusSerializer` 的 ``_msgpack_default`` 已覆盖 ``Argument`` /
-    ``Hypothesis`` / ``SessionContext`` / ``TimeRange`` / ``Source``（pydantic v2 ext）。
+    ``Hypothesis`` / ``SessionContext`` / ``TimeRange`` / ``Source``（pydantic v2 ext），
+    其解码侧经 :func:`_allowed_msgpack_types` 登记的 allowlist 静默还原（不触发
+    ``langgraph`` 的「unregistered type」告警）。
     """
+
+    def __init__(self) -> None:
+        super().__init__(allowed_msgpack_modules=_allowed_msgpack_types())
 
     def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
         return super().dumps_typed(_encode_original_paragraphs(obj))

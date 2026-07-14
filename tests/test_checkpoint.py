@@ -13,10 +13,13 @@ PG 落库往返见 ``test_interrupt_resume.py`` 的 checkpointer 集成测试。
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Annotated, TypedDict
 
+import pytest
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel
 
 from domain import (
     Argument,
@@ -166,6 +169,74 @@ def test_serializer_does_not_misdecode_plain_dict_as_original_paragraphs() -> No
     back = serde.loads_typed((typ, blob))
     assert back == tricky  # 多键 dict 原样返回，不触发还原
     assert not isinstance(back, OriginalParagraphs)
+
+
+# ---- msgpack 类型 allowlist（消除 LangGraph「unregistered type」告警）---- #
+
+
+_JSONPLUS_LOGGER = "langgraph.checkpoint.serde.jsonplus"
+
+
+def test_serializer_round_trips_registered_types_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """allowlist 内的领域类型经 dumps/loads 静默还原为强类型对象，不触发 LangGraph
+    的「unregistered type」/「Blocked deserialization」日志告警。"""
+
+    serde = HypoArgusSerializer()
+    sample: list[object] = [
+        Argument(
+            argument_id="n0001",
+            argument_type=ArgumentType.EVIDENCE,
+            paragraph_id="p0001",
+            content="论据。",
+        ),
+        Hypothesis(
+            hypothesis_id="h-abc",
+            text="对立证据",
+            relation=HypothesisRelation.OPPOSE,
+        ),
+        SessionContext(
+            session_id="s1",
+            user_id="u1",
+            current_time=datetime(2026, 7, 14, 9, 0, 0, tzinfo=UTC),
+            user_prompt="精简",
+        ),
+        TimeRange(start=date(2025, 1, 1), end=date(2026, 1, 1), rationale="默认"),
+        Source(source_id="src-1", kind="network", origin="example.com", snippet="s"),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger=_JSONPLUS_LOGGER):
+        for obj in sample:
+            typ, blob = serde.dumps_typed(obj)
+            back = serde.loads_typed((typ, blob))
+            assert type(back) is type(obj), (type(back), type(obj))
+
+    noise = [
+        r.message
+        for r in caplog.records
+        if "unregistered type" in r.message or "Blocked deserialization" in r.message
+    ]
+    assert not noise, noise
+
+
+def test_serializer_blocks_unregistered_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """未登记进 allowlist 的类型解码被阻断：不还原为强类型对象、打「Blocked
+    deserialization」日志，迫使开发者把它登记进 ``_MSGPACK_TYPE_MODULES``。"""
+
+    class _Foreign(BaseModel):
+        x: int = 1
+
+    serde = HypoArgusSerializer()
+    typ, blob = serde.dumps_typed(_Foreign())
+    with caplog.at_level(logging.WARNING, logger=_JSONPLUS_LOGGER):
+        back = serde.loads_typed((typ, blob))
+
+    # 阻断后返回的是裸 kwargs dict，而非 _Foreign 实例。
+    assert not isinstance(back, _Foreign)
+    assert any("Blocked deserialization" in r.message for r in caplog.records)
 
 
 # --------------------------------------------------------------------------- #

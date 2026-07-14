@@ -12,8 +12,10 @@
 - ``on_chain_start`` / ``on_chain_stream`` / ``on_chain_end`` 带 ``graph:step:N`` tag、
   ``name != 'LangGraph'`` → ``node_start`` / ``node_output`` / ``node_end``（携带
   ``node_id`` / ``node_instance`` / ``label`` / ``type`` / ``color`` / ``input`` / ``output``）。
-- ``on_llm_stream`` → ``llm_thinking``（``token`` + 累积 ``full_thought``；按 ``parent_ids``
-  归属所在节点 run）。
+- ``on_llm_stream`` / ``on_chat_model_stream`` → ``llm_thinking``（``token`` + 累积
+  ``full_thought``；按 ``parent_ids`` 归属所在节点 run）。chat 模型（含真 Qwen
+  ``ChatOpenAI`` 及一切 ``BaseChatModel``）走 ``on_chat_model_*`` 词汇，``on_llm_*``
+  为非 chat ``BaseLLM`` 词汇——两套等价处理。
 - ``on_tool_start`` → ``tool_call``（``node_id`` / ``name`` / ``args``）。
 - ``human_pause`` / ``stream_finish`` / ``stream_abort`` 由驱动者（:class:`api_layer.run.RunService`）
   在 ``astream_events`` 结束后据 ``aget_state`` 终态显式 ``emit_*``——``human_pause`` 的
@@ -79,7 +81,8 @@ def _json_safe(obj: Any) -> Any:
 
 
 def _extract_token(chunk: Any) -> str | None:
-    """从 ``on_llm_stream`` 的 ``data['chunk']``（``BaseMessageChunk``）取文本 token。
+    """从 ``on_llm_stream`` / ``on_chat_model_stream`` 的 ``data['chunk']``（``BaseMessageChunk``）
+    取文本 token。
 
     空内容（``content == ""``，如纯 tool-call 元数据 chunk）→ ``None``（不产 llm_thinking）。
     非字符串 content（少数模型返回 content blocks 列表）→ 取 str 形。
@@ -290,11 +293,14 @@ class EventTranslator:
         hidden = node_id in self._hidden if node_id is not None else False
         data = raw.get("data") or {}
 
-        if event == "on_llm_start":
+        # langchain chat 模型（含真 Qwen ChatOpenAI 及一切 BaseChatModel）走
+        # ``on_chat_model_{start,stream,end}`` 而非 ``on_llm_*``；两套词汇须等价处理，
+        # 否则 llm_thinking 永不产（前端实时 CoT 无数据源）。见 ADR-0023 事件映射。
+        if event in ("on_llm_start", "on_chat_model_start"):
             if run_id is not None:
                 self._llm_full[run_id] = []
             return []
-        if event == "on_llm_stream":
+        if event in ("on_llm_stream", "on_chat_model_stream"):
             token = _extract_token(data.get("chunk"))
             if token is None:
                 return []
@@ -316,7 +322,7 @@ class EventTranslator:
                     },
                 )
             ]
-        if event == "on_llm_end":
+        if event in ("on_llm_end", "on_chat_model_end"):
             if run_id is not None:
                 self._llm_full.pop(run_id, None)
             return []

@@ -246,6 +246,104 @@ async def test_llm_thinking_empty_token_skipped() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# on_chat_model_*：langchain chat 模型走 on_chat_model_{start,stream,end}
+# （非 on_llm_*）；翻译层须同样 mint llm_thinking + 累积 full_thought
+# --------------------------------------------------------------------------- #
+
+
+async def test_chat_model_stream_mints_llm_thinking() -> None:
+    """``on_chat_model_stream``（真 Qwen ChatOpenAI / BaseChatModel 词汇）须与
+    ``on_llm_stream`` 同样产 ``LLM_THINKING``，含 token + 累积 full_thought。"""
+
+    store = InMemoryTraceEventStore()
+    t = EventTranslator(
+        store,
+        session_id=_SESS,
+        trace_id=_TRACE,
+        start_seq=0,
+        manifest_index=_manifest_index(),
+        hidden=_hidden(VisibilityConfig()),
+    )
+    node_run = "rn-parse"
+    await t.feed(_node_raw("on_chain_start", "parse+partition", run_id=node_run, step=1, data={"input": {}}))
+    await t.feed(_raw("on_chat_model_start", "ChatModel", run_id="cm1", parent_ids=[node_run]))
+    await t.feed(
+        _raw(
+            "on_chat_model_stream",
+            "ChatModel",
+            run_id="cm1",
+            parent_ids=[node_run],
+            data={"chunk": AIMessageChunk(content="Hello")},
+        )
+    )
+    await t.feed(
+        _raw(
+            "on_chat_model_stream",
+            "ChatModel",
+            run_id="cm1",
+            parent_ids=[node_run],
+            data={"chunk": AIMessageChunk(content=" world")},
+        )
+    )
+    await t.feed(_raw("on_chat_model_end", "ChatModel", run_id="cm1", parent_ids=[node_run]))
+
+    rows = await _collect(t)
+    thinks = [r for r in rows if r.event_type is EventType.LLM_THINKING]
+    assert len(thinks) == 2
+    assert thinks[0].payload["token"] == "Hello"
+    assert thinks[0].payload["full_thought"] == "Hello"
+    assert thinks[1].payload["token"] == " world"
+    assert thinks[1].payload["full_thought"] == "Hello world"
+    assert all(r.payload["node_id"] == "parse+partition" for r in thinks)
+
+
+async def test_chat_model_start_end_bookkeeps_full_thought_buffer() -> None:
+    """``on_chat_model_start`` 须 seed ``_llm_full[run_id]``；``on_chat_model_end``
+    须清空——之后同 run_id 再来 stream 不应串到旧 buffer。"""
+
+    store = InMemoryTraceEventStore()
+    t = EventTranslator(
+        store,
+        session_id=_SESS,
+        trace_id=_TRACE,
+        start_seq=0,
+        manifest_index=_manifest_index(),
+        hidden=_hidden(VisibilityConfig()),
+    )
+    node_run = "rn-parse"
+    await t.feed(_node_raw("on_chain_start", "parse+partition", run_id=node_run, step=1, data={"input": {}}))
+    await t.feed(_raw("on_chat_model_start", "ChatModel", run_id="cm1", parent_ids=[node_run]))
+    await t.feed(
+        _raw(
+            "on_chat_model_stream",
+            "ChatModel",
+            run_id="cm1",
+            parent_ids=[node_run],
+            data={"chunk": AIMessageChunk(content="first")},
+        )
+    )
+    await t.feed(_raw("on_chat_model_end", "ChatModel", run_id="cm1", parent_ids=[node_run]))
+    # end 后 buffer 应清空——同 run_id 再来一个 stream（理论上不会发生，但验证 seed/clear）：
+    # on_chat_model_start 重置 buffer，新一段累积从空开始。
+    await t.feed(_raw("on_chat_model_start", "ChatModel", run_id="cm1", parent_ids=[node_run]))
+    await t.feed(
+        _raw(
+            "on_chat_model_stream",
+            "ChatModel",
+            run_id="cm1",
+            parent_ids=[node_run],
+            data={"chunk": AIMessageChunk(content="second")},
+        )
+    )
+
+    rows = await _collect(t)
+    thinks = [r for r in rows if r.event_type is EventType.LLM_THINKING]
+    assert len(thinks) == 2
+    assert thinks[0].payload["full_thought"] == "first"
+    assert thinks[1].payload["full_thought"] == "second"
+
+
+# --------------------------------------------------------------------------- #
 # tool_call
 # --------------------------------------------------------------------------- #
 

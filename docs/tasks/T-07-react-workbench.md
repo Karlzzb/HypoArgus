@@ -1,8 +1,8 @@
 ---
 id: T-07
 title: React 工作台（单页 live + 回放 + 嵌入式 HITL 卡片）
-status: todo
-assignee: ""
+status: done
+assignee: "Karlzzb"
 blocked_by: ["T-06", "T-04", "T-02"]
 covers_adr: []
 covers_prd: ["§7", "§6.5", "§10.1", "§14.2"]
@@ -41,16 +41,38 @@ WS 客户端强制同步逻辑（PRD §6.5）：
 
 ## Acceptance criteria
 
-- [ ] `web/` React + Vite 项目落地，独立 node 工具链，与 conda `HypoArgus` 解耦，不混入 `src/`。
-- [ ] 四大区域单页一体化、无跳转、无弹窗；HITL 用嵌入式交互卡片（不遮挡流程图），提交后销毁。
-- [ ] 流程图骨架来自 `graph_static`；节点状态随事件动态更新；HITL 节点高亮「待输入」；回放环 `node_instance` 角标 / 栈展开。
-- [ ] 实时推理 Tab：`node_id`+`node_instance` 分组流式 CoT、打字机渲染、节点中间产出展示。
-- [ ] 历史回放 Tab：查 `trace_events` 全量事件，**复用实时渲染组件**按 `event_seq` 复现，与实时流同源同表。
-- [ ] WS 强制同步逻辑齐全：`graph_static` 渲骨架、`trace_start` 清动态、`event_seq` 滤乱序、`stream_abort` 停等待、切换 / 刷新断连重连回放、忽略 `heartbeat`。
-- [ ] 底部输入区状态切换正确（空闲可发、执行中置灰、HITL 暂停锁定仅卡片提交）。
-- [ ] §14.2 提示文案齐全（含背压极端「实时思考暂不可用」）。
-- [ ] E2E（Playwright，按用户全局规范「真实用户交互」）：浏览器驱动完整一次修订（发起 → 实时 CoT → HITL 卡片提交 → 续跑 → 终态），刷新 / 切会话重连回放正确，UI 像素级无错位（发现任何视觉瑕疵一并修）。
-- [ ] 前端质量门通过（lint + typecheck + build）。
+- [x] `web/` React + Vite 项目落地，独立 node 工具链，与 conda `HypoArgus` 解耦，不混入 `src/`。
+- [x] 四大区域单页一体化、无跳转、无弹窗；HITL 用嵌入式交互卡片（不遮挡流程图），提交后销毁。
+- [x] 流程图骨架来自 `graph_static`；节点状态随事件动态更新；HITL 节点高亮「待输入」；回放环 `node_instance` 角标 / 栈展开。
+- [x] 实时推理 Tab：`node_id`+`node_instance` 分组流式 CoT、打字机渲染、节点中间产出展示。
+- [x] 历史回放 Tab：查 `trace_events` 全量事件，**复用实时渲染组件**按 `event_seq` 复现，与实时流同源同表。
+- [x] WS 强制同步逻辑齐全：`graph_static` 渲骨架、`trace_start` 清动态、`event_seq` 滤乱序、`stream_abort` 停等待、切换 / 刷新断连重连回放、忽略 `heartbeat`。
+- [x] 底部输入区状态切换正确（空闲可发、执行中置灰、HITL 暂停锁定仅卡片提交）。
+- [x] §14.2 提示文案齐全（含背压极端「实时思考暂不可用」）。
+- [x] E2E（Playwright，按用户全局规范「真实用户交互」）：浏览器驱动完整一次修订（发起 → 实时 CoT → HITL 卡片提交 → 续跑 → 终态），刷新 / 切会话重连回放正确，UI 像素级无错位（发现任何视觉瑕疵一并修）。
+- [x] 前端质量门通过（lint + typecheck + build）。
+
+## 实现备注 / 发现的出入（先报后改）
+
+- **`translator.py` 的 `llm_thinking` 事件名 bug（已修，TDD）**：翻译层只匹配 `on_llm_stream`，
+  而 LangChain chat 模型（含真 Qwen `ChatOpenAI`）发的是 `on_chat_model_stream` ——故 `llm_thinking`
+  在生产永不产，前端实时 CoT 无数据源。此为本任务核对「文档引用行号与代码现状一致」时发现的
+  真实出入：T-05/§6.4 声称产 `llm_thinking`，但代码不产。修法为在 `translator.py` 把
+  `on_chat_model_{start,stream,end}` 与 `on_llm_*` 等价处理（保留两套词汇），属修 bug、非 ADR 偏离
+  （`llm_thinking` 事件本即 ADR-0023 事件词汇一部分），未起 ADR-0024+。新增 `tests/test_translator.py`
+  两条用例 + `tests/test_streaming_fake_llm.py` 一条端到端用例佐证。
+- **确定性 E2E 后端（`e2e/`）**：浏览器无法在 WebSocket 上设 `X-User-Id` 头，故前端用相对 URL
+  （开发经 Vite 代理注入头、生产经 Nginx 注入）。为避免 E2E 依赖真实 Qwen（网络 / token / 抖动），
+  新增 `e2e/_fakes.py` 的 `StreamingFakeChat`（逐字符流式吐 schema 默认 JSON → `astream_events` 产
+  `on_chat_model_stream` → 翻译层产 `llm_thinking`）+ `e2e/dev_server.py`（镜像 `server.serve`，四 seam
+  全换 fake + InMemory side metadata + 真实 Postgres checkpointer + 全可见可见性）。语义结果与离线
+  `Fake*` 同（空 proposals → 全 background → 终稿逐字节原文），但带流式 token，确定性、无网络消耗。
+  生产仍用仓根 `config/visibility.yaml`（隐藏 `parse+partition`，CoT 来自可见下游节点）。
+- **历史回放复用实时组件**：`trace_events` 无 HTTP 端点（T-08 未到），回放仅经 WS 重连——后端重放
+  `graph_static → trace_start → 全量事件`，`syncReduce` 据 `trace_start` 自动清动态态并按 `event_seq`
+  复现，故实时 Tab 与回放 Tab 共用同一 `CotView` 组件（PRD §13.3「与真实执行完全匹配」）。
+- **会话列表**：服务端「近 30 min 存活 session」过滤属 T-08（无 list 端点）；前端展示 localStorage
+  自管会话，点击切换即重连 WS 重放。
 
 ## Blocked by
 

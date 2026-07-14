@@ -81,6 +81,17 @@
   被确认段用提议文本、被编辑段用编辑文本、被驳回段回退原文、未触达段逐字节原文。
   仍不可跳过、`Hitl2GateError` 原样上抛、绝不替人拍板（ADR-0010 不动）；原 `writeback` 节点裁撤，终稿在此落地。`adopted`/`corrected`/`adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）。见 ADR-0017。
 
+## 运行时身份（可视化服务·ADR-0022 / ADR-0023）
+
+- **会话 (session_id)**：一个浏览器标签页对应的工作台身份，**外部**（一期前端、二期 Java 登录后）生成、Python 仅登记与校验、不生成。
+  作 checkpointer `thread_id`、PauseMeta / session_owner / 锁 / 注册表的内部主键；跨刷新稳定。
+  _避免_: 把 `session_id` 当 Python 维护的对象、或与 [[session_context]] 混用。
+- **链路 (trace_id)**：工作台内**一次修订执行链路** ID，**Python 内部 mint**（收到无活跃 `pause_meta` 的 `query` 时生成）；HITL 断点续跑复用同一 `trace_id`。
+  一个 session 含多个 trace（多轮修订）。
+  _避免_: 把 `trace_id` 与 `session_id` 混为一谈、或交由前端生成（fresh-run vs resume 仅 Python 能判）。
+- **会话上下文 (session_context)**：单次运行的只读上下文袋（`session_id` / `user_id` / `current_time` / `user_prompt`），与上述 `session_id` 不同概念——前者随每次 run 注入、后者跨多 run 稳定。
+- **event_seq**：单 trace 内事件时序序号，翻译层 mint、`trace_events.event_seq` 落库，前端按序过滤乱序；`heartbeat` 为 -1。
+
 ## 实现映射
 
 本文件只定义概念；具体实现见下列文档，二者分层维护、避免漂移。

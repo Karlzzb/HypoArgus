@@ -1,8 +1,8 @@
 ---
 id: T-05
 title: 翻译层（astream_events → §6.4 事件）+ trace_events 持久日志
-status: todo
-assignee: ""
+status: done
+assignee: "Karlzzb"
 blocked_by: ["T-04"]
 covers_adr: ["0023"]
 covers_prd: ["§1.3", "§4.2.2", "§6.4", "§7.3", "§10.2"]
@@ -49,15 +49,15 @@ type: feature
 
 ## Acceptance criteria
 
-- [ ] `trace_events` 表落地（schema + 索引）；翻译层每事件写一行、非阻塞。
-- [ ] §6.4 全事件类型可由 `astream_events` 映射产出（除 `heartbeat`/`graph_static` 由 T-06 产）；`event_seq` 单 trace 内从 0 单调自增、续跑从 `max(event_seq)+1` 顺延无断层。
-- [ ] `node_instance` 正确区分回放环（同节点多次触发从 0 起）。
-- [ ] `visible=False` 节点的 `node_*` / `llm_thinking` / `tool_call` 被丢弃，trace 级事件保留。
-- [ ] `human_pause` 的 `question` / `hint` 取自 checkpoint interrupt payload（`aget_state`），与 HTTP `NEED_HUMAN_INPUT` 同源。
-- [ ] 翻译层写库**不阻塞**图执行（不变量验证：模拟慢写 / 写失败不影响 run 推进、不杀图）。
-- [ ] Langfuse handler 与 `astream_events` 消费端共存零冲突；Langfuse 写失败降级记错、不阻塞对话。
-- [ ] 回放可信源验证：一次完整 run 后查 `trace_events`，事件序列与真实执行流程匹配（同源同词汇）。
-- [ ] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+- [x] `trace_events` 表落地（schema + 索引）；翻译层每事件写一行、非阻塞。
+- [x] §6.4 全事件类型可由 `astream_events` 映射产出（除 `heartbeat`/`graph_static` 由 T-06 产）；`event_seq` 单 trace 内从 0 单调自增、续跑从 `max(event_seq)+1` 顺延无断层。
+- [x] `node_instance` 正确区分回放环（同节点多次触发从 0 起）。
+- [x] `visible=False` 节点的 `node_*` / `llm_thinking` / `tool_call` 被丢弃，trace 级事件保留。
+- [x] `human_pause` 的 `question` / `hint` 取自 checkpoint interrupt payload（`aget_state`），与 HTTP `NEED_HUMAN_INPUT` 同源。
+- [x] 翻译层写库**不阻塞**图执行（不变量验证：模拟慢写 / 写失败不影响 run 推进、不杀图）。
+- [x] Langfuse handler 与 `astream_events` 消费端共存零冲突；Langfuse 写失败降级记错、不阻塞对话。
+- [x] 回放可信源验证：一次完整 run 后查 `trace_events`，事件序列与真实执行流程匹配（同源同词汇）。
+- [x] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
 
 ## Blocked by
 

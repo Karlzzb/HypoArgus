@@ -47,11 +47,21 @@ def _build_app(
     *,
     checkpointer: Any,
     session_cache: Any,
+    trace_store: Any | None = None,
     agents: Any | None = None,
     config: RunServiceConfig | None = None,
+    langfuse_handler: Any | None = None,
+    visibility: Any | None = None,
 ) -> tuple[RunService, Any]:
     orch = Orchestrator(agents=agents or _interrupt_agents(), checkpointer=checkpointer)
-    service = RunService(orch, session_cache, config=config or RunServiceConfig())
+    service = RunService(
+        orch,
+        session_cache,
+        trace_store=trace_store,
+        langfuse_handler=langfuse_handler,
+        visibility=visibility,
+        config=config or RunServiceConfig(),
+    )
     return service, create_app(service)
 
 
@@ -287,7 +297,7 @@ async def test_param_error_neither_query_nor_human_response(
 
 
 class _SlowGraph:
-    """伪图：``ainvoke`` 永久睡眠，触 ``asyncio.wait_for`` 超时。不触 PG / 真图。"""
+    """伪图：``ainvoke`` / ``astream_events`` 永久睡眠，触 ``asyncio.wait_for`` 超时。不触 PG / 真图。"""
 
     next: tuple[str, ...] = ()
     values: dict[str, Any] = {}
@@ -295,6 +305,12 @@ class _SlowGraph:
 
     async def ainvoke(self, *_a: Any, **_k: Any) -> Any:
         await asyncio.sleep(30)
+
+    async def astream_events(self, *_a: Any, **_k: Any) -> Any:
+        # async generator：永不 yield（wait_for 在睡眠期取消 → TimeoutError）。
+        await asyncio.sleep(30)
+        if False:  # pragma: no cover  # noqa: RET503 — 使本函数为 async generator
+            yield
 
     async def aget_state(self, *_a: Any, **_k: Any) -> Any:
         return self

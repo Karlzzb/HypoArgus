@@ -35,6 +35,7 @@ __all__ = [
     "VisibilityConfig",
     "build_graph_view",
     "load_visibility",
+    "compute_hidden_names",
 ]
 
 
@@ -115,20 +116,17 @@ def load_visibility(path: str | Path) -> VisibilityConfig:
     return VisibilityConfig(hidden=frozenset(str(x) for x in hidden_raw))
 
 
-def build_graph_view(
-    manifest: tuple[AgentEntry, ...],
-    visibility: VisibilityConfig,
-) -> GraphView:
-    """把 ``manifest`` 单一源拓扑 + 展示元数据 + 可见性摊成 :class:`GraphView`（纯函数）。
+def _classify_visibility(
+    manifest: tuple[AgentEntry, ...], visibility: VisibilityConfig
+) -> tuple[set[str], frozenset[str], list[str]]:
+    """裁决节点可见性，返回 (visible_names, hidden_names, warnings)。
 
-    拓扑（含 START / END / 受控回放边）从 ``manifest`` 推导、不另写拓扑；可见性只影响展示
-    （隐藏节点不出现在 ``nodes``、前后可见节点补直连边、回放边自环丢弃）。interrupt 节点
-    强制可见、override 忽略并告警。详见模块 docstring。
+    单一定义点：``build_graph_view``（图结构内省）与 ``EventTranslator``（T-05 翻译层
+    ``visible=False`` 节点事件过滤）共享同一隐藏集，避免漂移。interrupt 节点强制
+    ``visible=True``（override 忽略 + 告警）——HITL 不可对前端隐身。
     """
 
     warnings: list[str] = []
-
-    # 1) 可见性裁决：interrupt 节点强制 visible=True（override 忽略 + 告警）。
     visible_names: set[str] = set()
     for entry in manifest:
         override_hidden = entry.name in visibility.hidden
@@ -140,7 +138,36 @@ def build_graph_view(
             visible_names.add(entry.name)
         elif entry.visible and not override_hidden:
             visible_names.add(entry.name)
-    hidden_names = {e.name for e in manifest} - visible_names
+    hidden_names = frozenset({e.name for e in manifest} - visible_names)
+    return visible_names, hidden_names, warnings
+
+
+def compute_hidden_names(
+    manifest: tuple[AgentEntry, ...], visibility: VisibilityConfig
+) -> frozenset[str]:
+    """返回 ``visible=False``（含 override 隐藏、不含强制可见 interrupt）的节点名集合。
+
+    供 :class:`api_layer.translator.EventTranslator` 在事件层丢弃隐藏节点的 ``node_*`` /
+    ``llm_thinking`` / ``tool_call``（保留 trace 级事件）。与 :func:`build_graph_view` 同源，
+    使「图结构隐藏的节点」与「事件流隐藏的节点」完全一致。
+    """
+
+    _visible, hidden, _warnings = _classify_visibility(manifest, visibility)
+    return hidden
+
+
+def build_graph_view(
+    manifest: tuple[AgentEntry, ...],
+    visibility: VisibilityConfig,
+) -> GraphView:
+    """把 ``manifest`` 单一源拓扑 + 展示元数据 + 可见性摊成 :class:`GraphView`（纯函数）。
+
+    拓扑（含 START / END / 受控回放边）从 ``manifest`` 推导、不另写拓扑；可见性只影响展示
+    （隐藏节点不出现在 ``nodes``、前后可见节点补直连边、回放边自环丢弃）。interrupt 节点
+    强制可见、override 忽略并告警。详见模块 docstring。
+    """
+
+    visible_names, hidden_names, warnings = _classify_visibility(manifest, visibility)
 
     # 2) 原始边集（含 START / END / 回放边），从 manifest 单一源推导。
     depended = {dep for entry in manifest for dep in entry.deps}

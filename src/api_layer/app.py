@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, Header, Request, status
+from fastapi import FastAPI, Header, Request, WebSocket, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -33,6 +33,7 @@ from api_layer.graph_view import (
     load_visibility,
 )
 from api_layer.run import RunRequest, RunResponse, RunService
+from api_layer.ws import WSSenderService
 
 __all__ = ["GraphResponse", "create_app", "default_visibility_path"]
 
@@ -74,9 +75,10 @@ class GraphResponse(BaseModel):
 
 @dataclass(frozen=True)
 class _AppDeps:
-    """装配应用所需依赖（图驱动服务 + 可见性配置路径）。"""
+    """装配应用所需依赖（图驱动服务 + WS-sender + 可见性配置路径）。"""
 
     run_service: RunService
+    ws_service: WSSenderService | None
     visibility_path: Path | None
 
 
@@ -109,18 +111,22 @@ def _graph_view_to_response(gv: GraphView) -> GraphResponse:
 def create_app(
     run_service: RunService,
     *,
+    ws_service: WSSenderService | None = None,
     visibility_path: Path | None = None,
 ) -> FastAPI:
     """装配 FastAPI 应用。
 
     ``run_service`` 已注入 ``Orchestrator``（checkpointer + InterruptHitl*Gate）+
     :class:`SessionCacheBase`；本函数只挂路由 + 错误处理 + user_id 抽取依赖。
+    ``ws_service`` 注入则挂 ``/ws/agent/stream`` WS-sender 路由（T-06·ADR-0023：只读尾随
+    ``trace_events``，WS 断开不中止 run）；缺省 ``None`` 不挂 WS 路由（T-06 前的离线态）。
     ``visibility_path`` 缺省 ``None`` → 全可见（``VisibilityConfig()``），故 ``hitl1→parse+partition``
     回放边出现（PRD §5.4）；传入路径则按部署 override 隐藏节点（文件缺失 → 全可见，不抛）。
     """
 
     deps = _AppDeps(
         run_service=run_service,
+        ws_service=ws_service,
         visibility_path=visibility_path,
     )
     app = FastAPI(title="HypoArgus 控制面", version="0.1.0")
@@ -153,5 +159,20 @@ def create_app(
         """fresh（``query``）/ resume（``human_response``）二态驱动至终止态或暂停。"""
 
         return await deps.run_service.run(request, user_id=x_user_id or "")
+
+    @app.websocket("/ws/agent/stream")
+    async def ws_stream(websocket: WebSocket) -> None:
+        """WS-sender（T-06·ADR-0023）：``?session_id=`` + ``X-User-Id`` 头 → 只读尾随 ``trace_events``。
+
+        ``ws_service`` 未注入（T-06 前离线态）→ 1008 关闭；注入则委托 :meth:`WSSenderService.serve`。
+        """
+
+        if deps.ws_service is None:
+            await websocket.accept()
+            await websocket.close(code=1008)
+            return
+        session_id = websocket.query_params.get("session_id") or ""
+        user_id = websocket.headers.get("x-user-id") or websocket.headers.get("X-User-Id") or ""
+        await deps.ws_service.serve(websocket, session_id, user_id)
 
     return app

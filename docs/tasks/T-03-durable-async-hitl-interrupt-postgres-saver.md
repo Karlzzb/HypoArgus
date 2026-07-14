@@ -1,8 +1,8 @@
 ---
 id: T-03
 title: 持久化异步 HITL（interrupt + PostgresSaver + CLI resume 循环）
-status: todo
-assignee: ""
+status: done
+assignee: "Karlzzb"
 blocked_by: ["T-01"]
 covers_adr: ["0022"]
 covers_prd: ["§1.4", "§4.1", "§4.2.1", "§4.2.2", "§10.2", "§10.3", "§10.4"]
@@ -42,15 +42,58 @@ type: feature
 
 ## Acceptance criteria
 
-- [ ] `graph.compile(checkpointer=PostgresSaver(...))`；`thread_id = session_id`；进程重启后 checkpoint / interrupt 暂停点仍在。
-- [ ] `hitl1` / `hitl2` 用 `interrupt()` 暂停；resume 用 `Command(resume=...)`；未直接改 State 字段（PRD §10.3 约束 2）。
-- [ ] 业务纯函数 `confirm` / `confirm_partition` / `resolve_rewrites` / `assemble_final_document` 未改。
-- [ ] `OriginalParagraphs` 经 `PostgresSaver` 序列化写读等价（有断言测试）；若需自定义编解码器已落地。
-- [ ] CLI resume 循环可驱动完整一次修订（含 hitl1 / hitl2 两次暂停 + 续跑）直至终态 `final_document`。
-- [ ] CLI 跨进程续跑成立：在一个进程中跑至 hitl 暂停（进程退出），新进程以同 `session_id` 启动、`aget_state` 见 interrupt、读输入、`Command(resume)` 续跑至完成。
-- [ ] e2e 测试重构：`FakeHitl*Gate` 注入式 e2e 改为「驱动图 + `Command(resume=fake_decision)`」形式（PRD §10.4 / ADR-0022 Consequences）；`tests/test_orchestrator_e2e.py`、`test_orchestrator_resume.py`、`test_real_llm_wiring.py` 等全绿。
-- [ ] 新增 Postgres 测试 fixture（`tests/conftest.py` 当前仅有 `sample_doc`，无 db fixture）；CI / 本地可在 conda `HypoArgus` 跑（testcontainer 或共享 PG，任选其一并记录在 `docs/TESTING.md`）。
-- [ ] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+- [x] `graph.compile(checkpointer=PostgresSaver(...))`；`thread_id = session_id`；进程重启后 checkpoint / interrupt 暂停点仍在。
+- [x] `hitl1` / `hitl2` 用 `interrupt()` 暂停；resume 用 `Command(resume=...)`；未直接改 State 字段（PRD §10.3 约束 2）。
+- [x] 业务纯函数 `confirm` / `confirm_partition` / `resolve_rewrites` / `assemble_final_document` 未改（`src/agents/hitl1/agent.py` 与 `src/agents/hitl2/agent.py` git diff 为空）。
+- [x] `OriginalParagraphs` 经 `PostgresSaver` 序列化写读等价（有断言测试）；若需自定义编解码器已落地。
+- [x] CLI resume 循环可驱动完整一次修订（含 hitl1 / hitl2 两次暂停 + 续跑）直至终态 `final_document`。
+- [x] CLI 跨进程续跑成立：在一个进程中跑至 hitl 暂停（进程退出），新进程以同 `session_id` 启动、`aget_state` 见 interrupt、读输入、`Command(resume)` 续跑至完成。
+- [x] e2e 测试重构：`FakeHitl*Gate` 注入式 e2e 改为「驱动图 + `Command(resume=fake_decision)`」形式（PRD §10.4 / ADR-0022 Consequences）；`tests/test_orchestrator_e2e.py`、`test_orchestrator_resume.py`、`test_real_llm_wiring.py` 等全绿。
+- [x] 新增 Postgres 测试 fixture（`tests/conftest.py` 当前仅有 `sample_doc`，无 db fixture）；CI / 本地可在 conda `HypoArgus` 跑（testcontainer 或共享 PG，任选其一并记录在 `docs/TESTING.md`）。
+- [x] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+
+## Verification（真实输出）
+
+```
+$ conda run -n HypoArgus ruff check .
+All checks passed!
+
+$ conda run -n HypoArgus mypy --strict src
+Success: no issues found in 41 source files
+
+$ conda run -n HypoArgus pytest -q
+441 passed, 3 skipped in 31.21s
+  # skipped：test_writeback.py:330 样例不足两段 ×2；test_real_llm_wiring.py:293 dashscope_smoke 需 key+网络 ×1
+```
+
+## 实现纪要（与 ADR-0022 对齐）
+
+- **checkpointer 选型**：`AsyncPostgresSaver`（`langgraph.checkpoint.postgres.aio`，`from_conn_string(dsn, serde=...)`
+  async 上下文管理器 + `await saver.setup()`）。同步 `PostgresSaver` 的 `aget_tuple` 抛 `NotImplementedError`——
+  `ainvoke` / `aget_state` 需 async saver。DSN 从 `.env` 的 `HYPOARGUS_PG_DSN` 解析（`runtime.checkpoint.resolve_pg_dsn`）。
+- **`OriginalParagraphs` 编解码器**（`runtime.checkpoint.HypoArgusSerializer`，`JsonPlusSerializer` 子类）：
+  默认 msgpack 编码器不认 `OriginalParagraphs`（slots + `MappingProxyType` + bytes）末尾抛 `TypeError`。
+  顶层把它摊成哨兵键信封（`order` + `entries`）委托父类、读回据哨兵键经公共 `OriginalParagraphs([Paragraph(...)])`
+  构造器还原——不改 `OriginalParagraphs` 自身（零侵入边界）。其余 state 值（pydantic / bytes / dict / 原生）
+  原样委托父类（`Argument` / `Hypothesis` / `SessionContext` / `TimeRange` / `Source` 均经 pydantic v2 ext）。
+- **gate seam 落地**（`runtime.gates.InterruptHitl1Gate` / `InterruptHitl2Gate`）：`review() = parse_reply(interrupt(formulate_question(view)))`——
+  组合 T-01 拆分 seam。纯函数 `confirm_partition` / `confirm` 不改、仍调 `gate.review()`；`interrupt()` 经节点执行栈
+  （节点 → 纯函数 → `gate.review`）的 contextvar 生效。interrupt payload（`Hitl*Question`）落 checkpoint、
+  驱动者从 `aget_state().tasks[].interrupts[].value` 取回渲染。一期 `parse_reply` 产 action-only 决策（空 ops）。
+- **`_guarded` 放行 `GraphBubbleUp`**（`agents.assembly`）：原 `except Exception` 吞 `GraphInterrupt`（`GraphBubbleUp`
+  子类）→ hitl1/hitl2 节点的 interrupt 被静默兜底、图不暂停。改为 `except (Hitl2GateError, GraphBubbleUp): raise`；
+  普通异常仍兜底（既有降级语义不动，`test_guarded_still_swallows_plain_runtime_error` 守住）。
+- **Orchestrator 装配**（`runtime.orchestrator`）：`__init__(..., *, checkpointer=None)` → `graph.compile(checkpointer=...)`；
+  `run_with_report` 在 checkpointer 在场时设 `thread_id = session_id`。`checkpointer=None` 保既有同步路径
+  （`graph.invoke` + Fake/Cli/Conservative 闸门）零改动、e2e 字节级测试全绿。
+- **CLI resume 循环**（`runtime.run_real.run_resume_loop` + `arun_real_pipeline`）：`aget_state` 判 fresh（values 空 →
+  喂 input）/ resume（既有 checkpoint → 不重喂）；循环 `aget_state` → `next` 空→终态返 `RunResult`；非空→据 `next`
+  节点名渲染 `Hitl*Question`、读输入、构造 `Hitl*Reply`、`ainvoke(Command(resume=reply))`。`main()` 改异步（`asyncio.run`）+
+  `load_dotenv()`。同步 `run_real_pipeline`（CliHitl*Gate、无 checkpointer）保留为程序化 / 离线全保真路径。
+- **配置**：`pyproject.toml` 设 `asyncio_mode = "auto"`（pytest-asyncio 自动收集 async 测试）；`tests/conftest.py`
+  `load_dotenv()` + `pg_checkpointer` async 夹具（PG 不可达 skip）。
+- **`.env` 修复**：原 `LANGFUSE_BASE_URL` 引号未在第 13 行闭合、吞掉 redis/clickhouse 注释行致 `InvalidURL`（flaky
+  `test_e2e_real_langfuse`）；修正闭合、注释独立成行（pre-existing bug，非本切片引入，按质量门修）。
 
 ## Blocked by
 

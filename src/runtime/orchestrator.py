@@ -211,10 +211,16 @@ class Orchestrator:
         self,
         agents: Agents | None = None,
         spec: tuple[StageSpec, ...] | None = None,
+        *,
+        checkpointer: Any | None = None,
     ) -> None:
         self.agents = agents or create_stub_agents()
         self.spec: tuple[StageSpec, ...] = spec if spec is not None else default_pipeline()
         self._recursion_limit: int = self._compute_recursion_limit(self.spec)
+        # checkpointer（ADR-0022·T-03）：None = 内存态、同步 invoke（既有路径，保 e2e 字节级
+        # 承诺测试零改动）；注入 ``AsyncPostgresSaver`` 后图可 ``interrupt`` 暂停 + 跨进程续跑
+        # （thread_id = session_id，见 :meth:`run_with_report` / 驱动者 resume 循环）。
+        self.checkpointer: Any | None = checkpointer
         self.graph: Any = self._build_graph(self.spec)
 
     @staticmethod
@@ -291,7 +297,7 @@ class Orchestrator:
                 )
             elif stage.name not in depended:
                 graph.add_edge(stage.name, END)
-        return graph.compile()
+        return graph.compile(checkpointer=self.checkpointer)
 
     def run(
         self,
@@ -340,6 +346,11 @@ class Orchestrator:
         # recursion 预算随拓扑 max_replays 缩放（ADR-0018 有界打回不触发 GraphRecursionError）；
         # 调用方经 session_config["recursion_limit"] 显式覆盖时不改。
         config.setdefault("recursion_limit", self._recursion_limit)
+        if self.checkpointer is not None and ctx.session_id:
+            # thread_id = session_id（ADR-0022·T-03）：checkpointer 按 thread 持久化 checkpoint
+            # 与 interrupt 暂停点；同 session_id 续跑即复用同一 thread 的断点。
+            config.setdefault("configurable", {})
+            config["configurable"].setdefault("thread_id", ctx.session_id)
         result: dict[str, Any] = self.graph.invoke(
             {"original_doc": bytes(original_doc), "session_context": ctx},
             config=config,

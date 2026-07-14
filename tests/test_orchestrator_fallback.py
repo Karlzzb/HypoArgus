@@ -182,6 +182,49 @@ def test_retrieval_exception_falls_back_to_empty_citations_and_logs():
 
 
 # --------------------------------------------------------------------------- #
+# _guarded 不吞 langgraph 控制流异常（T-03·ADR-0022）
+#
+# interrupt() 经 GraphInterrupt（GraphBubbleUp 子类）解栈暂停。hitl1/hitl2 节点经
+# ``_guarded`` 包裹 gate.review（其内 interrupt）；若 ``_guarded`` 的 ``except Exception``
+# 吞掉 GraphBubbleUp，则 interrupt 被静默兜底、图不暂停——破坏整个异步 HITL spine。
+# 故 ``_guarded`` 必须原样放行 GraphBubbleUp（与 Hitl2GateError 同级硬停）。
+# --------------------------------------------------------------------------- #
+
+
+def test_guarded_re_raises_graph_bubbleup_not_swallowed() -> None:
+    """GraphBubbleUp（GraphInterrupt 基类）经 _guarded 原样上抛、不走 fallback。"""
+
+    from langgraph.errors import GraphBubbleUp
+
+    from agents.assembly import _guarded
+
+    def _raise_bubble() -> dict[str, object]:
+        raise GraphBubbleUp("interrupt")
+
+    fallback_ran: list[bool] = []
+
+    def _fallback() -> dict[str, object]:
+        fallback_ran.append(True)
+        return {"errors": ["fallback"]}
+
+    with pytest.raises(GraphBubbleUp):
+        _guarded("hitl1", _raise_bubble, _fallback)
+    assert fallback_ran == []  # 不兜底
+
+
+def test_guarded_still_swallows_plain_runtime_error() -> None:
+    """普通异常仍经 _guarded 兜底（GraphBubbleUp 放行不影响既有降级语义）。"""
+
+    from agents.assembly import _guarded
+
+    def _raise() -> dict[str, object]:
+        raise RuntimeError("boom")
+
+    out = _guarded("hitl1", _raise, lambda: {"errors": ["fb"]})
+    assert out == {"errors": ["fb"]}
+
+
+# --------------------------------------------------------------------------- #
 # hitl1 partition 确认闸门 + 有界打回（ADR-0018 / ADR-0020·Slice 2）
 #
 # hitl1 重定义为 partition 确认闸门：确认继续（skip/accept/edit）→ 下游；打回重跑

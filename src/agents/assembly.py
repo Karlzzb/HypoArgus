@@ -27,6 +27,8 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
+from langgraph.errors import GraphBubbleUp
+
 from agents.hitl1 import Hitl1Gate
 from agents.hitl1 import confirm_partition as hitl1_confirm_partition
 from agents.hitl1.contract import (
@@ -412,18 +414,24 @@ def _guarded(
     body: Callable[[], dict[str, object]],
     fallback: Callable[[], dict[str, object]],
 ) -> dict[str, object]:
-    """stage 异常兜底：``body()`` 正常返回 patch；异常（非 :class:`Hitl2GateError`）→
-    ``fallback()`` + 日志、单向向前推进（PRD §13）。
+    """stage 异常兜底：``body()`` 正常返回 patch；异常（非 :class:`Hitl2GateError`、非
+    :class:`GraphBubbleUp`）→ ``fallback()`` + 日志、单向向前推进（PRD §13）。
 
     各下游 stage 的兜底形状此前各自重复 ``try / except Hitl2GateError: raise /
     except Exception: log + fallback``——收口于此：各 stage 只声明「正常返回」与
     「降级 patch」两件本质之事，样板集中一处（locality）。``Hitl2GateError`` 为硬闸门
     正确性硬停，**原样上抛、不兜底**（绝不无人拍板自动采纳，ADR-0010）。
+
+    :class:`GraphBubbleUp`（``GraphInterrupt`` 的基类）是 langgraph 控制流异常族——
+    T-03 后 hitl1/hitl2 节点经 ``_guarded`` 包裹 ``gate.review()``（其内 ``interrupt()`` 抛
+    ``GraphInterrupt`` 暂停）。若 ``except Exception`` 吞之，interrupt 被静默兜底、图不暂停
+    ——破坏异步 HITL spine。故 ``GraphBubbleUp`` 与 ``Hitl2GateError`` 同级：原样放行、不走
+    fallback。普通异常仍兜底（既有降级语义不动）。
     """
 
     try:
         return body()
-    except Hitl2GateError:
+    except (Hitl2GateError, GraphBubbleUp):
         raise
     except Exception as exc:
         return {**_log_error_patch(stage, exc), **fallback()}

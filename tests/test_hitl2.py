@@ -29,6 +29,8 @@ from agents.hitl2 import (
     Hitl2Decision,
     Hitl2Gate,
     Hitl2GateError,
+    Hitl2Question,
+    Hitl2Reply,
     Hitl2Review,
     ParagraphRewriteReview,
     RejectRewriteOp,
@@ -291,3 +293,72 @@ def test_conservative_gate_pending_decides_empty_ops_rejects_all():
     confirmation = confirm(original_paragraphs, proposed, ConservativeHitl2Gate())
     assert confirmation.final_document == original_paragraphs.get("p0001") + original_paragraphs.get("p0002")
     assert confirmation.resolved_rewrites == {}
+
+
+# --------------------------------------------------------------------------- #
+# 拆分 gate seam（T-01·ADR-0022 prefactor）— formulate_question + parse_reply
+# --------------------------------------------------------------------------- #
+
+
+def test_formulate_question_wraps_review_as_interrupt_payload():
+    """formulate_question 产 Hitl2Question：包裹 build_review 呈现（interrupt payload）。
+
+    ADR-0022：interrupt payload = formulate_question 产出。hitl2 的「问题」即被触达段
+    原文 × 提议重写的逐段待确认表（Hitl2Review）。
+    """
+
+    original_paragraphs, proposed = _doc_and_proposed()
+    review = build_review(original_paragraphs, proposed)
+    gate = FakeHitl2Gate(Hitl2Decision(action=Hitl2Action.PASS))
+    question = gate.formulate_question(review)
+    assert isinstance(question, Hitl2Question)
+    assert question.review is review  # 包裹同一呈现视图
+
+
+def test_parse_reply_produces_action_only_decision_with_empty_ops():
+    """一期 parse_reply 产 action-only Hitl2Decision（空 ops）；结构化逐段 ops 推后（PRD §7.2）。
+
+    DECIDE + 空 ops = 全驳回（保守口径）；PASS 直通。reply 的 text 不影响决策。
+    """
+
+    gate = FakeHitl2Gate(Hitl2Decision(action=Hitl2Action.PASS))
+    decided = gate.parse_reply(Hitl2Reply(action=Hitl2Action.DECIDE, text="自由文本"))
+    assert isinstance(decided, Hitl2Decision)
+    assert decided.action is Hitl2Action.DECIDE
+    assert decided.ops == []  # action-only：逐段 ops 推后
+
+
+@pytest.mark.parametrize("action", [Hitl2Action.PASS, Hitl2Action.DECIDE])
+def test_parse_reply_action_round_trips(action: Hitl2Action) -> None:
+    """parse_reply 对 PASS / DECIDE 均原样落到 Hitl2Decision.action（action-only）。"""
+
+    gate = FakeHitl2Gate(Hitl2Decision(action=Hitl2Action.PASS))
+    assert gate.parse_reply(Hitl2Reply(action=action)).action is action
+
+
+def test_conservative_gate_implements_split_seam_action_only():
+    """ConservativeHitl2Gate 实现拆分后 Protocol：formulate_question 包裹 review、parse_reply action-only。"""
+
+    original_paragraphs, proposed = _doc_and_proposed()
+    review = build_review(original_paragraphs, proposed)
+    gate = ConservativeHitl2Gate()
+    question = gate.formulate_question(review)
+    assert isinstance(question, Hitl2Question)
+    assert question.review.has_pending is True
+    decided = gate.parse_reply(Hitl2Reply(action=Hitl2Action.DECIDE))
+    assert decided.action is Hitl2Action.DECIDE
+    assert decided.ops == []
+
+
+def test_seam_does_not_alter_conservative_sync_review_full_fidelity():
+    """拆分后 ConservativeHitl2Gate.review 仍据 has_pending 全保真决策（同步便捷包装）。"""
+
+    gate = ConservativeHitl2Gate()
+    # 有待决 → DECIDE + 空 ops（全驳回）；无待决 → PASS。
+    pending_review = Hitl2Review(
+        paragraphs=[ParagraphRewriteReview(paragraph_id="p0002", original_text="x", proposed_text="y")],
+        has_pending=True,
+    )
+    empty_review = Hitl2Review(paragraphs=[], has_pending=False)
+    assert gate.review(pending_review) == Hitl2Decision(action=Hitl2Action.DECIDE, ops=[])
+    assert gate.review(empty_review) == Hitl2Decision(action=Hitl2Action.PASS)

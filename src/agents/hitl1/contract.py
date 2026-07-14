@@ -40,6 +40,8 @@ __all__ = [
     "Hitl1Decision",
     "Hitl1Route",
     "Hitl1Outcome",
+    "Hitl1Question",
+    "Hitl1Reply",
     "DEFAULT_MAX_PARTITION_RETRIES",
     "Hitl1Gate",
     "FakeHitl1Gate",
@@ -162,26 +164,86 @@ class Hitl1Outcome:
 
 
 # --------------------------------------------------------------------------- #
+# 拆分 gate seam（T-01·ADR-0022 prefactor）：formulate_question + parse_reply
+# --------------------------------------------------------------------------- #
+
+
+class Hitl1Question(BaseModel):
+    """``formulate_question`` 产出 = interrupt payload：partition 确认闸门交给人的问题视图。
+
+    承载当前论证树（人确认段落切分是否合理）。ADR-0022：interrupt payload =
+    ``formulate_question`` 产出——服务侧经 ``interrupt`` 把此载荷交给前端、CLI 侧经终端
+    渲染。本载荷为纯数据快照，与调用方树解耦。
+    """
+
+    argument_tree: list[Argument]
+
+
+class Hitl1Reply(BaseModel):
+    """``parse_reply`` 输入 = resume value：人对 partition 确认问题的回复。
+
+    一期承载 ``action`` + 自由文本；结构化 ``ops`` 编辑经 interrupt 路径推后（PRD §7.2 注），
+    故 ``parse_reply`` 产 **action-only** :class:`Hitl1Decision`（空 ``ops``）。ADR-0022：
+    resume value = ``parse_reply`` 输入——服务侧 resume 把此回复喂回，CLI 侧经 ``input()`` 收。
+    """
+
+    action: Hitl1Action
+    text: str = ""
+
+
+# --------------------------------------------------------------------------- #
 # 闸门 seam + 离线桩
 # --------------------------------------------------------------------------- #
 
 
 class Hitl1Gate(Protocol):
-    """HITL-1 闸门 seam：审阅树 → 返回纯数据决策。
+    """HITL-1 闸门 seam：拆分为 ``formulate_question`` + ``parse_reply`` 两段（T-01·ADR-0022）。
 
-    真实实现用 ``interrupt`` 把树交给用户、用 ``Command(resume)`` 收回决策（#11）；
-    本 seam 不绑任何前端/中断机制。``confirm`` 保证：闸门看到的是**原始**树，
-    而非中间编辑态——多步编辑在闸门一次返回、由 ``confirm`` 顺序应用。
+    两段为图层级共同契约：服务侧 ``InterruptDrivenGate`` 在 ``formulate_question`` 后
+    ``interrupt`` 暂停、resume 时把回复喂 ``parse_reply``；CLI 侧 ``TerminalGate`` 同步阻塞
+    （``formulate_question`` 后立即 ``input()`` 再 ``parse_reply``）。一期 ``parse_reply`` 产
+    **action-only** :class:`Hitl1Decision`（空 ``ops``），结构化 ``ops`` 编辑推后（PRD §7.2 注）。
+
+    ``review`` 保留为**同步便捷包装**（默认实现抛 ``NotImplementedError``，仅同步 gate 覆写），
+    不作为新代码依赖点——业务纯函数 ``confirm`` / ``confirm_partition`` 现仍调它（全保真含 ops、
+    行为等价）；异步 gate 走 ``formulate_question`` + ``parse_reply``。``confirm`` 保证：闸门看到
+    的是**原始**树，而非中间编辑态——多步编辑在闸门一次返回、由 ``confirm`` 顺序应用。
     """
 
-    def review(self, argument_tree: list[Argument]) -> Hitl1Decision: ...
+    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
+        """据当前视图构造问题（interrupt payload = 快照载荷）。"""
+        ...
+
+    def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
+        """把人工回复解析成 action-only :class:`Hitl1Decision`（空 ops）。"""
+        ...
+
+    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
+        """同步便捷包装（仅同步 gate 覆写；异步 gate 经 ``formulate_question`` + ``parse_reply``）。"""
+        raise NotImplementedError(
+            "同步 review 未实现：异步 gate 经 formulate_question + parse_reply 驱动（interrupt）"
+        )
 
 
 class FakeHitl1Gate:
-    """离线闸门桩：固定决策，provider-free、确定（供单测）。"""
+    """离线闸门桩：固定决策，provider-free、确定（供单测）。
+
+    ``review`` 返回构造时注入的**完整**决策（含 ops）——同步全保真路径，供 ``confirm`` /
+    ``confirm_partition`` 现有 e2e 使用。``formulate_question`` / ``parse_reply`` 实现拆分后
+    契约（action-only），为 T-03 ``InterruptDrivenGate`` 预留 seam 形状。
+    """
 
     def __init__(self, decision: Hitl1Decision) -> None:
         self._decision = decision
+
+    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
+        return Hitl1Question(
+            argument_tree=[n.model_copy(deep=True) for n in argument_tree]
+        )
+
+    def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
+        # 一期 action-only：reply 的 text 不影响决策，ops 恒空（结构化 ops 推后）。
+        return Hitl1Decision(action=reply.action)
 
     def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
         return self._decision.model_copy(deep=True)

@@ -20,6 +20,8 @@ from agents.hitl1 import (
     Hitl1Action,
     Hitl1Decision,
     Hitl1Gate,
+    Hitl1Question,
+    Hitl1Reply,
     confirm,
     confirm_partition,
 )
@@ -597,3 +599,78 @@ def test_confirm_partition_replay_once_then_continue_simulates_loop():
     assert out2.route is Hitl1Route.CONTINUE
     assert out2.retry_count == 1  # 确认继续不递增打回计数
     assert out2.exhausted is False
+
+
+# --------------------------------------------------------------------------- #
+# slice 7（T-01·ADR-0022 prefactor）：拆分 gate seam — formulate_question + parse_reply
+#
+# 把单一 review() 拆为两段语义，为 T-03 的 InterruptDrivenGate（interrupt 暂停、resume 喂回）
+# 与 TerminalGate（CLI 同步阻塞）提供共同契约。interrupt payload = formulate_question 产出；
+# resume value = parse_reply 输入（ADR-0022）。一期 parse_reply 产 action-only
+# Hitl1Decision（空 ops），结构化 ops 编辑推后（PRD §7.2 注）。业务纯函数 confirm /
+# confirm_partition 仍只调 gate.review()（同步便捷包装、全保真含 ops），行为等价。
+# --------------------------------------------------------------------------- #
+
+
+def test_formulate_question_returns_tree_snapshot_as_interrupt_payload():
+    """formulate_question 产 Hitl1Question：承载当前论证树快照（interrupt payload）。
+
+    快照与原树按值相等、但解耦（不别名），gate 不持有调用方可变引用。
+    """
+
+    argument_tree = _abc_tree()
+    gate = FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP))
+    question = gate.formulate_question(argument_tree)
+    assert isinstance(question, Hitl1Question)
+    assert [n.model_dump() for n in question.argument_tree] == [
+        n.model_dump() for n in argument_tree
+    ]
+    # 快照与原树解耦（不别名）——后续改原树不污染已构造的问题。
+    assert question.argument_tree is not argument_tree
+    argument_tree.append(_argument("z"))
+    assert "z" not in {n.argument_id for n in question.argument_tree}
+
+
+def test_parse_reply_produces_action_only_decision_with_empty_ops():
+    """一期 parse_reply 产 action-only Hitl1Decision（空 ops）；reply 的 text 不影响决策。
+
+    结构化 ops 编辑经 interrupt 路径推后（PRD §7.2 注）——即使 reply.action=EDIT，
+    parse_reply 亦只产 action、ops 恒空。
+    """
+
+    gate = FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP))
+    decision = gate.parse_reply(Hitl1Reply(action=Hitl1Action.EDIT, text="自由文本"))
+    assert isinstance(decision, Hitl1Decision)
+    assert decision.action is Hitl1Action.EDIT
+    assert decision.ops == []  # action-only：ops 恒空
+
+
+@pytest.mark.parametrize(
+    "action",
+    [Hitl1Action.SKIP, Hitl1Action.ACCEPT, Hitl1Action.EDIT, Hitl1Action.REPLAY],
+)
+def test_parse_reply_action_round_trips_for_all_actions(action: Hitl1Action) -> None:
+    """parse_reply 对四类 action 均原样落到 Hitl1Decision.action（action-only）。"""
+
+    gate = FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP))
+    assert gate.parse_reply(Hitl1Reply(action=action)).action is action
+
+
+def test_seam_does_not_alter_sync_review_full_fidelity():
+    """拆分后 review() 仍为同步便捷包装、全保真（含 ops），行为与现状等价。
+
+    FakeHitl1Gate.review 返回构造时注入的完整决策（含 ops），不被 action-only parse_reply
+    旁路污染——纯函数 confirm / confirm_partition 仍走 review()。
+    """
+
+    from agents.hitl1 import ReparentOp
+
+    decision = Hitl1Decision(
+        action=Hitl1Action.EDIT,
+        ops=[ReparentOp(argument_id="c", new_parent_id="b")],
+    )
+    gate = FakeHitl1Gate(decision)
+    reviewed = gate.review(_abc_tree())
+    assert reviewed.action is Hitl1Action.EDIT
+    assert reviewed.ops == decision.ops  # ops 全保真（不被 action-only 语义削空）
+

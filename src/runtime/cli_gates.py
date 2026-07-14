@@ -21,6 +21,8 @@ from agents.hitl1 import (
     Hitl1Action,
     Hitl1Decision,
     Hitl1Op,
+    Hitl1Question,
+    Hitl1Reply,
     MarkNoOpOp,
     MergeOp,
     ReparentOp,
@@ -33,6 +35,8 @@ from agents.hitl2 import (
     Hitl2Action,
     Hitl2Decision,
     Hitl2Op,
+    Hitl2Question,
+    Hitl2Reply,
     Hitl2Review,
     ParagraphRewriteReview,
     RejectRewriteOp,
@@ -72,6 +76,18 @@ class CliHitl1Gate:
         self._interactive = interactive
         self._input = input_fn
         self._out = out_fn
+
+    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
+        """构造问题载荷（interrupt payload = 树快照）；纯数据、不渲染、不阻塞。"""
+
+        return Hitl1Question(
+            argument_tree=[n.model_copy(deep=True) for n in argument_tree]
+        )
+
+    def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
+        """一期 action-only：reply 落 action、ops 恒空（结构化 ops 推后，PRD §7.2）。"""
+
+        return Hitl1Decision(action=reply.action)
 
     def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
         self._print_tree(argument_tree)
@@ -190,6 +206,16 @@ class CliHitl2Gate:
         self._interactive = interactive
         self._input = input_fn
         self._out = out_fn
+
+    def formulate_question(self, review: Hitl2Review) -> Hitl2Question:
+        """构造问题载荷（interrupt payload = 呈现视图）；纯数据、不渲染、不阻塞。"""
+
+        return Hitl2Question(review=review)
+
+    def parse_reply(self, reply: Hitl2Reply) -> Hitl2Decision:
+        """一期 action-only：reply 落 action、ops 恒空（逐段 ops 推后，PRD §7.2）。"""
+
+        return Hitl2Decision(action=reply.action)
 
     def review(self, review: Hitl2Review) -> Hitl2Decision:
         if not review.has_pending:

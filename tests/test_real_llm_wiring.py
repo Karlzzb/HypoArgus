@@ -14,10 +14,18 @@ from collections.abc import Iterable
 import pytest
 
 from agents.assembly import create_real_agents
-from agents.hitl1 import FakeHitl1Gate, Hitl1Action, Hitl1Decision
+from agents.hitl1 import (
+    FakeHitl1Gate,
+    Hitl1Action,
+    Hitl1Decision,
+    Hitl1Question,
+    Hitl1Reply,
+)
 from agents.hitl2 import (
     ConservativeHitl2Gate,
     Hitl2Action,
+    Hitl2Question,
+    Hitl2Reply,
     Hitl2Review,
 )
 from agents.rewrite_loop import FakeRewriteLlmClient, RewriteLoopOutcome
@@ -129,6 +137,56 @@ def test_cli_hitl2_gate_noninteractive_decides_empty():
     decision = gate.review(review)
     assert decision.action == Hitl2Action.DECIDE
     assert decision.ops == []
+
+
+# --------------------------------------------------------------------------- #
+# CLI 闸门拆分 seam（T-01·ADR-0022 prefactor）：formulate_question + parse_reply
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_hitl1_gate_formulate_question_returns_pure_snapshot_no_input_consumed():
+    """formulate_question 产 Hitl1Question（纯数据快照），不渲染依赖、不吃 input。"""
+
+    calls: list[str] = []
+
+    def _input(prompt: str = "") -> str:
+        calls.append(prompt)
+        return "skip"
+
+    gate = CliHitl1Gate(interactive=True, input_fn=_input, out_fn=lambda *_a, **_k: None)
+    tree = _sample_tree()
+    question = gate.formulate_question(tree)
+    assert isinstance(question, Hitl1Question)
+    assert [n.model_dump() for n in question.argument_tree] == [n.model_dump() for n in tree]
+    assert calls == []  # 纯构造、不阻塞取 input
+
+
+def test_cli_hitl1_gate_parse_reply_is_action_only():
+    """CLI parse_reply 一期 action-only（空 ops）；结构化 ops 编辑推后（PRD §7.2）。"""
+
+    gate = CliHitl1Gate(interactive=False, out_fn=lambda *_a, **_k: None)
+    decision = gate.parse_reply(Hitl1Reply(action=Hitl1Action.EDIT, text="自由文本"))
+    assert decision.action is Hitl1Action.EDIT
+    assert decision.ops == []
+
+
+def test_cli_hitl2_gate_formulate_question_wraps_review():
+    """CLI hitl2 formulate_question 产 Hitl2Question（包裹呈现 = interrupt payload）。"""
+
+    gate = CliHitl2Gate(interactive=False, out_fn=lambda *_a, **_k: None)
+    review = Hitl2Review(paragraphs=[], has_pending=False)
+    question = gate.formulate_question(review)
+    assert isinstance(question, Hitl2Question)
+    assert question.review is review
+
+
+def test_cli_hitl2_gate_parse_reply_is_action_only():
+    """CLI hitl2 parse_reply 一期 action-only（空 ops，DECIDE 即全驳回）。"""
+
+    gate = CliHitl2Gate(interactive=False, out_fn=lambda *_a, **_k: None)
+    decided = gate.parse_reply(Hitl2Reply(action=Hitl2Action.DECIDE, text="自由文本"))
+    assert decided.action is Hitl2Action.DECIDE
+    assert decided.ops == []
 
 
 # --------------------------------------------------------------------------- #

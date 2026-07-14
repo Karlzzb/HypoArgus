@@ -34,8 +34,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any
 
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -77,8 +78,8 @@ class CompressionConfig:
     """
 
     enable_history: bool = True
-    max_messages: Optional[int] = 20
-    max_tokens: Optional[int] = None
+    max_messages: int | None = 20
+    max_tokens: int | None = None
     strategy: str = "last"
     start_on: str = "human"
     include_system: bool = True
@@ -89,7 +90,7 @@ DEFAULT_COMPRESSION = CompressionConfig()
 
 
 # ---------------------- 内部工具 ----------------------
-def _coerce_history(value: Any) -> List[BaseMessage]:
+def _coerce_history(value: Any) -> list[BaseMessage]:
     """把入参里的历史字段规整成消息列表。"""
     if value is None:
         return []
@@ -124,10 +125,10 @@ def _approx_token_count(messages: Sequence[BaseMessage]) -> int:
 
 
 def _trim_history(
-    messages: List[BaseMessage],
+    messages: list[BaseMessage],
     config: CompressionConfig,
     token_counter: TokenCounter,
-) -> List[BaseMessage]:
+) -> list[BaseMessage]:
     """按条数 / token 裁剪历史，尽量保证裁剪后消息序列合法。"""
     if not messages:
         return messages
@@ -154,11 +155,11 @@ def _trim_history(
 
 
 def _apply_trim(
-    messages: List[BaseMessage],
+    messages: list[BaseMessage],
     token_counter: TokenCounter,
     max_tokens: int,
     config: CompressionConfig,
-) -> List[BaseMessage]:
+) -> list[BaseMessage]:
     """封装 trim_messages，不可用时退化为简单头 / 尾截断。"""
     if _trim_messages is not None:
         return _trim_messages(
@@ -184,7 +185,7 @@ def build_prompt_llm_chain(
     compression: CompressionConfig = DEFAULT_COMPRESSION,
     *,
     history_key: str = DEFAULT_HISTORY_KEY,
-    token_counter: Optional[TokenCounter] = None,
+    token_counter: TokenCounter | None = None,
 ) -> Runnable:
     """构建「零侵入」自动裁剪历史的 ``prompt | llm`` 链路。
 
@@ -207,7 +208,7 @@ def build_prompt_llm_chain(
     """
     counter = token_counter or _default_token_counter(llm)
 
-    def _preprocess(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def _preprocess(inputs: dict[str, Any]) -> dict[str, Any]:
         new_inputs = dict(inputs)  # 不原地修改调用方字典
 
         if not compression.enable_history:

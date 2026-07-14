@@ -1,27 +1,26 @@
-"""线路 2 · 开药 Agent 测试（issue #5、PRD §5、ADR-0002/0007/0008/0011）。
+"""线路 2 · 开药 Agent 测试（issue #5、PRD §5、ADR-0002/0007/0008/0011、Slice 3 重构）。
 
-行为级黑盒测试（PRD «Testing Decisions»）：通过公共 seam（``hypothesize`` 纯函数 +
-``HypothesisLlmClient`` + ``RetrievalLayer``）驱动「投机生成 → 逐条取证」流程，
-断言假设落 ``supported / doubtful / refuted``、覆盖范围、不依赖体检结论、不重写原文、
-异常/超时不卡死流程。
+行为级黑盒测试（PRD «Testing Decisions»）：通过公共 seam
+（``propose_hypotheses`` 纯函数 + ``HypothesisLlmClient``）驱动「投机生成」流程，
+断言假说落 ``pending``、覆盖范围、不依赖体检结论、不重写原文、propose 异常不卡死。
 
-``FakeHypothesisLlmClient`` 与 ``create_mock_retrieval_layer`` 共同保证离线、确定、可断言。
+Slice 3 重构：hypothesis 节点重定义为 **hypothesis_propose**——仅 ``propose``、不取证，
+产 ``list[Hypothesis]``（status=pending）。取证移至 Slice 5 的 judgment 节点。
+``propose`` 读 ``paragraph_summaries``（非整段 content），逐 argument 调用。
+
+``FakeHypothesisLlmClient`` 保证离线、确定、可断言。
 """
 
 from __future__ import annotations
 
 from agents.hypothesis import (
     FakeHypothesisLlmClient,
-    HypothesisConcludeStep,
     HypothesisProposal,
     HypothesisRelation,
-    HypothesisSearchStep,
     HypothesisStatus,
-    HypothesisVerdict,
-    hypothesize,
+    propose_hypotheses,
 )
-from domain import Argument, ArgumentType
-from infra.retrieval import RetrievalKind, create_mock_retrieval_layer
+from domain import Argument, ArgumentStatus, ArgumentType
 
 
 def _argument(
@@ -38,25 +37,36 @@ def _argument(
     )
 
 
-def test_hypothesize_single_evidence_propose_then_verify_supported():
-    """生成一条对立假设 → 取证结论 supported → candidate_hypotheses 恰一条 supported。"""
+def _summaries(*pairs: tuple[str, str]) -> dict[str, str]:
+    """``paragraph_id → 摘要`` 构造助手。"""
+
+    return {pid: summary for pid, summary in pairs}
+
+
+# --------------------------------------------------------------------------- #
+# propose 产 pending 假说 + 喂段落摘要
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_single_evidence_yields_pending_hypothesis():
+    """生成一条对立假设 → candidate_hypotheses 恰一条、status=pending。"""
 
     argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [
+    seen: list[tuple[str, str]] = []
+
+    def propose(argument, paragraph_summary):
+        seen.append((argument.argument_id, paragraph_summary))
+        return [
             HypothesisProposal(
                 text="对立假设：数据应取次年口径",
                 relation=HypothesisRelation.OPPOSE,
                 confidence=0.8,
             )
-        ],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(
-            verdict=HypothesisVerdict.SUPPORTED, reasoning="检索支撑假设"
-        ),
-    )
-    retrieval = create_mock_retrieval_layer()
+        ]
 
-    updates = hypothesize(argument_tree, llm, retrieval)
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    summaries = _summaries(("p0001", "论据摘要"))
+    updates = propose_hypotheses(argument_tree, summaries, llm)
 
     assert set(updates) == {"n0"}
     hypotheses = updates["n0"]
@@ -64,37 +74,11 @@ def test_hypothesize_single_evidence_propose_then_verify_supported():
     h = hypotheses[0]
     assert h.text == "对立假设：数据应取次年口径"
     assert h.relation is HypothesisRelation.OPPOSE
-    assert h.status is HypothesisStatus.SUPPORTED
+    assert h.status is HypothesisStatus.PENDING  # propose 期一律 pending（取证属 judgment·Slice 5）
     assert h.confidence == 0.8
     assert h.hypothesis_id  # 稳定非空 id（供 #9/#10 采纳链引用）
-
-
-# --------------------------------------------------------------------------- #
-# 取证三态
-# --------------------------------------------------------------------------- #
-
-
-def test_hypothesize_doubtful_and_refuted_verdicts():
-    """两条假设分别取证为 doubtful / refuted → candidate_hypotheses 状态正确。"""
-
-    argument_tree = [_argument()]
-    verdicts = {
-        "递进假设": HypothesisVerdict.DOUBTFUL,
-        "扩展假设": HypothesisVerdict.REFUTED,
-    }
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [
-            HypothesisProposal(text="递进假设", relation=HypothesisRelation.ADVANCE),
-            HypothesisProposal(text="扩展假设", relation=HypothesisRelation.EXPAND),
-        ],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(
-            verdict=verdicts[text]
-        ),
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
-    hs = {h.text: h for h in updates["n0"]}
-    assert hs["递进假设"].status is HypothesisStatus.DOUBTFUL
-    assert hs["扩展假设"].status is HypothesisStatus.REFUTED
+    # propose 收到的是段落摘要（非整段 content）。
+    assert seen == [("n0", "论据摘要")]
 
 
 # --------------------------------------------------------------------------- #
@@ -114,48 +98,61 @@ def _full_tree() -> list[Argument]:
     ]
 
 
-def test_hypothesize_covers_evidence_and_sub_claim_skips_rest():
+def test_propose_covers_evidence_and_sub_claim_skips_rest():
     """只覆盖 evidence/sub_claim；main_claim/qualification/background 不在 updates 中。"""
 
     argument_tree = _full_tree()
     proposed: list[str] = []
 
-    def propose(argument):
+    def propose(argument, paragraph_summary):
         proposed.append(argument.argument_id)
-        return [HypothesisProposal(text=f"针对{argument.argument_id}", relation=HypothesisRelation.OPPOSE)]
+        return [
+            HypothesisProposal(
+                text=f"针对{argument.argument_id}", relation=HypothesisRelation.OPPOSE
+            )
+        ]
 
-    llm = FakeHypothesisLlmClient(
-        propose_factory=propose,
-        verify_factory=lambda text, obs: HypothesisConcludeStep(
-            verdict=HypothesisVerdict.SUPPORTED
-        ),
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    summaries = _summaries(
+        ("p1", "主论点摘要"), ("p2", "分论点摘要"), ("p3", "论据摘要"),
+        ("p4", "限定摘要"), ("p5", "背景摘要"),
     )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+    updates = propose_hypotheses(argument_tree, summaries, llm)
     assert set(updates) == {"s", "e"}
     assert proposed == ["s", "e"]  # 未对 m/q/b 调用 propose
 
 
-def test_hypothesize_confidence_does_not_affect_verdict():
-    """confidence 仅排序展示、不参与裁决：低 confidence 仍可 supported、高仍可 refuted。"""
+def test_propose_passes_per_node_paragraph_summary():
+    """每节点拿到自己 paragraph_id 对应的摘要（非整段 content、非空对齐）。"""
+
+    argument_tree = _full_tree()
+    seen: dict[str, str] = {}
+
+    def propose(argument, paragraph_summary):
+        seen[argument.argument_id] = paragraph_summary
+        return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
+
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
+    propose_hypotheses(argument_tree, summaries, llm)
+    assert seen == {"s": "分论点摘要", "e": "论据摘要"}
+
+
+def test_propose_missing_summary_fed_as_empty_no_hang():
+    """paragraph_summaries 缺该段时喂空串、不抛、流程继续。"""
 
     argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [
-            HypothesisProposal(text="低置信但成立", relation=HypothesisRelation.OPPOSE, confidence=0.1),
-            HypothesisProposal(text="高置信但被推翻", relation=HypothesisRelation.ADVANCE, confidence=0.9),
-        ],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(
-            verdict=HypothesisVerdict.SUPPORTED
-            if text == "低置信但成立"
-            else HypothesisVerdict.REFUTED
-        ),
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
-    hs = {h.text: h for h in updates["n0"]}
-    assert hs["低置信但成立"].status is HypothesisStatus.SUPPORTED
-    assert hs["低置信但成立"].confidence == 0.1
-    assert hs["高置信但被推翻"].status is HypothesisStatus.REFUTED
-    assert hs["高置信但被推翻"].confidence == 0.9
+    seen: list[str] = []
+
+    def propose(argument, paragraph_summary):
+        seen.append(paragraph_summary)
+        return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
+
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    updates = propose_hypotheses(argument_tree, {}, llm)
+    assert seen == [""]
+    assert len(updates["n0"]) == 1
+    assert updates["n0"][0].status is HypothesisStatus.PENDING
 
 
 # --------------------------------------------------------------------------- #
@@ -163,201 +160,78 @@ def test_hypothesize_confidence_does_not_affect_verdict():
 # --------------------------------------------------------------------------- #
 
 
-def test_hypothesize_no_proposals_yields_empty_candidate_list():
+def test_propose_no_proposals_yields_empty_candidate_list():
     """LLM 生成 0 条假设 → candidate_hypotheses 为空数组（非 None、非第四态）。"""
 
     argument_tree = [_argument()]
     llm = FakeHypothesisLlmClient()  # 默认 propose → []
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
     assert updates["n0"] == []
 
 
-def test_hypothesize_propose_exception_yields_empty_no_hang():
+def test_propose_exception_yields_empty_no_hang():
     """propose 抛异常 → 该节点无假设（空列表）、流程继续（不抛出、不卡死）。"""
 
-    argument_tree = [_argument(), _argument(argument_id="n1")]
+    argument_tree = [_argument(), _argument(argument_id="n1", paragraph_id="p2")]
     llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: (_ for _ in ()).throw(RuntimeError("LLM 不可用")),
-        verify_factory=lambda text, obs: HypothesisConcludeStep(
-            verdict=HypothesisVerdict.SUPPORTED
-        ),
+        propose_factory=lambda argument, summary: (
+            _ for _ in ()
+        ).throw(RuntimeError("LLM 不可用"))
     )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+    updates = propose_hypotheses(
+        argument_tree, _summaries(("p0001", "摘要"), ("p2", "摘要2")), llm
+    )
     assert updates["n0"] == []
     assert updates["n1"] == []
 
 
 # --------------------------------------------------------------------------- #
-# 取证兜底：异常/合规/结构非法/迭代硬上限 → doubtful（≠ refuted）、有界不卡死
+# 不改原文 + 不改输入树 + 一假设一关系（结构保证）+ 幂等 id
 # --------------------------------------------------------------------------- #
 
 
-def _single_propose(text: str = "假设", relation: HypothesisRelation = HypothesisRelation.OPPOSE):
-    return lambda argument: [HypothesisProposal(text=text, relation=relation)]
+def _oppose_proposals(argument: Argument, summary: str) -> list[HypothesisProposal]:
+    return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
 
 
-def test_hypothesize_verify_llm_exception_lands_doubtful():
-    """取证 LLM 抛异常 → 假设 doubtful、流程继续（不卡死）。"""
-
-    argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(),
-        verify_factory=lambda text, obs: (_ for _ in ()).throw(RuntimeError("LLM 不可用")),
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"][0].status is HypothesisStatus.DOUBTFUL
-
-
-def test_hypothesize_retrieval_compliance_violation_lands_doubtful():
-    """取证检索合规违规（非白名单域名）→ ComplianceError → 假设 doubtful（非 refuted）。"""
-
-    argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(),
-        verify_script=[
-            HypothesisSearchStep(query="q", channel=RetrievalKind.NETWORK, domain="evil.example.com"),
-            HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-        ],
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"][0].status is HypothesisStatus.DOUBTFUL
-
-
-def test_hypothesize_malformed_verify_step_lands_doubtful():
-    """取证返回非 union 成员（结构非法）→ 假设 doubtful。"""
-
-    argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(),
-        verify_factory=lambda text, obs: "garbage",  # type: ignore[return-value]
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
-    assert updates["n0"][0].status is HypothesisStatus.DOUBTFUL
-
-
-def test_hypothesize_iteration_cap_lands_doubtful_and_is_bounded():
-    """取证永不结论（一直检索）→ 迭代硬上限触发 → doubtful；有界、不卡死。"""
-
-    argument_tree = [_argument()]
-    always_search = lambda text, obs: HypothesisSearchStep(  # noqa: E731
-        query=f"q{len(obs)}", channel=RetrievalKind.NETWORK, domain="stats.example.com"
-    )
-    retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(), verify_factory=always_search
-    )
-    updates = hypothesize(argument_tree, llm, retrieval, max_iterations=3)
-    assert updates["n0"][0].status is HypothesisStatus.DOUBTFUL
-    assert len(retrieval.requests) == 3  # 恰好 max_iterations 次，不无限
-
-
-# --------------------------------------------------------------------------- #
-# 取证检索词自动调整 + 知识库通道 + observations 累积
-# --------------------------------------------------------------------------- #
-
-
-class _RecordingRetrieval:
-    """记录请求、委托 Mock：让单测断言取证发出了哪些检索请求。"""
-
-    def __init__(self, inner):
-        self._inner = inner
-        self.requests = []
-
-    def retrieve(self, request):
-        self.requests.append(request)
-        return self._inner.retrieve(request)
-
-
-def test_hypothesize_verify_adjusts_query_and_accumulates_observations():
-    """取证 ReAct 自动调整检索词：两次检索 query 不同，observations 累积后结论。"""
-
-    argument_tree = [_argument()]
-    seen_lengths: list[int] = []
-
-    def verify(text, observations):
-        seen_lengths.append(len(observations))
-        if len(observations) == 0:
-            return HypothesisSearchStep(query="第一版检索词", channel=RetrievalKind.NETWORK, domain="who.int")
-        if len(observations) == 2:  # 每次 Mock 返回 2 条
-            return HypothesisSearchStep(query="调整后的检索词", channel=RetrievalKind.NETWORK, domain="who.int")
-        return HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED)
-
-    retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(), verify_factory=verify
-    )
-    updates = hypothesize(argument_tree, llm, retrieval)
-    assert updates["n0"][0].status is HypothesisStatus.SUPPORTED
-    assert [r.query for r in retrieval.requests] == ["第一版检索词", "调整后的检索词"]
-    # LLM 每轮看到前几轮检索累积的 observations（0 → 2 → 4）。
-    assert seen_lengths == [0, 2, 4]
-
-
-def test_hypothesize_verify_knowledge_base_channel():
-    """取证可用知识库通道：用授权 user_id 构造请求、取证后结论。"""
-
-    argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=_single_propose(),
-        verify_script=[
-            HypothesisSearchStep(query="内部资料", channel=RetrievalKind.KNOWLEDGE_BASE, user_id="analyst-1"),
-            HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-        ],
-    )
-    retrieval = _RecordingRetrieval(create_mock_retrieval_layer())
-    updates = hypothesize(argument_tree, llm, retrieval)
-    assert updates["n0"][0].status is HypothesisStatus.SUPPORTED
-    req = retrieval.requests[0]
-    assert req.kind is RetrievalKind.KNOWLEDGE_BASE
-    assert req.user_id == "analyst-1"
-
-
-# --------------------------------------------------------------------------- #
-# 不改原文 + 不改输入树 + 一假设一关系（结构保证）
-# --------------------------------------------------------------------------- #
-
-
-def test_hypothesize_does_not_rewrite_content_or_status():
+def test_propose_does_not_rewrite_content_or_status():
     """开药绝不改原文与体检状态：partial 只存候选假设、不携节点，输入树 content/status 不变。"""
 
     argument_tree = _full_tree()
     before = {n.argument_id: (n.content, n.status) for n in argument_tree}
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-    )
-    hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+    llm = FakeHypothesisLlmClient(propose_factory=_oppose_proposals)
+    summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
+    propose_hypotheses(argument_tree, summaries, llm)
     for n in argument_tree:
         assert (n.content, n.status) == before[n.argument_id]
 
 
-def test_hypothesize_does_not_mutate_input_tree():
+def test_propose_does_not_mutate_input_tree():
     """返回新实例；输入树节点不变（content/status/candidate_hypotheses 均原样）。"""
 
     argument_tree = _full_tree()
     originals = {n.argument_id: n.model_copy(deep=True) for n in argument_tree}
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-    )
-    hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+    llm = FakeHypothesisLlmClient(propose_factory=_oppose_proposals)
+    summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
+    propose_hypotheses(argument_tree, summaries, llm)
     for n in argument_tree:
         assert n == originals[n.argument_id], f"输入树被改写：{n.argument_id}"
 
 
-def test_hypothesize_each_hypothesis_carries_single_relation():
+def test_propose_each_hypothesis_carries_single_relation():
     """一假设一关系（ADR-0007）：混合意图以多条假设表达，各钉定单一 relation。"""
 
     argument_tree = [_argument()]
-    llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [
+
+    def proposals(argument, summary):
+        return [
             HypothesisProposal(text="对立项", relation=HypothesisRelation.OPPOSE),
             HypothesisProposal(text="递进项", relation=HypothesisRelation.ADVANCE),
             HypothesisProposal(text="扩展项", relation=HypothesisRelation.EXPAND),
-        ],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-    )
-    updates = hypothesize(argument_tree, llm, create_mock_retrieval_layer())
+        ]
+
+    llm = FakeHypothesisLlmClient(propose_factory=proposals)
+    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
     relations = [h.relation for h in updates["n0"]]
     assert relations == [
         HypothesisRelation.OPPOSE,
@@ -365,21 +239,33 @@ def test_hypothesize_each_hypothesis_carries_single_relation():
         HypothesisRelation.EXPAND,
     ]
     # hypothesis_id 稳定、同输入再跑一次结果一致（可重算、幂等链前提）。
-    again = hypothesize(argument_tree, FakeHypothesisLlmClient(
-        propose_factory=lambda argument: [
-            HypothesisProposal(text="对立项", relation=HypothesisRelation.OPPOSE),
-            HypothesisProposal(text="递进项", relation=HypothesisRelation.ADVANCE),
-            HypothesisProposal(text="扩展项", relation=HypothesisRelation.EXPAND),
-        ],
-        verify_factory=lambda text, obs: HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED),
-    ), create_mock_retrieval_layer())
+    again = propose_hypotheses(
+        argument_tree, _summaries(("p0001", "摘要")), FakeHypothesisLlmClient(propose_factory=proposals)
+    )
     assert [h.hypothesis_id for h in again["n0"]] == [
         h.hypothesis_id for h in updates["n0"]
     ]
 
 
-def test_hypothesize_does_not_read_verification_status():
-    """乐观并行（ADR-0002）：生成不读体检结论——节点 status 不影响生成/取证。"""
+def test_propose_pending_status_regardless_of_proposals():
+    """propose 产出的假说一律 pending——propose 不取证、不落终态。"""
+
+    argument_tree = [_argument()]
+
+    def proposals(argument, summary):
+        return [
+            HypothesisProposal(text="a", relation=HypothesisRelation.OPPOSE, confidence=0.9),
+            HypothesisProposal(text="b", relation=HypothesisRelation.ADVANCE, confidence=0.1),
+            HypothesisProposal(text="c", relation=HypothesisRelation.EXPAND),
+        ]
+
+    llm = FakeHypothesisLlmClient(propose_factory=proposals)
+    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
+    assert all(h.status is HypothesisStatus.PENDING for h in updates["n0"])
+
+
+def test_propose_does_not_read_verification_status():
+    """乐观并行（ADR-0002）：生成不读体检结论——节点 status 不影响生成。"""
 
     argument_tree = [
         Argument(argument_id="ok", argument_type=ArgumentType.EVIDENCE, paragraph_id="p1", content="论据"),
@@ -388,24 +274,23 @@ def test_hypothesize_does_not_read_verification_status():
             argument_type=ArgumentType.EVIDENCE,
             paragraph_id="p2",
             content="论据2",
-            # 体检可能已判 error，但开药仍照常生成与取证（不依赖该结论）。
+            status=ArgumentStatus.ERROR,  # 体检可能已判 error，但开药仍照常生成（不依赖该结论）
         ),
     ]
     seen_arguments: list[str] = []
 
-    def propose(argument):
+    def propose(argument, paragraph_summary):
         seen_arguments.append(argument.argument_id)
-        return [HypothesisProposal(text=f"h-{argument.argument_id}", relation=HypothesisRelation.OPPOSE)]
+        return [
+            HypothesisProposal(
+                text=f"h-{argument.argument_id}", relation=HypothesisRelation.OPPOSE
+            )
+        ]
 
-    def verify(text, obs):
-        # 取证只看假设文本与 observations，不看节点 status。
-        return HypothesisConcludeStep(verdict=HypothesisVerdict.SUPPORTED)
-
-    updates = hypothesize(
-        argument_tree,
-        FakeHypothesisLlmClient(propose_factory=propose, verify_factory=verify),
-        create_mock_retrieval_layer(),
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    updates = propose_hypotheses(
+        argument_tree, _summaries(("p1", "摘要1"), ("p2", "摘要2")), llm
     )
     assert seen_arguments == ["ok", "bad"]
     for nid in ("ok", "bad"):
-        assert updates[nid][0].status is HypothesisStatus.SUPPORTED
+        assert updates[nid][0].status is HypothesisStatus.PENDING

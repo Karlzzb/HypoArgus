@@ -1,11 +1,16 @@
-"""HITL-1 结构确认闸门契约（PRD §10 节点 1、issue #2）。
+"""HITL-1 partition 确认闸门契约（PRD §10 节点 1、ADR-0018）。
 
 ADR-0014 子包拆分：``contract.py`` 放会话级决策 + 编辑 op 判别联合 + 闸门 Protocol +
-Fake 桩，``agent.py`` 放 ``confirm`` 纯函数。``Hitl1Gate`` 为注入 seam（真实
-``interrupt`` + ``Command(resume)`` 属 #11；``FakeHitl1Gate`` 供离线单测）。
+Fake 桩 + partition 闸门产出，``agent.py`` 放 ``confirm`` / ``confirm_partition`` 纯函数。
+``Hitl1Gate`` 为注入 seam（真实 ``interrupt`` + ``Command(resume)`` 属后续切片；
+``FakeHitl1Gate`` 供离线单测）。
 
-解析输出初始论证树后、双线路启动前触发。用户可调层级、合并或拆分节点、修正边界、
-标记无需处理的段落；**支持跳过**（跳过则直接进入下一环节，不改动原文一个字）。
+解析输出初始论证树后触发。人确认段落切分是否合理：
+- **确认继续**（``SKIP`` / ``ACCEPT`` / ``EDIT``）——既有结构编辑语义收编于此：跳过 / 接受 /
+  应用结构编辑序列后向下游推进（编辑改树形不改文本）。
+- **打回重跑**（``REPLAY``）——按用户 prompt 重跑 ``parse+partition``（当前伪代码桩，
+  ADR-0020）；打回**打破「绝不打回」**（ADR-0018），须**有界**（max retries 默认 3），
+  超限向前推进 + 贴 ``partition_retry_exhausted``（受控分支、非异常降级）。
 
 与解析器对 LLM 的防御性兜底**非对称**：解析器遇环即断、越界即兜底（LLM 不可信）；HITL-1
 是「人」的意图性编辑，遇非法编辑一律**拒绝**（抛 :class:`tree_invariants.TreeInvariantError`）、
@@ -15,6 +20,7 @@ Fake 桩，``agent.py`` 放 ``confirm`` 纯函数。``Hitl1Gate`` 为注入 seam
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
 
@@ -32,17 +38,25 @@ __all__ = [
     "FixBoundaryOp",
     "Hitl1Op",
     "Hitl1Decision",
+    "Hitl1Route",
+    "Hitl1Outcome",
+    "DEFAULT_MAX_PARTITION_RETRIES",
     "Hitl1Gate",
     "FakeHitl1Gate",
 ]
 
 
 class Hitl1Action(StrEnum):
-    """HITL-1 会话级决策。"""
+    """HITL-1 会话级决策（ADR-0018：两类语义收编）。
 
-    SKIP = "skip"  # 跳过结构确认 → 不改动原文一个字
-    ACCEPT = "accept"  # 接受解析树原样
-    EDIT = "edit"  # 应用结构编辑序列
+    ``SKIP`` / ``ACCEPT`` / ``EDIT`` = **确认继续**（跳过 / 接受 / 应用结构编辑后向下游）；
+    ``REPLAY`` = **打回重跑** ``parse+partition``（有界，超限贴标签向前）。
+    """
+
+    SKIP = "skip"  # 跳过 → 确认继续，不改动原文一个字
+    ACCEPT = "accept"  # 接受解析树原样 → 确认继续
+    EDIT = "edit"  # 应用结构编辑序列 → 确认继续
+    REPLAY = "replay"  # 打回重跑 parse+partition（ADR-0018·有界）
 
 
 # --------------------------------------------------------------------------- #
@@ -108,6 +122,43 @@ class Hitl1Decision(BaseModel):
 
     action: Hitl1Action
     ops: list[Hitl1Op] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# partition 确认闸门产出（ADR-0018）
+# --------------------------------------------------------------------------- #
+
+
+class Hitl1Route(StrEnum):
+    """hitl1 节点的路由裁决：确认继续向下游 / 打回重跑上游。
+
+    ``confirm_partition`` 据闸门决策产出，图层级条件边据 ``hitl1_route`` channel 读之
+    路由（ADR-0018 受控打回边 ``hitl1 → parse+partition``）。
+    """
+
+    CONTINUE = "continue"  # 确认继续 → 下游（verification ∥ hypothesis）
+    REPLAY = "replay"  # 打回重跑 → parse+partition（有界；超限改 CONTINUE + 贴标签）
+
+
+#: 打回重跑的最大次数（ADR-0018，默认 3）。超限即向前推进 + 贴 ``partition_retry_exhausted``。
+DEFAULT_MAX_PARTITION_RETRIES = 3
+
+
+@dataclass(frozen=True)
+class Hitl1Outcome:
+    """``confirm_partition`` 的产出：确认后的树 + 路由 + 计数 + 是否打回耗尽。
+
+    - ``argument_tree``：确认后的树（SKIP/ACCEPT/EDIT 时可能改树形、不改文本；REPLAY /
+      耗尽时原样深拷贝——partition 重切为伪代码桩，不在本节点改树）。
+    - ``route``：图层级路由裁决（CONTINUE / REPLAY）。
+    - ``retry_count``：打回计数器（REPLAY 时 +1；耗尽时不 +1、保留达上限值）。
+    - ``exhausted``：是否因打回超 ``max_retries`` 被迫向前推进（受控分支、非异常降级）。
+    """
+
+    argument_tree: list[Argument]
+    route: Hitl1Route
+    retry_count: int
+    exhausted: bool = False
 
 
 # --------------------------------------------------------------------------- #

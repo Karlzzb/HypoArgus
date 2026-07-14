@@ -28,14 +28,14 @@ from agents.hitl1 import (
     SplitOp,
 )
 from agents.hitl2 import (
-    AdoptOp,
-    ArgumentReview,
-    EditContentOp,
+    ConfirmRewriteOp,
+    EditRewriteOp,
     Hitl2Action,
     Hitl2Decision,
     Hitl2Op,
     Hitl2Review,
-    RejectOp,
+    ParagraphRewriteReview,
+    RejectRewriteOp,
 )
 from domain import Argument, ArgumentType
 
@@ -164,11 +164,20 @@ class CliHitl1Gate:
 
 
 class CliHitl2Gate:
-    """交互式 HITL-2 硬闸门：逐待决节点呈现 → 采纳/驳回/手改。
+    """交互式 HITL-2 硬闸门：逐被触达段呈现原文 × 提议重写 → 确认 / 编辑 / 驳回。
 
-    gate 自身软校验：采纳只能勾选 ``activated_hypothesis_ids`` 内的假设；驳回限于
-    候选集；手改限于待决节点。笔误重 prompt，绝不产出会让 ``confirm`` 抛
-    ``Hitl2GateError`` 的决策。
+    Slice 6（ADR-0017）重定位 hitl2 为终稿文本确认闸门后，本闸门呈现的是
+    ``proposed_rewrites`` 中的被触达段（``ParagraphRewriteReview``：原文 × 提议重写
+    文本），逐段产一个段级三态 op：
+
+    - ``[c]onfirm`` → :class:`ConfirmRewriteOp`（终稿用提议文本）。
+    - ``edit <text...>`` → :class:`EditRewriteOp`（终稿用编辑文本、覆盖提议）。
+    - ``[r]eject``（默认） → :class:`RejectRewriteOp`（该段回退原文 bytes）。
+
+    gate 自身只做**输入解析 + 软校验**：呈现给闸门的段即 ``proposed_rewrites`` 的合法 pid，
+    故任何经此闸门产出的 op 其 ``paragraph_id`` 必在 ``proposed_rewrites`` 内——绝不会
+    产出触发 :class:`Hitl2GateError` 的越权决策（笔误重 prompt，不产 op）。决策合法性最终
+    仍由 :func:`agents.hitl2.confirm` 在应用 ops 时兜底校验。
     """
 
     def __init__(
@@ -184,86 +193,40 @@ class CliHitl2Gate:
 
     def review(self, review: Hitl2Review) -> Hitl2Decision:
         if not review.has_pending:
-            self._out("=== HITL-2：无待决内容，一键通过。 ===")
+            self._out("=== HITL-2：无提议重写，一键通过。 ===")
             return Hitl2Decision(action=Hitl2Action.PASS)
         if not _is_interactive(self._interactive):
-            self._out("[非交互] HITL-2 有待决但无人拍板 → 全驳回、原文逐字节保留。")
+            self._out("[非交互] HITL-2 有提议重写但无人拍板 → 全驳回、原文逐字节保留。")
             return Hitl2Decision(action=Hitl2Action.DECIDE, ops=[])
         ops: list[Hitl2Op] = []
-        for argument in review.arguments:
-            ops.extend(self._prompt_argument_review(argument))
+        for paragraph in review.paragraphs:
+            ops.append(self._prompt_paragraph_decision(paragraph))
         return Hitl2Decision(action=Hitl2Action.DECIDE, ops=ops)
 
-    def _prompt_argument_review(self, argument: ArgumentReview) -> list[Hitl2Op]:
-        self._out(
-            f"\n--- {argument.argument_id} [type={argument.argument_type.value} "
-            f"status={argument.status.value} para={argument.paragraph_id}] ---"
-        )
-        self._out(f"原文：{argument.original_text}")
-        if argument.issue_tags:
-            self._out(f"批注：{', '.join(argument.issue_tags)}")
-        cand_ids = {c.hypothesis_id for c in argument.candidates}
-        activated = set(argument.activated_hypothesis_ids)
-        for c in argument.candidates:
-            mark = "★可采纳" if c.hypothesis_id in activated else "弱呈现"
-            self._out(
-                f"  [{mark}] {c.hypothesis_id} rel={c.relation.value}"
-                f" status={c.status.value} conf={c.confidence:.2f}"
-                f"\n    {c.text}"
-            )
-        self._out(
-            "命令：adopt <hid>[ :: <edited_text>] | reject <hid> | "
-            "edit-content <text...> | skip"
-        )
-        ops: list[Hitl2Op] = []
+    def _prompt_paragraph_decision(self, paragraph: ParagraphRewriteReview) -> Hitl2Op:
+        self._out(f"\n--- {paragraph.paragraph_id} ---")
+        self._out(f"原文：{paragraph.original_text}")
+        self._out(f"提议：{paragraph.proposed_text}")
+        self._out("命令：[c]onfirm | edit <text...> | [r]eject（默认 reject）")
         while True:
             raw = self._input("hitl2> ").strip()
             if not raw:
                 continue
             low = raw.lower()
-            if low in ("skip", "s"):
-                break
-            if low in ("done", "d", "next", "n"):
-                break
-            op = self._parse_op(raw, argument, activated, cand_ids)
-            if op is None:
-                self._out(f"无法解析或非法：{raw!r}")
-                continue
-            ops.append(op)
-            self._out(f"  + {op!r}")
-        return ops
-
-    def _parse_op(
-        self,
-        raw: str,
-        argument: ArgumentReview,
-        activated: set[str],
-        cand_ids: set[str],
-    ) -> Hitl2Op | None:
-        text = raw.strip()
-        low = text.lower()
-        if low.startswith("adopt "):
-            rest = text[len("adopt ") :].strip()
-            if "::" in rest:
-                hid, edited = rest.split("::", 1)
-                hid, edited = hid.strip(), edited.strip()
-            else:
-                hid, edited = rest, None
-            if hid not in activated:
-                self._out(f"  {hid} 不在可采纳集（仅 ★ 标记可采纳）。")
-                return None
-            return AdoptOp(
-                argument_id=argument.argument_id, hypothesis_id=hid, edited_text=edited
-            )
-        if low.startswith("reject "):
-            hid = text[len("reject ") :].strip()
-            if hid not in cand_ids:
-                self._out(f"  {hid} 不在候选集。")
-                return None
-            return RejectOp(argument_id=argument.argument_id, hypothesis_id=hid)
-        if low.startswith("edit-content "):
-            content = text[len("edit-content ") :].strip()
-            if not content:
-                return None
-            return EditContentOp(argument_id=argument.argument_id, content=content)
-        return None
+            if low in ("c", "confirm"):
+                op: Hitl2Op = ConfirmRewriteOp(paragraph_id=paragraph.paragraph_id)
+                self._out(f"  + {op!r}")
+                return op
+            if low in ("r", "reject"):
+                op = RejectRewriteOp(paragraph_id=paragraph.paragraph_id)
+                self._out(f"  + {op!r}")
+                return op
+            if low.startswith("edit "):
+                text = raw[len("edit ") :].strip()
+                if not text:
+                    self._out("edit 需提供文本。")
+                    continue
+                op = EditRewriteOp(paragraph_id=paragraph.paragraph_id, text=text)
+                self._out(f"  + {op!r}")
+                return op
+            self._out("未知选项，请输入 c/edit <text>/r。")

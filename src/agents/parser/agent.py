@@ -21,8 +21,13 @@
 
 from __future__ import annotations
 
-from agents.parser.contract import LlmClient, ParagraphView, ParseResult
-from domain import Argument, ArgumentStatus, ArgumentType
+from agents.parser.contract import (
+    LlmClient,
+    ParagraphView,
+    ParseOutput,
+    ParseResult,
+)
+from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentStatus, ArgumentType
 from original_paragraphs import OriginalParagraphs
 from tree_invariants import rebuild_children, validate_tree
 
@@ -78,11 +83,12 @@ def _break_cycles(arguments: list[Argument]) -> None:
             steps += 1
 
 
-def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> list[Argument]:
-    """在只读底座上构建初始论证树。
+def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutput:
+    """在只读底座上构建初始论证树，并顺产时间范围（桩）与段落摘要。
 
     流程：
-    1. 把**实质段落**（去空白）按段喂给 LLM → 结构化节点提议。
+    1. 把**实质段落**（去空白）按段喂给 LLM → 结构化节点提议（``ParseResult``，含
+       ``paragraph_summaries``）。
     2. 为每个提议铸造稳定 ``argument_id``、从只读表逐字节拷回 ``content``、clamp 权重、
        按 ``parent_index`` 解析 ``parent_id``（越界/自指 → 根）。
     3. 断环、回填 ``children_ids``。
@@ -90,6 +96,10 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> list[Argum
     5. :func:`validate_tree` 自检结构不变式。
 
     节点初始 ``unverified``；空白段落不喂 LLM、自动归影子。
+
+    ``query_time_range`` 当前为桩（``DEFAULT_QUERY_TIME_RANGE``，agent 注入、不真实调 LLM 识别，
+    真实时间识别属后续切片，PRD Out of Scope）；``paragraph_summaries`` 顺产自同一次 LLM 调用。
+    返回 :class:`ParseOutput` 供 ``parse+partition`` build 闭包写回三 channel。
     """
 
     paragraph_ids = list(original_paragraphs.paragraph_ids())
@@ -151,4 +161,8 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> list[Argum
 
     # 5. 结构不变式自检（LLM 不可信 → 代码兜底）。
     validate_tree(arguments)
-    return arguments
+    return ParseOutput(
+        argument_tree=arguments,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        paragraph_summaries=result.paragraph_summaries,
+    )

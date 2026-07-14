@@ -19,16 +19,24 @@ from agents.hitl1 import (
     ReparentOp,
 )
 from agents.hitl2 import (
+    ConfirmRewriteOp,
     FakeHitl2Gate,
     Hitl2Action,
     Hitl2Decision,
 )
 from agents.hypothesis import (
     FakeHypothesisLlmClient,
-    HypothesisConcludeStep,
     HypothesisProposal,
     HypothesisRelation,
-    HypothesisVerdict,
+    HypothesisStatus,
+)
+from agents.judgment import (
+    ArgumentVerdictEntry,
+    FakeJudgmentLlmClient,
+    HypothesisVerdictEntry,
+    JudgmentArgumentVerdict,
+    JudgmentHypothesisVerdict,
+    JudgmentResult,
 )
 from agents.parser import (
     FakeLlmClient,
@@ -36,14 +44,8 @@ from agents.parser import (
     ParsedNodeProposal,
     ParseResult,
 )
-from agents.verification import (
-    ConcludeStep,
-    FakeVerifyLlmClient,
-    SearchStep,
-    VerifyVerdict,
-)
+from agents.rewrite_loop import FakeRewriteLlmClient
 from domain import ArgumentType
-from infra.retrieval import RetrievalKind, create_mock_retrieval_layer
 from runtime.orchestrator import Orchestrator
 
 
@@ -63,13 +65,11 @@ def test_e2e_pipeline_single_direction_no_reschedule(sample_doc):
     calls: dict[str, int] = {
         "parse": 0,
         "hitl1": 0,
-        "verification": 0,
-        "hypothesis": 0,
-        "merge": 0,
-        "impact": 0,
-        "consistency": 0,
+        "hypothesis_propose": 0,
+        "retrieval": 0,
+        "judgment": 0,
+        "rewrite_loop": 0,
         "hitl2": 0,
-        "writeback": 0,
     }
 
     def wrap(name, fn):
@@ -82,13 +82,11 @@ def test_e2e_pipeline_single_direction_no_reschedule(sample_doc):
     agents = Agents(
         parse=wrap("parse", base.parse),
         hitl1=wrap("hitl1", base.hitl1),
-        verification=wrap("verification", base.verification),
-        hypothesis=wrap("hypothesis", base.hypothesis),
-        merge=wrap("merge", base.merge),
-        impact=wrap("impact", base.impact),
-        consistency=wrap("consistency", base.consistency),
+        hypothesis_propose=wrap("hypothesis_propose", base.hypothesis_propose),
+        retrieval=wrap("retrieval", base.retrieval),
+        judgment=wrap("judgment", base.judgment),
+        rewrite_loop=wrap("rewrite_loop", base.rewrite_loop),
         hitl2=wrap("hitl2", base.hitl2),
-        writeback=wrap("writeback", base.writeback),
     )
     orch = Orchestrator(agents=agents)
     out = orch.run(doc)
@@ -113,6 +111,133 @@ def test_e2e_rejects_str_input():
     orch = Orchestrator()
     with pytest.raises(TypeError):
         orch.run("not bytes")  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# 贯穿 state：session_context + query_time_range（ADR-0021 / PRD §17·Slice 1）
+#
+# session_context 由入口注入（与 original_doc 同入 START）、全链只读；query_time_range
+# 由 parse+partition 注桩（默认 2025–2026）。二者须贯穿到 END、且不破坏「无触达段终稿
+# 逐字节等于原文」的 tracer bullet 承诺。
+# --------------------------------------------------------------------------- #
+
+
+def test_e2e_default_session_context_keeps_byte_identity(sample_doc):
+    """未显式注入 session_context 时用确定性桩，流水线仍逐字节等于原文。"""
+
+    _name, doc = sample_doc
+    orch = Orchestrator()
+    assert orch.run(doc) == doc
+
+
+def test_e2e_injected_session_context_reaches_end_and_keeps_byte_identity():
+    """显式注入 session_context 不破坏字节级承诺，且贯穿到 END。"""
+
+    import datetime
+
+    from domain import DEFAULT_QUERY_TIME_RANGE, SessionContext
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    sc = SessionContext(
+        session_id="s1",
+        user_id="u1",
+        current_time=datetime.datetime(2026, 7, 13, 9, 0, 0),
+        user_prompt="精简冗余论据",
+    )
+    orch = Orchestrator()
+    report = orch.run_with_report(doc, session_context=sc)
+    assert report.final_document == doc  # 贯穿背景不触达原文 → 逐字节还原
+    assert report.errors == []
+
+    # 贯穿到 END：经装配图 invoke 取终态 state，断言两 channel 落地（state-channel seam）。
+    state = orch.graph.invoke({"original_doc": doc, "session_context": sc})
+    assert state["session_context"] == sc
+    assert state["query_time_range"] == DEFAULT_QUERY_TIME_RANGE
+
+
+# --------------------------------------------------------------------------- #
+# 批量检索节点（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）
+#
+# retrieval 节点紧随 hypothesis_propose：批量接收 argument_tree + hypotheses +
+# query_time_range + session_context，统一写回 citations channel。当前为伪代码桩——
+# 不真实检索、产空 citations；session_context / query_time_range 被读取但不触发联网
+# （真实后端后续切片接入，infra.retrieval 接口层不变）。桩路径下终稿对未触达段
+# 逐字节等于原文。
+# --------------------------------------------------------------------------- #
+
+
+def test_e2e_retrieval_stub_empty_citations_byte_identity():
+    """retrieval 桩：产空 citations、贯穿背景不触达原文 → 终稿逐字节等于原文、无 errors。
+
+    citations channel 落地为空 dict（单写者=retrieval、reducer=_merge_dict）；
+    桩不触达任何段，故 tracer bullet 的字节级承诺继续成立。
+    """
+
+    import datetime
+
+    from domain import DEFAULT_QUERY_TIME_RANGE, SessionContext
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    sc = SessionContext(
+        session_id="s1",
+        user_id="u1",
+        current_time=datetime.datetime(2026, 7, 13, 9, 0, 0),
+        user_prompt="精简冗余论据",
+    )
+    orch = Orchestrator()  # 默认全套桩（retrieval 桩产空 citations）
+    report = orch.run_with_report(doc, session_context=sc)
+    assert report.final_document == doc  # 桩不触达原文 → 逐字节还原
+    assert report.errors == []  # 桩路径无单点波动
+
+    # citations channel 落地为空（state-channel seam）；背景仍贯穿到 END。
+    state = orch.graph.invoke({"original_doc": doc, "session_context": sc})
+    assert state["citations"] == {}
+    assert state["session_context"] == sc
+    assert state["query_time_range"] == DEFAULT_QUERY_TIME_RANGE
+
+
+def test_e2e_retrieval_node_threads_context_and_query_time_range():
+    """retrieval 节点把 session_context / query_time_range / argument_tree / hypotheses 穿给检索 fn。
+
+    用记录型 retrieval fn 替换桩，断言 build 闭包从 state 读出四类输入并下传——
+    「session_context / query_time_range 被读取」的 seam 诚实性由此守住（真实后端
+    后续切片接入时这些背景已就位、拓扑不动）。
+    """
+
+    import datetime
+
+    from domain import DEFAULT_QUERY_TIME_RANGE, SessionContext
+
+    base = create_stub_agents()
+    seen: dict[str, object] = {}
+
+    def recording_retrieval(
+        argument_tree, hypotheses, query_time_range, session_context
+    ):
+        seen["argument_tree"] = argument_tree
+        seen["hypotheses"] = hypotheses
+        seen["query_time_range"] = query_time_range
+        seen["session_context"] = session_context
+        return {}  # 仍产空 citations，不触达原文
+
+    agents = replace(base, retrieval=recording_retrieval)
+    orch = Orchestrator(agents=agents)
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
+    sc = SessionContext(
+        session_id="s1",
+        user_id="u1",
+        current_time=datetime.datetime(2026, 7, 13, 9, 0, 0),
+        user_prompt="精简冗余论据",
+    )
+    out = orch.run(doc, session_context=sc)
+
+    assert out == doc  # 记录型 fn 仍不触达原文 → 逐字节还原
+    # 四类输入自 state 穿至检索 fn。
+    assert len(seen["argument_tree"]) == 3  # parse 桩产 3 段影子节点
+    assert seen["hypotheses"] == {}  # hypothesis_propose 桩产空
+    assert seen["query_time_range"] == DEFAULT_QUERY_TIME_RANGE  # parse+partition 注的桩
+    assert seen["session_context"] == sc  # 入口注入、贯穿到 retrieval
 
 
 # --------------------------------------------------------------------------- #
@@ -219,97 +344,12 @@ def _cycle_factory():
 
 
 # --------------------------------------------------------------------------- #
-# 真实体检接入（issue #4 集成）
+# 真实开药接入（issue #5 集成 · Slice 3 重定义为仅 propose）
 #
-# create_real_agents 在给出 verify_llm + retrieval 时把体检桩替换为真实 ReAct 实现。
-# 体检只写回节点状态、不改 content、无人采纳 → 终稿逐字节等于原文的承诺继续成立。
-# --------------------------------------------------------------------------- #
-
-
-def _three_core_proposals() -> list[ParsedNodeProposal]:
-    """主论点 → 分论点 → 论据（三段、各一核心节点）。"""
-
-    return [
-        ParsedNodeProposal(paragraph_id="p0001", argument_type=ArgumentType.MAIN_CLAIM),
-        ParsedNodeProposal(
-            paragraph_id="p0002", argument_type=ArgumentType.SUB_CLAIM, parent_index=0
-        ),
-        ParsedNodeProposal(
-            paragraph_id="p0003", argument_type=ArgumentType.EVIDENCE, parent_index=1
-        ),
-    ]
-
-
-def _search_then_credible_factory():
-    """每节点：一次网络检索 → 结论 credible（按 argument_id 记录调用次数）。"""
-
-    state: dict[str, int] = {}
-
-    def factory(argument, observations):
-        count = state.get(argument.argument_id, 0)
-        state[argument.argument_id] = count + 1
-        if count == 0:
-            return SearchStep(
-                query=argument.content,
-                channel=RetrievalKind.NETWORK,
-                domain="stats.example.com",
-            )
-        return ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
-
-    return factory
-
-
-def test_real_verify_wired_core_arguments_get_verdicts_byte_identity():
-    """真实体检接入：三核心节点各落 credible，终稿逐字节等于原文（无采纳改动）。"""
-
-    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
-    record: dict = {}
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_three_core_proposals())),
-        hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(factory=_search_then_credible_factory()),
-        retrieval=create_mock_retrieval_layer(),
-    )
-
-    def wrapped_verify(argument_tree):
-        updates = agents.verification(argument_tree)
-        record.update(updates)
-        return updates
-
-    orch = Orchestrator(agents=replace(agents, verification=wrapped_verify))
-    out = orch.run(doc)
-
-    assert out == doc  # 字节级承诺：体检只动状态、不动文本。
-    assert set(record) == {"n0000", "n0001", "n0002"}
-    assert all(v.value == "credible" for v in record.values())
-
-
-def test_real_verify_all_error_still_byte_identity_no_hang():
-    """体检全程异常 → 三核心节点落 error，流水线仍推进至终稿逐字节还原（不卡死）。"""
-
-    def always_throws(argument, observations):
-        raise RuntimeError("体检 LLM 不可用")
-
-    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_three_core_proposals())),
-        hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(factory=always_throws),
-        retrieval=create_mock_retrieval_layer(),
-    )
-    orch = Orchestrator(agents=agents)
-    out = orch.run(doc)
-
-    assert out == doc  # 异常兜底：节点落 error 不卡死、无人采纳 → 逐字节还原。
-
-
-# --------------------------------------------------------------------------- #
-# 真实开药接入（issue #5 集成）
-#
-# create_real_agents 在给出 hypothesis_llm + retrieval 时把开药桩替换为真实
-# 「投机生成 + 逐条取证」实现。开药只写回 candidate_hypotheses、不改 content/status、
-# 无人采纳 → 终稿逐字节等于原文的承诺继续成立。与体检乐观并行（不读体检结论，
-# ADR-0002），本集成用桩体检（{}）以隔离观察开药线路行为。
+# create_real_agents 在给出 hypothesis_llm 时把开药桩替换为真实「投机生成」实现。
+# 开药读 paragraph_summaries 逐 argument 调 propose、产 pending 假说、只写回
+# candidate_hypotheses、不改 content/status、无人采纳 → 终稿逐字节等于原文的承诺继续成立。
+# 取证（吃 citations 判终态）属 Slice 5 的 judgment 节点，不在 hypothesis_propose 内。
 # --------------------------------------------------------------------------- #
 
 
@@ -324,8 +364,8 @@ def _sub_claim_evidence_proposals() -> list[ParsedNodeProposal]:
     ]
 
 
-def test_real_hypothesis_wired_arguments_get_hypotheses_byte_identity():
-    """真实开药接入：覆盖节点各产假设，终稿逐字节等于原文（无人采纳）。"""
+def test_real_hypothesis_wired_arguments_get_pending_hypotheses_byte_identity():
+    """真实开药接入：覆盖节点各产 pending 假说，终稿逐字节等于原文（无人采纳）。"""
 
     doc = "分论点。\n\n论据。\n".encode()
     record: dict = {}
@@ -333,170 +373,203 @@ def test_real_hypothesis_wired_arguments_get_hypotheses_byte_identity():
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument: [
+            propose_factory=lambda argument, summary: [
                 HypothesisProposal(
                     text=f"针对{argument.argument_id}的对立假设",
                     relation=HypothesisRelation.OPPOSE,
                 )
             ],
-            verify_factory=lambda text, obs: HypothesisConcludeStep(
-                verdict=HypothesisVerdict.SUPPORTED
-            ),
         ),
-        retrieval=create_mock_retrieval_layer(),
     )
 
-    def wrapped_hypothesis(argument_tree):
-        updates = agents.hypothesis(argument_tree)
+    def wrapped_hypothesis_propose(argument_tree, paragraph_summaries):
+        updates = agents.hypothesis_propose(argument_tree, paragraph_summaries)
         record.update(updates)
         return updates
 
-    orch = Orchestrator(agents=replace(agents, hypothesis=wrapped_hypothesis))
+    orch = Orchestrator(
+        agents=replace(agents, hypothesis_propose=wrapped_hypothesis_propose)
+    )
     out = orch.run(doc)
 
-    assert out == doc  # 字节级承诺：开药只贴 candidate_hypotheses、不动文本。
+    assert out == doc  # 字节级承诺：开药只贴 pending candidate_hypotheses、不动文本。
     assert set(record) == {"n0000", "n0001"}  # 仅 sub_claim/evidence 被开药覆盖
     for hypotheses in record.values():
         assert len(hypotheses) == 1
         assert hypotheses[0].relation is HypothesisRelation.OPPOSE
+        assert hypotheses[0].status is HypothesisStatus.PENDING  # propose 不取证、一律 pending
 
 
-def test_real_hypothesis_all_verify_failure_still_byte_identity_no_hang():
-    """开药取证全程异常 → 假设落 doubtful，流水线仍推进至终稿逐字节还原（不卡死）。"""
+def test_real_hypothesis_propose_exception_still_byte_identity_no_hang():
+    """开药 propose 全程异常 → 该节点无假设（空），流水线仍推进至终稿逐字节还原（不卡死）。
 
-    def verify_always_throws(text, observations):
-        raise RuntimeError("取证 LLM 不可用")
-
-    doc = "分论点。\n\n论据。\n".encode()
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
-        hitl1_gate=_skip_gate(),
-        hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument: [
-                HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)
-            ],
-            verify_factory=verify_always_throws,
-        ),
-        retrieval=create_mock_retrieval_layer(),
-    )
-    orch = Orchestrator(agents=agents)
-    out = orch.run(doc)
-
-    assert out == doc  # 取证兜底：假设 doubtful 不卡死、无人采纳 → 逐字节还原。
-
-
-def test_real_hypothesis_parallel_with_verification_byte_identity():
-    """体检 ∥ 开药 同时真实接入：乐观并行执行不卡死、终稿逐字节等于原文。
-
-    开药不读体检结论（ADR-0002）：两线路各从同一棵 hitl-1 输出树出发、互不依赖。
-    字段级合流（同节点 status 与 candidate_hypotheses 共存）由双轨合并算子 #6 负责，
-    本测试只断言并行接入不破坏字节级承诺、不卡死。
+    Slice 3 后 hypothesis_propose 不再取证；propose 异常即「本轮无假设」，不卡死。
     """
 
     doc = "分论点。\n\n论据。\n".encode()
     agents = create_real_agents(
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
-        ),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument: [
-                HypothesisProposal(text="x", relation=HypothesisRelation.EXPAND)
-            ],
-            verify_factory=lambda text, obs: HypothesisConcludeStep(
-                verdict=HypothesisVerdict.SUPPORTED
-            ),
+            propose_factory=lambda argument, summary: (
+                _ for _ in ()
+            ).throw(RuntimeError("propose LLM 不可用"))
         ),
-        retrieval=create_mock_retrieval_layer(),
     )
     orch = Orchestrator(agents=agents)
     out = orch.run(doc)
 
-    assert out == doc  # 两线路并行、无人采纳 → 逐字节还原。
+    assert out == doc  # propose 兜底：空假设不卡死、无人采纳 → 逐字节还原。
 
 
 # --------------------------------------------------------------------------- #
-# 真实双轨合并接入（issue #6 集成）
+# 真实裁决接入（issue #4 取证 + #5 取证 + #6 merge + #7 impact + #8 consistency
+# 五合一·Slice 5）
 #
-# create_stub_agents 已把合并桩替换为真实纯函数（#6 无 LLM/检索依赖）。
-# 双线路 partial 更新经 merge_argument_tree reducer 合流到同一节点（status 与
-# candidate_hypotheses 共存），合并读 12 格矩阵裁决、贴 merge_decision、
-# 裁剪假设、贴 conflict；不改 content/status、不置 adopted → 终稿逐字节等于原文。
+# create_real_agents 在给出 judgment_llm 时把裁决桩替换为真实 :func:`judge_and_adjudicate`
+# （吃 citations 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/consistency
+# 纯函数、整树写回 argument_tree）。裁决只写回 status/merge_decision/issue_tags、不改
+# content、不置 adopted → 终稿逐字节等于原文的承诺继续成立。
 # --------------------------------------------------------------------------- #
 
 
-def test_real_merge_wired_decisions_landed_byte_identity():
-    """两线路并行 → reducer 合流 → 合并读矩阵：sub_claim 冲突、evidence 替换。
+def _judge_argument_verdicts_factory(
+    verdicts_by_id: dict[str, JudgmentArgumentVerdict],
+):
+    """构造 judge_factory：对指定 argument_id 返回对应终态裁决，其余不裁决。"""
 
-    - sub_claim (n0000)：体检 credible + 开药 supported-oppose → 冲突格（CONFLICT +
-      conflict 标签、对立假设保留为候选）。
-    - evidence (n0001)：体检 doubtful + 开药 supported-oppose → REPLACE（假设激活）。
-    - 终稿逐字节等于原文（合并不改 content、不置 adopted）。
+    def factory(argument_tree, hypotheses, citations, session_context, query_time_range):
+        return JudgmentResult(
+            argument_verdicts=[
+                ArgumentVerdictEntry(argument_id=aid, verdict=v)
+                for aid, v in verdicts_by_id.items()
+            ]
+        )
+
+    return factory
+
+
+def test_real_judgment_argument_verdicts_land_in_tree_byte_identity():
+    """judgment 据 citations 判 per-argument 终态 → 树 status 落终态、merge 全 KEEP、
+    终稿逐字节等于原文（无人采纳）。
+
+    FakeJudgmentLlmClient(judge_factory) 产 sub_claim credible / evidence doubtful（无假说 →
+    无 supported 列）。judgment 应用 ``argument_credibility`` 后 merge 矩阵全 KEEP、无激活候选；
+    impact/consistency 不动（无 error / 无多 main_claim）；无人采纳 → 终稿逐字节等于原文。
     """
 
     doc = "分论点。\n\n论据。\n".encode()
     agents = create_real_agents(
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(
-                verdict=VerifyVerdict.DOUBTFUL
-                if argument.argument_id == "n0001"
-                else VerifyVerdict.CREDIBLE
+        judgment_llm=FakeJudgmentLlmClient(
+            judge_factory=_judge_argument_verdicts_factory(
+                {
+                    "n0000": JudgmentArgumentVerdict.CREDIBLE,
+                    "n0001": JudgmentArgumentVerdict.DOUBTFUL,
+                }
             )
         ),
-        hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument: [
-                HypothesisProposal(
-                    text=f"对立假设-{argument.argument_id}", relation=HypothesisRelation.OPPOSE
-                )
-            ],
-            verify_factory=lambda text, obs: HypothesisConcludeStep(
-                verdict=HypothesisVerdict.SUPPORTED
-            ),
-        ),
-        retrieval=create_mock_retrieval_layer(),
     )
 
     captured: dict = {}
 
-    def wrapped_merge(argument_tree):
-        out = agents.merge(argument_tree)
-        captured["out"] = out
-        return out
+    def wrapped_judgment(
+        argument_tree, hypotheses, citations, session_context, query_time_range
+    ):
+        outcome = agents.judgment(
+            argument_tree, hypotheses, citations, session_context, query_time_range
+        )
+        captured["out"] = outcome
+        return outcome
 
-    orch = Orchestrator(agents=replace(agents, merge=wrapped_merge))
+    orch = Orchestrator(agents=replace(agents, judgment=wrapped_judgment))
     out = orch.run(doc)
 
-    assert out == doc  # 字节级承诺：合并只标注、不改文本、无人采纳。
+    assert out == doc  # 字节级承诺：裁决只动 status/merge_decision、不改文本。
 
-    arguments = {n.argument_id: n for n in captured["out"]}
-    # sub_claim：credible × 对立成立 → CONFLICT + conflict 标签，对立假设保留、原文不动。
-    sub = arguments["n0000"]
-    assert sub.merge_decision.action.value == "conflict"
-    assert "conflict" in sub.issue_tags
-    assert len(sub.merge_decision.activated_hypothesis_ids) == 1
-    assert len(sub.candidate_hypotheses) == 1  # 对立假设保留并列推 HITL-2
-    assert sub.status.value == "credible"
-    # evidence：doubtful × 对立成立 → REPLACE，假设激活、原文/状态不动。
-    evi = arguments["n0001"]
-    assert evi.merge_decision.action.value == "replace"
-    assert len(evi.merge_decision.activated_hypothesis_ids) == 1
-    assert evi.status.value == "doubtful"
-    # 全员流入 HITL-2、无人被自动采纳。
-    assert all(n.status.value != "adopted" for n in captured["out"])
+    arguments = {n.argument_id: n for n in captured["out"].argument_tree}
+    assert arguments["n0000"].status.value == "credible"  # sub_claim 落终态
+    assert arguments["n0001"].status.value == "doubtful"  # evidence 落终态
+    # 无 supported 假说 → merge 矩阵全 KEEP、无激活候选。
+    for nid in ("n0000", "n0001"):
+        assert arguments[nid].merge_decision.action.value == "keep"
+        assert arguments[nid].merge_decision.activated_hypothesis_ids == []
+    # 无人被自动采纳。
+    assert all(n.status.value != "adopted" for n in captured["out"].argument_tree)
 
 
-# --------------------------------------------------------------------------- #
-# 真实影响传导接入（issue #7 集成）
-#
-# create_stub_agents 已把影响传导桩替换为真实纯函数（#7 无 LLM/检索依赖，串行·不产文本）。
-# 合并后的树经影响传导按剩余支撑率判 invalid/贴 weakening、复用既有成立假设激活；
-# 不改 content/不新建假设/不置 adopted → 终稿逐字节等于原文。本集成用桩开药（{}）
-# 以隔离观察影响传导：体检把叶子 evidence 判 error → sub_claim 塌方 invalid →
-# main_claim 上推 invalid（后序逐层）。
-# --------------------------------------------------------------------------- #
+def test_real_judgment_hypothesis_verdicts_trigger_merge_action_byte_identity():
+    """judgment 落假说终态 → merge 矩阵命中 REPLACE：evidence doubtful × oppose supported。
+
+    - evidence (n0001) 体检 doubtful；其 oppose 假说 judgment 判 supported →
+      ``HYPOTHESIS_RELATION_TO_MERGE_ACTION[oppose]=replace``，merge 贴
+      ``merge_decision.action==replace``、``activated_hypothesis_ids==[h-id]``、假说
+      ``status==supported``。
+    - 保守 HITL-2 全驳回（绝不自动采纳，ADR-0010）→ 终稿逐字节等于原文。
+    """
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
+        hitl1_gate=_skip_gate(),
+        hypothesis_llm=FakeHypothesisLlmClient(
+            propose_factory=lambda argument, summary: (
+                [HypothesisProposal(text="对立证据", relation=HypothesisRelation.OPPOSE)]
+                if argument.argument_id == "n0001"
+                else []
+            ),
+        ),
+        judgment_llm=FakeJudgmentLlmClient(
+            judge_factory=lambda argument_tree, hypotheses, citations, sc, qtr: JudgmentResult(
+                argument_verdicts=[
+                    ArgumentVerdictEntry(
+                        argument_id="n0001",
+                        verdict=JudgmentArgumentVerdict.DOUBTFUL,
+                    )
+                ],
+                hypothesis_verdicts=[
+                    HypothesisVerdictEntry(
+                        hypothesis_id=h.hypothesis_id,
+                        verdict=JudgmentHypothesisVerdict.SUPPORTED,
+                    )
+                    for h in hypotheses.get("n0001", [])
+                ],
+            )
+        ),
+    )
+
+    captured: dict = {}
+
+    def wrapped_judgment(
+        argument_tree, hypotheses, citations, session_context, query_time_range
+    ):
+        outcome = agents.judgment(
+            argument_tree, hypotheses, citations, session_context, query_time_range
+        )
+        captured["out"] = outcome
+        return outcome
+
+    orch = Orchestrator(agents=replace(agents, judgment=wrapped_judgment))
+    out = orch.run(doc)
+
+    assert out == doc  # 保守闸门全驳回 → 无采纳 → 逐字节还原。
+
+    arguments = {n.argument_id: n for n in captured["out"].argument_tree}
+    evidence = arguments["n0001"]
+    # doubtful × oppose supported → REPLACE、激活该假说。
+    assert evidence.merge_decision.action.value == "replace"
+    activated = evidence.merge_decision.activated_hypothesis_ids
+    assert len(activated) == 1
+    # 该假说终态 supported、被激活保留在 candidate_hypotheses。
+    updated_hyps = captured["out"].hypotheses.get("n0001", [])
+    assert len(updated_hyps) == 1
+    assert updated_hyps[0].hypothesis_id == activated[0]
+    assert updated_hyps[0].status is HypothesisStatus.SUPPORTED
+    assert len(evidence.candidate_hypotheses) == 1
+    assert evidence.candidate_hypotheses[0].status is HypothesisStatus.SUPPORTED
+    # 无人被自动采纳（保守闸门驳回）。
+    assert all(n.status.value != "adopted" for n in captured["out"].argument_tree)
 
 
 def _weighted_three_core_proposals() -> list[ParsedNodeProposal]:
@@ -521,108 +594,60 @@ def _weighted_three_core_proposals() -> list[ParsedNodeProposal]:
     ]
 
 
-def test_real_impact_propagates_invalid_up_chain_byte_identity():
-    """叶子 evidence 体检 error → sub_claim 塌方 invalid → main_claim 上推 invalid。
+def test_real_judgment_impact_propagates_invalid_up_chain_byte_identity():
+    """judgment 产 evidence error → impact 后序上推 sub_claim/main_claim invalid。
 
-    - evidence (n0002)：体检 error（叶子不动，影响传导不判叶子）。
+    - evidence (n0002)：judgment 判 error（叶子，impact 不动）。
     - sub_claim (n0001)：唯一子 evidence error → 剩余支撑率 0 < 0.5 → invalid。
     - main_claim (n0000)：唯一子 sub_claim invalid → 0 < 0.5 → invalid（后序上推）。
-    - 终稿逐字节等于原文（影响传导不改 content、不置 adopted）。
+    - 终稿逐字节等于原文（impact 不改 content、不置 adopted）。
     """
 
     doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
     agents = create_real_agents(
         llm=FakeLlmClient(result=ParseResult(proposals=_weighted_three_core_proposals())),
         hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(
-                verdict=VerifyVerdict.ERROR
-                if argument.argument_id == "n0002"
-                else VerifyVerdict.CREDIBLE
+        judgment_llm=FakeJudgmentLlmClient(
+            judge_factory=_judge_argument_verdicts_factory(
+                {
+                    "n0000": JudgmentArgumentVerdict.CREDIBLE,
+                    "n0001": JudgmentArgumentVerdict.CREDIBLE,
+                    "n0002": JudgmentArgumentVerdict.ERROR,
+                }
             )
         ),
-        retrieval=create_mock_retrieval_layer(),
     )
 
     captured: dict = {}
 
-    def wrapped_impact(argument_tree):
-        out = agents.impact(argument_tree)
-        captured["out"] = out
-        return out
+    def wrapped_judgment(
+        argument_tree, hypotheses, citations, session_context, query_time_range
+    ):
+        outcome = agents.judgment(
+            argument_tree, hypotheses, citations, session_context, query_time_range
+        )
+        captured["out"] = outcome
+        return outcome
 
-    orch = Orchestrator(agents=replace(agents, impact=wrapped_impact))
+    orch = Orchestrator(agents=replace(agents, judgment=wrapped_judgment))
     out = orch.run(doc)
 
     assert out == doc  # 字节级承诺：影响传导不产文本、不置 adopted。
 
-    arguments = {n.argument_id: n for n in captured["out"]}
-    assert arguments["n0002"].status.value == "error"  # 叶子：体检判决，影响传导不动
+    arguments = {n.argument_id: n for n in captured["out"].argument_tree}
+    assert arguments["n0002"].status.value == "error"  # 叶子：judgment 判决，impact 不动
     assert arguments["n0001"].status.value == "invalid"  # 子全死 → 塌方
     assert arguments["n0000"].status.value == "invalid"  # 子塌方 → 上推
     # 影响传导不替人拍板、不新建假设。
-    assert all(n.status.value != "adopted" for n in captured["out"])
-    assert all(n.merge_decision is not None for n in captured["out"])
+    assert all(n.status.value != "adopted" for n in captured["out"].argument_tree)
+    assert all(n.merge_decision is not None for n in captured["out"].argument_tree)
 
 
-def test_real_impact_all_credible_unaffected_byte_identity():
-    """全核心节点体检 credible → 影响传导不动任何节点、终稿逐字节等于原文。"""
+def test_real_judgment_consistency_tags_multi_main_claim_byte_identity():
+    """judgment 调 consistency：两 main_claim → 贴 multi_main_claim、终稿逐字节还原。
 
-    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_weighted_three_core_proposals())),
-        hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
-        ),
-        retrieval=create_mock_retrieval_layer(),
-    )
-    orch = Orchestrator(agents=agents)
-    assert orch.run(doc) == doc  # 全可信 → 无失效/弱化 → 逐字节还原
-
-
-# --------------------------------------------------------------------------- #
-# 真实一致性校验接入（issue #8 集成）
-#
-# create_stub_agents 已把一致性校验桩替换为真实纯函数（#8 无 LLM/检索依赖，批注门禁·
-# 单次扫描·只贴 issue_tags）。影响传导之后的树经一致性校验单次扫描、按段落级
-# （自洽性/边界匹配）与全局（跨段论点一致/术语定义一致）规则贴 issue_tags；不改
-# content/status/merge_decision、不置 adopted → 终稿逐字节等于原文（批注不影响回写）。
-# --------------------------------------------------------------------------- #
-
-
-def test_real_consistency_clean_tree_no_tags_byte_identity():
-    """正常三核心节点树无一致性瑕疵 → 不贴批注、终稿逐字节等于原文。"""
-
-    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_weighted_three_core_proposals())),
-        hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
-        ),
-        retrieval=create_mock_retrieval_layer(),
-    )
-    captured: dict = {}
-
-    def wrapped_consistency(argument_tree):
-        out = agents.consistency(argument_tree)
-        captured["out"] = out
-        return out
-
-    orch = Orchestrator(agents=replace(agents, consistency=wrapped_consistency))
-    out = orch.run(doc)
-    assert out == doc  # 字节级承诺：一致性只贴 issue_tags、不动文本。
-    # 三核心节点各占一段、单一主论点、无混段、无重复限定 → 不贴任何标签。
-    assert all(n.issue_tags == [] for n in captured["out"])
-
-
-def test_real_consistency_tags_issue_but_byte_identity_holds():
-    """一致性校验贴批注（multi_main_claim）仍逐字节还原——批注不影响回写。
-
-    构造两个 main_claim 的解析提议（跨段论点一致瑕疵），一致性校验在影响传导之后
-    单次扫描、给两个 main_claim 贴 ``multi_main_claim``；但 issue_tags 不进回写文本，
-    故终稿仍逐字节等于原文。
+    批注（issue_tags）不进回写文本，故终稿仍逐字节等于原文。空裁决（无 status 变更）
+    仍触发 consistency 的多根主论点检测——证明 consistency 在 judgment 内被调用。
     """
 
     doc = "主论点一。\n\n主论点二。\n".encode()
@@ -633,190 +658,95 @@ def test_real_consistency_tags_issue_but_byte_identity_holds():
     agents = create_real_agents(
         llm=FakeLlmClient(result=ParseResult(proposals=proposals)),
         hitl1_gate=_skip_gate(),
+        judgment_llm=FakeJudgmentLlmClient(),  # 空裁决：不改 status，仅触发 consistency
     )
+
     captured: dict = {}
 
-    def wrapped_consistency(argument_tree):
-        out = agents.consistency(argument_tree)
-        captured["out"] = out
-        return out
+    def wrapped_judgment(
+        argument_tree, hypotheses, citations, session_context, query_time_range
+    ):
+        outcome = agents.judgment(
+            argument_tree, hypotheses, citations, session_context, query_time_range
+        )
+        captured["out"] = outcome
+        return outcome
 
-    orch = Orchestrator(agents=replace(agents, consistency=wrapped_consistency))
+    orch = Orchestrator(agents=replace(agents, judgment=wrapped_judgment))
     out = orch.run(doc)
+
     assert out == doc  # 批注不进文本 → 逐字节还原。
-    arguments = {n.argument_id: n for n in captured["out"]}
+    arguments = {n.argument_id: n for n in captured["out"].argument_tree}
     mains = [n for n in arguments.values() if n.argument_type is ArgumentType.MAIN_CLAIM]
     assert len(mains) == 2
     assert all("multi_main_claim" in n.issue_tags for n in mains)
     # 不替人拍板：无人进入 adopted。
-    assert all(n.status.value != "adopted" for n in captured["out"])
+    assert all(n.status.value != "adopted" for n in captured["out"].argument_tree)
 
 
 # --------------------------------------------------------------------------- #
-# 真实 HITL-2 修订确认硬闸门接入（issue #9 集成）
+# 终稿确认路径（rewrite_loop + hitl2 · Slice 6 · ADR-0017）
 #
-# create_stub_agents 的 HITL-2 桩已替换为真实 confirm + ConservativeHitl2Gate（#9）。
-# 一致性校验之后的树经 HITL-2 呈现待决节点（doubtful/error/conflict + 激活候选），
-# 保守闸门无待决→一键通过、有待决→全驳回（绝不自动采纳，ADR-0010）；采纳即置 adopted
-# + 持久化 adopted_hypothesis_id（ADR-0011）。回写（#10）真实分流·幂等：采纳后按关系
-# 缝合终稿、翻正 adopted→corrected。
+# judgment 落 supported 假说 → rewrite_loop 对触达段产提议重写 → hitl2 确认 → 终稿含
+# 确认文本、未触达段逐字节原文。这是「人拍板采纳提议重写」的端到端路径；与既有
+# 保守全驳回路径（ConservativeHitl2Gate + rewrite_loop 桩不提议）互为对偶。
 # --------------------------------------------------------------------------- #
 
 
-def _pending_merge_agents(hitl2_gate=None):
-    """sub_claim credible（→conflict）+ evidence doubtful（→replace），均带激活候选。"""
+def test_e2e_touched_confirmed_rewrite_lands_in_final_document():
+    """被触达段经确认 → 终稿含确认文本；未触达段逐字节原文（Slice 6）。
 
-    return create_real_agents(
+    - evidence (n0001, p0002) 配对立假说、judgment 判假说 supported → p0002 触达。
+    - sub_claim (n0000, p0001) 无假说 / 无命中 citations → 不触达、逐字节原文。
+    - rewrite_loop 对 p0002 产提议文本 ``论据[已修订]``；hitl2 (FakeHitl2Gate) 确认 p0002
+      → 终稿 p0002 用确认文本、p0001 逐字节还原。
+    """
+
+    doc = "分论点。\n\n论据。\n".encode()
+    agents = create_real_agents(
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(
-                verdict=VerifyVerdict.DOUBTFUL
-                if argument.argument_id == "n0001"
-                else VerifyVerdict.CREDIBLE
-            )
-        ),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument: [
-                HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)
-            ],
-            verify_factory=lambda text, obs: HypothesisConcludeStep(
-                verdict=HypothesisVerdict.SUPPORTED
+            propose_factory=lambda argument, summary: (
+                [HypothesisProposal(text="对立证据", relation=HypothesisRelation.OPPOSE)]
+                if argument.argument_id == "n0001"
+                else []
             ),
         ),
-        retrieval=create_mock_retrieval_layer(),
-        hitl2_gate=hitl2_gate,
-    )
-
-
-def test_real_hitl2_conservative_default_rejects_all_byte_identity():
-    """有待决内容 + 保守默认闸门 → 全驳回、无采纳 → 终稿逐字节等于原文。
-
-    sub_claim（credible×对立成立→conflict）+ evidence（doubtful×对立成立→replace）均待决；
-    保守闸门 DECIDE 空 ops（绝不自动采纳），HITL-2 仍被调用、收到待决呈现。
-    """
-
-    doc = "分论点。\n\n论据。\n".encode()
-    agents = _pending_merge_agents()  # 默认保守闸门
-    captured: dict = {}
-
-    def wrapped_hitl2(argument_tree, original_paragraphs):
-        captured["in"] = argument_tree
-        out = agents.hitl2(argument_tree, original_paragraphs)
-        captured["out"] = out
-        return out
-
-    orch = Orchestrator(agents=replace(agents, hitl2=wrapped_hitl2))
-    out = orch.run(doc)
-
-    assert out == doc  # 保守闸门全驳回 → 无采纳 → 逐字节还原。
-    # HITL-2 收到待决内容（两个节点都有激活候选）。
-    in_arguments = {n.argument_id: n for n in captured["in"]}
-    assert in_arguments["n0000"].merge_decision.activated_hypothesis_ids != []
-    assert in_arguments["n0001"].merge_decision.activated_hypothesis_ids != []
-    # 输出无采纳。
-    assert all(n.status.value != "adopted" for n in captured["out"])
-    assert all(n.adopted_hypothesis_id is None for n in captured["out"])
-
-
-def test_real_hitl2_all_credible_pass_path_byte_identity():
-    """全核心节点 credible → 无待决 → 保守闸门 PASS 一键通过 → 逐字节还原。"""
-
-    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
-    agents = create_real_agents(
-        llm=FakeLlmClient(result=ParseResult(proposals=_weighted_three_core_proposals())),
-        hitl1_gate=_skip_gate(),
-        verify_llm=FakeVerifyLlmClient(
-            factory=lambda argument, obs: ConcludeStep(verdict=VerifyVerdict.CREDIBLE)
+        judgment_llm=FakeJudgmentLlmClient(
+            judge_factory=lambda argument_tree, hypotheses, citations, sc, qtr: JudgmentResult(
+                argument_verdicts=[
+                    ArgumentVerdictEntry(
+                        argument_id="n0001",
+                        verdict=JudgmentArgumentVerdict.DOUBTFUL,
+                    )
+                ],
+                hypothesis_verdicts=[
+                    HypothesisVerdictEntry(
+                        hypothesis_id=h.hypothesis_id,
+                        verdict=JudgmentHypothesisVerdict.SUPPORTED,
+                    )
+                    for h in hypotheses.get("n0001", [])
+                ],
+            )
         ),
-        retrieval=create_mock_retrieval_layer(),
-    )
-    captured: dict = {}
-
-    def wrapped_hitl2(argument_tree, original_paragraphs):
-        out = agents.hitl2(argument_tree, original_paragraphs)
-        captured["out"] = out
-        return out
-
-    orch = Orchestrator(agents=replace(agents, hitl2=wrapped_hitl2))
-    assert orch.run(doc) == doc
-    # 一键通过：无人采纳。
-    assert all(n.status.value != "adopted" for n in captured["out"])
-
-
-def test_real_hitl2_pass_on_pending_raises_hard_gate_e2e():
-    """有待决内容时闸门返回 PASS → 硬闸门在流水线内拦截（绝不无人拍板自动采纳）。"""
-
-    from agents.hitl2 import Hitl2GateError
-
-    doc = "分论点。\n\n论据。\n".encode()
-    # 显式注入一个越权 PASS 闸门。
-    agents = _pending_merge_agents(
-        hitl2_gate=FakeHitl2Gate(Hitl2Decision(action=Hitl2Action.PASS))
+        rewrite_llm=FakeRewriteLlmClient(
+            propose_factory=lambda paragraph_id, paragraph_summary, arguments, citations, sc, qtr: (
+                "论据[已修订]" if paragraph_id == "p0002" else None
+            ),
+        ),
+        hitl2_gate=FakeHitl2Gate(
+            Hitl2Decision(
+                action=Hitl2Action.DECIDE,
+                ops=[ConfirmRewriteOp(paragraph_id="p0002")],
+            )
+        ),
     )
     orch = Orchestrator(agents=agents)
-    with pytest.raises(Hitl2GateError, match="硬闸门"):
-        orch.run(doc)
+    out = orch.run(doc)
 
-
-def test_real_hitl2_adopting_gate_persists_adoption_in_pipeline():
-    """采纳闸门在流水线内把激活候选置 adopted + 持久化 adopted_hypothesis_id，回写（#10）
-    据此按关系分流缝合终稿、翻正 adopted→corrected（ADR-0011）。
-
-    sub_claim（credible×对立成立→conflict）与 evidence（doubful×对立成立→replace）均被
-    采纳对立假设（text="x"）；回写对立→替换原句，故终稿不再逐字节等于原文、原句消失、
-    假设文本就位、两节点翻 corrected。
-    """
-
-    from agents.hitl2 import AdoptOp, Hitl2Action, Hitl2Decision, Hitl2Gate
-
-    class _AdoptFirstGate(Hitl2Gate):
-        """对每个有激活候选的待决节点，采纳其首条激活假设。"""
-
-        def review(self, review):
-            ops = []
-            for n in review.arguments:
-                if n.activated_hypothesis_ids:
-                    ops.append(
-                        AdoptOp(
-                            argument_id=n.argument_id,
-                            hypothesis_id=n.activated_hypothesis_ids[0],
-                        )
-                    )
-            return Hitl2Decision(action=Hitl2Action.DECIDE, ops=ops)
-
-    doc = "分论点。\n\n论据。\n".encode()
-    agents = _pending_merge_agents(hitl2_gate=_AdoptFirstGate())
-    captured: dict = {}
-
-    def wrapped_hitl2(argument_tree, original_paragraphs):
-        out = agents.hitl2(argument_tree, original_paragraphs)
-        captured["out"] = out
-        return out
-
-    def wrapped_writeback(argument_tree, original_paragraphs):
-        out = agents.writeback(argument_tree, original_paragraphs)
-        captured["writeback"] = out
-        return out
-
-    orch = Orchestrator(
-        agents=replace(
-            agents, hitl2=wrapped_hitl2, writeback=wrapped_writeback
-        )
-    )
-    final_document = orch.run(doc)
-
-    out_arguments = {n.argument_id: n for n in captured["out"]}
-    # HITL-2 采纳链：sub_claim（conflict）与 evidence（replace）均被采纳。
-    for nid in ("n0000", "n0001"):
-        assert out_arguments[nid].status.value == "adopted"
-        assert out_arguments[nid].adopted_hypothesis_id is not None
-
-    # 回写：对立→替换原句，两节点翻 corrected、终稿含假设文本、原句消失。
-    wb_arguments = {n.argument_id: n for n in captured["writeback"].argument_tree}
-    for nid in ("n0000", "n0001"):
-        assert wb_arguments[nid].status.value == "corrected"
-        assert wb_arguments[nid].adopted_hypothesis_id is not None
-    assert b"x" in final_document
-    assert "分论点".encode() not in final_document
-    assert "论据".encode() not in final_document
+    # p0001 未触达 → 逐字节原文（含段间空行尾随字节）；p0002 触达确认 → 用确认文本。
+    expected = "分论点。\n\n论据[已修订]".encode()
+    assert out == expected
+    assert out.startswith("分论点。\n\n".encode())  # 未触达段逐字节忠实
+    assert out.endswith("论据[已修订]".encode())  # 确认文本落地

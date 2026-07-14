@@ -21,7 +21,9 @@ from agents.hitl1 import (
     Hitl1Decision,
     Hitl1Gate,
     confirm,
+    confirm_partition,
 )
+from agents.hitl1.contract import Hitl1Route
 from domain import Argument, ArgumentType
 from tree_invariants import TreeInvariantError
 
@@ -447,3 +449,151 @@ def test_confirm_edit_sequence_invalid_step_rejects_wholesale():
             ),
         )
     assert [n.model_dump() for n in argument_tree] == snapshot
+
+
+# --------------------------------------------------------------------------- #
+# slice 6（重构·ADR-0018）：confirm_partition — partition 确认闸门 + 有界打回
+#
+# hitl1 重定义为 partition 确认闸门：人确认段落切分是否合理；确认继续（skip/accept/edit）
+# → 下游；打回重跑（replay）→ 重跑 parse+partition（按 user prompt，当前伪代码桩）。
+# 打回有界（max retries 默认 3）；超限向前推进 + 贴 partition_retry_exhausted（受控分支、
+# 非异常降级）。既有 skip/accept/edit 与新 REPLAY 收编为「确认继续 / 打回重跑」两类语义。
+# --------------------------------------------------------------------------- #
+
+
+def test_confirm_partition_skip_continues_route_unchanged_tree():
+    """SKIP 决策 → route=CONTINUE、树原样深拷贝、计数不变。"""
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree, retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.SKIP))
+    )
+    assert out.route is Hitl1Route.CONTINUE
+    assert out.retry_count == 0
+    assert out.exhausted is False
+    assert [n.model_dump() for n in out.argument_tree] == [n.model_dump() for n in argument_tree]
+
+
+def test_confirm_partition_replay_under_budget_routes_replay_and_increments():
+    """REPLAY 决策、预算内 → route=REPLAY、计数 +1、树原样深拷贝（partition 重切为桩）。"""
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree, retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY))
+    )
+    assert out.route is Hitl1Route.REPLAY
+    assert out.retry_count == 1
+    assert out.exhausted is False
+    assert [n.model_dump() for n in out.argument_tree] == [n.model_dump() for n in argument_tree]
+
+
+def test_confirm_partition_replay_at_limit_exhausts_and_continues():
+    """REPLAY 决策、已达 max_retries → 受控向前 + exhausted=True、计数不递增、贴标签由 build 落。"""
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree,
+        retry_count=3,
+        gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
+        max_retries=3,
+    )
+    assert out.route is Hitl1Route.CONTINUE  # 超限向前推进
+    assert out.retry_count == 3  # 不递增
+    assert out.exhausted is True
+    assert [n.model_dump() for n in out.argument_tree] == [n.model_dump() for n in argument_tree]
+
+
+def test_confirm_partition_replay_just_under_limit_still_replays():
+    """retry_count = max_retries - 1 仍可再打回一次（边界：>= 才耗尽）。"""
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree,
+        retry_count=2,
+        gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
+        max_retries=3,
+    )
+    assert out.route is Hitl1Route.REPLAY
+    assert out.retry_count == 3
+    assert out.exhausted is False
+
+
+def test_confirm_partition_edit_applied_and_continues():
+    """EDIT 决策 → 结构编辑应用、route=CONTINUE、计数不变。"""
+
+    from agents.hitl1 import ReparentOp
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree,
+        retry_count=1,
+        gate=_gate(
+            Hitl1Decision(
+                action=Hitl1Action.EDIT,
+                ops=[ReparentOp(argument_id="c", new_parent_id="b")],
+            )
+        ),
+    )
+    by_id = {n.argument_id: n for n in out.argument_tree}
+    assert out.route is Hitl1Route.CONTINUE
+    assert out.retry_count == 1  # 确认继续不递增打回计数
+    assert by_id["c"].parent_id == "b"  # 结构编辑已应用
+    assert "c" in by_id["b"].children_ids
+
+
+def test_confirm_partition_validates_input_tree_before_review():
+    """输入树非法 → 抛 TreeInvariantError，且 gate.review 从未被调用（与 confirm 同防御）。"""
+
+    bad_tree = [_argument("a", parent_id="ghost")]
+    reviewed = []
+
+    class _Spy:
+        def review(self, argument_tree):
+            reviewed.append(True)
+            return Hitl1Decision(action=Hitl1Action.SKIP)
+
+    with pytest.raises(TreeInvariantError):
+        confirm_partition(bad_tree, retry_count=0, gate=_Spy())  # type: ignore[arg-type]
+    assert reviewed == []
+
+
+def test_confirm_partition_replay_max_retries_configurable_default_three():
+    """max_retries 默认 3：retry_count=3 + REPLAY → 耗尽（验证默认值与可配置）。"""
+
+    argument_tree = _abc_tree()
+    out = confirm_partition(
+        argument_tree,
+        retry_count=3,
+        gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
+    )
+    assert out.exhausted is True
+    assert out.route is Hitl1Route.CONTINUE
+
+
+def test_confirm_partition_replay_once_then_continue_simulates_loop():
+    """打回一次后继续（loop 模拟）：第 1 次 REPLAY(retry 0→1)，第 2 次 SKIP(retry 1, continue)。
+
+    单元级模拟图层级循环：调用方据 outcome.route 决定是否重跑上游、据 outcome.retry_count
+    续传计数器。confirm_partition 自身无状态，loop 由图条件边驱动（见 test_orchestrator_fallback）。
+    """
+
+    decisions = [
+        Hitl1Decision(action=Hitl1Action.REPLAY),
+        Hitl1Decision(action=Hitl1Action.SKIP),
+    ]
+
+    class _SequentialGate:
+        def review(self, argument_tree):
+            return decisions.pop(0)
+
+    gate: Hitl1Gate = _SequentialGate()  # type: ignore[assignment]
+    argument_tree = _abc_tree()
+
+    out1 = confirm_partition(argument_tree, retry_count=0, gate=gate)
+    assert out1.route is Hitl1Route.REPLAY
+    assert out1.retry_count == 1
+    # 图层级重跑上游后，第二次 hitl1：计数续传 out1.retry_count。
+    out2 = confirm_partition(argument_tree, retry_count=out1.retry_count, gate=gate)
+    assert out2.route is Hitl1Route.CONTINUE
+    assert out2.retry_count == 1  # 确认继续不递增打回计数
+    assert out2.exhausted is False

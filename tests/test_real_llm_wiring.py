@@ -13,12 +13,14 @@ from collections.abc import Iterable
 
 import pytest
 
+from agents.assembly import create_real_agents
 from agents.hitl1 import FakeHitl1Gate, Hitl1Action, Hitl1Decision
 from agents.hitl2 import (
     ConservativeHitl2Gate,
     Hitl2Action,
     Hitl2Review,
 )
+from agents.rewrite_loop import FakeRewriteLlmClient, RewriteLoopOutcome
 from domain import Argument, ArgumentType
 from infra.llm_provider import build_qwen_chat_model
 from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate
@@ -117,13 +119,13 @@ def test_cli_hitl1_gate_noninteractive_skips():
 
 def test_cli_hitl2_gate_pass_when_no_pending():
     gate = CliHitl2Gate(interactive=True, out_fn=lambda *_a, **_k: None)
-    review = Hitl2Review(arguments=[], has_pending=False)
+    review = Hitl2Review(paragraphs=[], has_pending=False)
     assert gate.review(review).action == Hitl2Action.PASS
 
 
 def test_cli_hitl2_gate_noninteractive_decides_empty():
     gate = CliHitl2Gate(interactive=False, out_fn=lambda *_a, **_k: None)
-    review = Hitl2Review(arguments=[], has_pending=True)
+    review = Hitl2Review(paragraphs=[], has_pending=True)
     decision = gate.review(review)
     assert decision.action == Hitl2Action.DECIDE
     assert decision.ops == []
@@ -132,6 +134,77 @@ def test_cli_hitl2_gate_noninteractive_decides_empty():
 # --------------------------------------------------------------------------- #
 # wiring：fake chat model → 兜底 → 终稿逐字节等于原文
 # --------------------------------------------------------------------------- #
+
+
+def test_real_agents_rewrite_llm_is_injected_and_proposes_for_touched_paragraph():
+    """``create_real_agents(rewrite_llm=...)`` 注入重写 seam：触达段产提议、未触达省略。
+
+    离线断言 manifest 的 ``rewrite_loop`` real 工厂以 ``partial(propose_rewrites, llm=...)``
+    预绑注入的 rewrite_llm——字段存在且可注入（与 parse/hypothesis/judgment 装配 seam 同形）。
+    p0001 段内含 supported 假说 → 触达 → 调 ``propose_rewrite``；p0002 无假说 / 无命中
+    citations → 不触达、不调 LLM。
+    """
+
+    from agents.parser import FakeLlmClient, ParseResult
+    from domain import (
+        DEFAULT_QUERY_TIME_RANGE,
+        DEFAULT_SESSION_CONTEXT,
+        Argument,
+        ArgumentType,
+        Hypothesis,
+        HypothesisRelation,
+        HypothesisStatus,
+    )
+    from original_paragraphs import OriginalParagraphs
+
+    called: dict = {}
+
+    def factory(paragraph_id, paragraph_summary, arguments, citations, sc, qtr):
+        called["pid"] = paragraph_id
+        return "REWRITTEN"
+
+    agents = create_real_agents(
+        llm=FakeLlmClient(result=ParseResult()),
+        hitl1_gate=FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP)),
+        rewrite_llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    doc = "主论点。\n\n分论点。\n".encode()
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    hyp = Hypothesis(
+        hypothesis_id="h1",
+        text="x",
+        relation=HypothesisRelation.OPPOSE,
+        status=HypothesisStatus.SUPPORTED,
+    )
+    argument_tree = [
+        Argument(
+            argument_id="n1",
+            argument_type=ArgumentType.MAIN_CLAIM,
+            paragraph_id="p0001",
+            content="主论点",
+            candidate_hypotheses=[hyp],
+        ),
+        Argument(
+            argument_id="n2",
+            argument_type=ArgumentType.SUB_CLAIM,
+            paragraph_id="p0002",
+            content="分论点",
+        ),
+    ]
+
+    outcome = agents.rewrite_loop(
+        argument_tree,
+        {},
+        {},
+        original_paragraphs,
+        DEFAULT_SESSION_CONTEXT,
+        DEFAULT_QUERY_TIME_RANGE,
+    )
+    assert isinstance(outcome, RewriteLoopOutcome)
+    assert outcome.proposed_rewrites == {"p0001": "REWRITTEN"}  # 仅触达段 p0001 提议
+    assert called["pid"] == "p0001"  # 未触达段 p0002 不调 LLM
+    assert outcome.errors == []
 
 
 def test_run_real_pipeline_wiring_byte_identical_when_unadopted():

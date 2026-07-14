@@ -1,25 +1,29 @@
-"""回写纯函数子缝测试（ADR-0001、ADR-0005、ADR-0011、PRD §11、«Testing Decisions»）。
+"""终稿拼装纯函数子缝测试（ADR-0017、PRD §11/§12、«Testing Decisions»）。
 
-回写按段落原子缝合：未变更段逐字节拷回、变更段按关系正确替换或改写或段尾追加。
-本切片覆盖「逐字节拷回」（#1）与「采纳改动分流」（#10）：oppose→替换原句、
-advance→局部改写原句、expand→段尾追加带专属审计标识内容；成功置 ``corrected``、
-失败停留 ``adopted`` 并贴错误标签、重试幂等不重复注入。
+本文件原为 ``writeback`` 纯函数子缝测试；Slice 6 裁撤 writeback 节点、终稿改由
+``rewrite_loop``（逐段提议重写）+ ``hitl2``（确认 / 编辑 / 驳回后拼接）落地后，本文件
+改/扩为「提议→确认→拼接」纯函数子缝：
 
-行为级黑盒测试（PRD «Testing Decisions»）。无 LLM / 检索依赖（确定性纯函数），
-故无需注入桩。
+- ``propose_rewrites``（rewrite_loop）：被触达段产 LLM 提议重写、未触达段省略、LLM 抛错段
+  省略 + 记日志（不碰 ``argument_tree``，仅产 ``proposed_rewrites`` + per-段 errors）。
+- ``assemble_final_document``（hitl2）：按确认 / 驳回 / 未触达三态拼接 ``final_document``
+  （确认→提议文本、驳回 / 未触达→逐字节原文）。
+
+行为级黑盒测试（PRD «Testing Decisions»）。rewrite_loop 的 LLM seam 以
+``FakeRewriteLlmClient`` 离线桩注入——provider-free、确定、可断言。
 """
 
 from __future__ import annotations
 
-import pytest
-
-from agents.writeback import (
-    SUPPLEMENT_AUDIT_MARKER,
-    WRITEBACK_ERROR_TAG,
-    WritebackResult,
-    writeback,
+from agents.hitl2 import assemble_final_document
+from agents.rewrite_loop import (
+    FakeRewriteLlmClient,
+    RewriteLoopOutcome,
+    propose_rewrites,
 )
 from domain import (
+    DEFAULT_QUERY_TIME_RANGE,
+    DEFAULT_SESSION_CONTEXT,
     Argument,
     ArgumentStatus,
     ArgumentType,
@@ -27,6 +31,7 @@ from domain import (
     HypothesisRelation,
     HypothesisStatus,
 )
+from infra.retrieval import Source
 from original_paragraphs import OriginalParagraphs
 
 # --------------------------------------------------------------------------- #
@@ -34,415 +39,302 @@ from original_paragraphs import OriginalParagraphs
 # --------------------------------------------------------------------------- #
 
 
-def _shadow_tree(original_paragraphs: OriginalParagraphs):
-    """每段一个只读影子节点（与解析桩一致）。"""
+def _store(*paragraphs: tuple[str, str]) -> OriginalParagraphs:
+    """从 (paragraph_id, text) 序列构造只读原文表（文本以 utf-8 编码固化）。"""
 
-    return [
-        Argument(
-            argument_id=f"n-{pid}",
-            argument_type=ArgumentType.BACKGROUND,
-            paragraph_id=pid,
-            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
-        )
-        for pid in original_paragraphs.paragraph_ids()
-    ]
+    from partition import Paragraph
+
+    return OriginalParagraphs(
+        [Paragraph(pid, text.encode("utf-8")) for pid, text in paragraphs]
+    )
 
 
 def _hyp(
     hid: str,
     *,
-    text: str,
-    relation: HypothesisRelation,
+    relation: HypothesisRelation = HypothesisRelation.OPPOSE,
     status: HypothesisStatus = HypothesisStatus.SUPPORTED,
+    text: str | None = None,
 ) -> Hypothesis:
-    return Hypothesis(hypothesis_id=hid, text=text, relation=relation, status=status)
+    return Hypothesis(
+        hypothesis_id=hid,
+        text=text or f"假设-{hid}",
+        relation=relation,
+        status=status,
+    )
 
 
-def _adopted_argument(
-    *,
+def _argument(
     argument_id: str,
+    *,
     paragraph_id: str,
-    content: str,
-    hypothesis: Hypothesis,
-    status: ArgumentStatus = ArgumentStatus.ADOPTED,
+    argument_type: ArgumentType = ArgumentType.EVIDENCE,
+    status: ArgumentStatus = ArgumentStatus.UNVERIFIED,
+    content: str = "",
+    candidates: list[Hypothesis] | None = None,
 ) -> Argument:
-    """构造一个已采纳节点（adopted 或 corrected），其候选假设含被采纳者。"""
-
     return Argument(
         argument_id=argument_id,
-        argument_type=ArgumentType.EVIDENCE,
+        argument_type=argument_type,
         paragraph_id=paragraph_id,
         content=content,
         status=status,
-        candidate_hypotheses=[hypothesis],
-        adopted_hypothesis_id=hypothesis.hypothesis_id,
+        candidate_hypotheses=list(candidates or []),
     )
 
 
 # --------------------------------------------------------------------------- #
-# #1 逐字节拷回通道（无采纳改动 → 终稿逐字节等于原文）
+# propose_rewrites —— 触达判定 + LLM 提议 + 失败回退
 # --------------------------------------------------------------------------- #
 
 
-def test_writeback_no_adoptions_byte_identical(sample_doc):
-    """无采纳改动时，终稿逐字节等于原始输入（含空行/缩进/末尾空格）。"""
+def test_propose_rewrites_touched_by_supported_hypothesis_gets_proposal():
+    """段内有 supported 假说 → 触达 → LLM 提议文本落入 proposed_rewrites。"""
 
-    _name, doc = sample_doc
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    argument_tree = [
+        _argument("n0", paragraph_id="p0001", argument_type=ArgumentType.MAIN_CLAIM, content="主论点。"),
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点。",
+            candidates=[_hyp("h1", status=HypothesisStatus.SUPPORTED)],
+        ),
+    ]
+
+    def factory(pid, summary, arguments, citations, sc, qtr):
+        assert pid == "p0002"
+        return "重写后的分论点"
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_summaries={"p0002": "分论点摘要"},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    assert isinstance(outcome, RewriteLoopOutcome)
+    assert outcome.proposed_rewrites == {"p0002": "重写后的分论点"}
+    assert outcome.errors == []
+
+
+def test_propose_rewrites_untouched_paragraph_omitted_and_never_calls_llm():
+    """段无 supported 假说、无 citations → 未触达 → 不进 proposed_rewrites、不调 LLM。"""
+
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    argument_tree = [
+        _argument("n0", paragraph_id="p0001", content="主论点。"),
+        # p0002 仅 pending 假说、无 citations → 未触达。
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点。",
+            candidates=[_hyp("h1", status=HypothesisStatus.PENDING)],
+        ),
+    ]
+    seen: list[str] = []
+
+    def factory(pid, summary, arguments, citations, sc, qtr):  # type: ignore[no-untyped-def]
+        seen.append(pid)
+        return "不应被调"
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_summaries={},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    assert outcome.proposed_rewrites == {}
+    assert outcome.errors == []
+    assert seen == []  # 未触达段绝不调 LLM
+
+
+def test_propose_rewrites_touched_by_citations_gets_proposal():
+    """段无 supported 假说但有命中 citations → 触达 → 提议。"""
+
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    argument_tree = [
+        _argument("n0", paragraph_id="p0001", content="主论点。"),
+        _argument("n1", paragraph_id="p0002", content="分论点。"),  # 无假说
+    ]
+    citations = {"n1": [Source(source_id="s1", kind="network", origin="url", snippet="证据")]}
+
+    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+        return "据证据重写"
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations=citations,
+        paragraph_summaries={"p0002": "摘要"},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    assert outcome.proposed_rewrites == {"p0002": "据证据重写"}
+
+
+def test_propose_rewrites_llm_returns_none_omits_silently():
+    """LLM 返回 None（选择不提议）→ 省略、不记 error（非失败）。"""
+
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    argument_tree = [
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点。",
+            candidates=[_hyp("h1", status=HypothesisStatus.SUPPORTED)],
+        ),
+    ]
+
+    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+        return None
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_summaries={"p0002": "摘要"},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+    assert outcome.proposed_rewrites == {}
+    assert outcome.errors == []
+
+
+def test_propose_rewrites_llm_raises_omits_and_logs_per_paragraph():
+    """某触达段 LLM 抛错 → 该段省略 + 记 [rewrite_loop] 日志、其余段照常提议（不杀全树）。"""
+
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"), ("p0003", "论据。"))
+    argument_tree = [
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点。",
+            candidates=[_hyp("h1", status=HypothesisStatus.SUPPORTED)],
+        ),
+        _argument(
+            "n2", paragraph_id="p0003", content="论据。",
+            candidates=[_hyp("h2", status=HypothesisStatus.SUPPORTED)],
+        ),
+    ]
+
+    def factory(pid, summary, arguments, citations, sc, qtr):
+        if pid == "p0002":
+            raise RuntimeError("LLM boom")
+        return "重写论据"
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_summaries={"p0002": "摘要", "p0003": "摘要"},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    # 抛错段省略、其余段照常提议（per-段捕获、不杀全树）。
+    assert outcome.proposed_rewrites == {"p0003": "重写论据"}
+    assert len(outcome.errors) == 1
+    assert outcome.errors[0].startswith("[rewrite_loop] p0002")
+    assert "RuntimeError" in outcome.errors[0]
+    assert "LLM boom" in outcome.errors[0]
+
+
+def test_propose_rewrites_does_not_mutate_argument_tree():
+    """rewrite_loop 不碰 argument_tree：输入树对象 / 字段不变。"""
+
+    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    argument_tree = [
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点。",
+            candidates=[_hyp("h1", status=HypothesisStatus.SUPPORTED)],
+        ),
+    ]
+    snapshot = [n.model_dump() for n in argument_tree]
+
+    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+        return "重写"
+
+    propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_summaries={"p0002": "摘要"},
+        original_paragraphs=original_paragraphs,
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    assert [n.model_dump() for n in argument_tree] == snapshot
+
+
+# --------------------------------------------------------------------------- #
+# assemble_final_document —— 确认/驳回/未触达三态拼接（纯「拼接」子缝）
+# --------------------------------------------------------------------------- #
+
+
+def test_assemble_no_resolved_rewrites_byte_identical():
+    """无确认段（resolved_rewrites 空）→ 终稿逐字节等于原始输入（分区不变式）。"""
+
+    doc = "主论点。\n\n分论点。\n\n论据。\n".encode()
     original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument_tree = _shadow_tree(original_paragraphs)
-    assert writeback(argument_tree, original_paragraphs).final_document == doc
+    assert assemble_final_document(original_paragraphs, {}) == doc
 
 
-def test_writeback_uses_store_canonical_order_not_tree_order():
-    """回写按只读表规范顺序遍历，而非树遍历顺序——保证字节级确定。"""
+def test_assemble_confirmed_paragraph_uses_resolved_text_others_byte_identical():
+    """确认段用 resolved 文本、其余段逐字节原文。"""
+
+    doc = b"keep\n\nchange\n\nkeep2\n"
+    original_paragraphs = OriginalParagraphs.from_text(doc)
+    resolved = {"p0002": "重写后的分论点"}
+    out = assemble_final_document(original_paragraphs, resolved)
+    # 确认段用 resolved 文本。
+    assert "重写后的分论点".encode() in out
+    assert b"change" not in out
+    # 其余段逐字节还原。
+    assert original_paragraphs.get("p0001") in out
+    assert original_paragraphs.get("p0003") in out
+
+
+def test_assemble_uses_store_canonical_order():
+    """拼接按 original_paragraphs 规范顺序，与 resolved_rewrites 的 dict 顺序无关。"""
 
     doc = b"aaa\n\nbbb\n\nccc\n"
     original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument_tree = _shadow_tree(original_paragraphs)
-    # 故意打乱树顺序，回写仍按 original_paragraphs 规范顺序输出。
-    argument_tree.reverse()
-    assert writeback(argument_tree, original_paragraphs).final_document == doc
+    p1 = original_paragraphs.get("p0001")
+    p2 = original_paragraphs.get("p0002")
+    p3 = original_paragraphs.get("p0003")
+    resolved = {"p0002": "BBB"}
+    out = assemble_final_document(original_paragraphs, resolved)
+    # 规范顺序：p0001 → BBB → p0003（与 resolved 的 dict 顺序无关）。
+    assert out.startswith(p1)
+    assert out.endswith(p3)
+    assert out.index(b"BBB") < out.index(p3)
+    # p0002 原文被替换。
+    assert p2 not in out
+    assert b"BBB" in out
 
 
-def test_writeback_preserves_code_fence_block_bytes():
-    """代码块段逐字节无损（含栅栏内空行）。"""
-
-    doc = b"intro\n\n```python\na = 1\n\nb = 2\n```\n\noutro\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument_tree = _shadow_tree(original_paragraphs)
-    assert writeback(argument_tree, original_paragraphs).final_document == doc
-
-
-# --------------------------------------------------------------------------- #
-# #10 采纳改动分流（oppose→替换、advance→改写、expand→段尾追加）
-# --------------------------------------------------------------------------- #
-
-
-def test_writeback_oppose_replaces_original_sentence():
-    """对立型假设 → 替换原句：节点 content 子串被假设文本取代，原句消失。
-
-    成功置 ``corrected``、``adopted_hypothesis_id`` 持久保留（幂等重取依据）。
-    """
-
-    doc = b"keep\n\nchange\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="change",
-        hypothesis=_hyp("h1", text="fixed", relation=HypothesisRelation.OPPOSE),
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    assert isinstance(result, WritebackResult)
-    # 未变更段逐字节还原。
-    assert original_paragraphs.get("p0001") in result.final_document
-    assert original_paragraphs.get("p0003") in result.final_document
-    # 对立假设替换原句：新文本在、原句消失。
-    assert b"fixed" in result.final_document
-    assert b"change" not in result.final_document
-    # 成功置 corrected、adopted_hypothesis_id 保留。
-    out_by_id = {n.argument_id: n for n in result.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
-    assert out_by_id["n-p0002"].adopted_hypothesis_id == "h1"
-
-
-def test_writeback_advance_rewrites_merging_hypothesis():
-    """递进型假设 → 局部改写原句：原句保留、假设文本内联合并。
-
-    与对立（原句消失）的区别：递进保留原句、在其位置合并假设文本。
-    """
-
-    doc = b"keep\n\nchange\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="change",
-        hypothesis=_hyp("h1", text="more", relation=HypothesisRelation.ADVANCE),
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    # 原句保留、假设文本内联合并。
-    assert b"change" in result.final_document
-    assert b"more" in result.final_document
-    # 变更段缝合后原句与假设同段共存。
-    assert b"changemore" in result.final_document
-    out_by_id = {n.argument_id: n for n in result.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
-
-
-def test_writeback_expand_supplements_with_audit_marker():
-    """扩展型假设 → 段尾追加带专属审计标识的内容。
-
-    原段逐字节保留、补充内容（审计标识 + 假设文本）追加在段尾；标识含 hypothesis_id
-    便于合规审计回溯。
-    """
-
-    doc = b"keep\n\nbase\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="base",
-        hypothesis=_hyp("h9", text="addendum", relation=HypothesisRelation.EXPAND),
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    # 原段逐字节保留。
-    assert original_paragraphs.get("p0002") in result.final_document
-    # 补充内容在段尾：审计标识（含 hypothesis_id）+ 假设文本。
-    assert SUPPLEMENT_AUDIT_MARKER.encode() in result.final_document
-    assert b"ha-supplement:h9" in result.final_document
-    assert b"addendum" in result.final_document
-    # 标识领起补充文本（标识在文本之前）。
-    marker_pos = result.final_document.find(SUPPLEMENT_AUDIT_MARKER.encode())
-    assert result.final_document.find(b"addendum") > marker_pos
-    out_by_id = {n.argument_id: n for n in result.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
-
-
-# --------------------------------------------------------------------------- #
-# 字节级对齐与失败模式
-# --------------------------------------------------------------------------- #
-
-
-def test_writeback_non_changed_paragraphs_byte_identical(sample_doc):
-    """非变更段文本/标点/换行与原始输入逐字节完全一致（字节级对齐断言）。
-
-    仅变更中间一段（oppose→替换），断言其余段逐字节无损还原、变更段正确缝合。
-    """
+def test_assemble_untouched_paragraph_byte_identical(sample_doc):
+    """未触达段（不在 resolved_rewrites）逐字节等于原文（含空行/缩进/末尾空格）。"""
 
     _name, doc = sample_doc
     original_paragraphs = OriginalParagraphs.from_text(doc)
     pids = original_paragraphs.paragraph_ids()
-    # 无至少两段时可改的样例直接跳过（本测试要求可改中间段）。
-    if len(pids) < 3:
-        pytest.skip("样例不足三段，无法改中间段")
-    target_pid = pids[len(pids) // 2]
-    target_bytes = original_paragraphs.get(target_pid)
-    # content 取该段一个非空子串作为可定位原句。
-    content = target_bytes.rstrip(b"\n").decode("utf-8", errors="surrogateescape")
-    if content == "":
-        pytest.skip("目标段无可用原句子串")
+    if len(pids) < 2:
+        import pytest
 
-    argument = _adopted_argument(
-        argument_id=f"n-{target_pid}",
-        paragraph_id=target_pid,
-        content=content,
-        hypothesis=_hyp("h1", text="REPLACED", relation=HypothesisRelation.OPPOSE),
-    )
-    argument_tree = [
-        Argument(
-            argument_id=f"n-{pid}",
-            argument_type=ArgumentType.BACKGROUND,
-            paragraph_id=pid,
-            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
-        )
-        for pid in pids
-        if pid != target_pid
-    ]
-    argument_tree.append(argument)
-    # 故意打乱顺序，回写仍按 original_paragraphs 规范顺序、非变更段逐字节还原。
-    argument_tree.reverse()
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    # 每个非变更段逐字节还原（含空行/缩进/末尾空格）。
+        pytest.skip("样例不足两段")
+    target_pid = pids[0]
+    resolved = {target_pid: "替换文本"}
+    out = assemble_final_document(original_paragraphs, resolved)
+    # 非确认段逐字节还原。
     for pid in pids:
         if pid == target_pid:
             continue
-        assert original_paragraphs.get(pid) in result.final_document
-    # 变更段：原句消失、替换文本就位。
-    assert b"REPLACED" in result.final_document
-    assert content.encode("utf-8", errors="surrogateescape") not in result.final_document.replace(
-        b"REPLACED", b""
-    )
-    # 整体字节长度仍与原文同阶（替换段长度变化，但未变更段零增减）。
-    others_len = sum(len(original_paragraphs.get(pid)) for pid in pids if pid != target_pid)
-    assert others_len == sum(len(original_paragraphs.get(pid)) for pid in pids if pid != target_pid)
-
-
-def test_writeback_unresolvable_hypothesis_stays_adopted_with_error_tag():
-    """失败：adopted_hypothesis_id 在 candidate_hypotheses 中解析不出 → 停留 adopted
-    + 贴 writeback_error、原文逐字节保留（保护原文底线）。"""
-
-    doc = b"keep\n\noriginal\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    # adopted_hypothesis_id 指向不存在的假设——数据缺失（HITL-2 异常 / 树损坏）。
-    argument = Argument(
-        argument_id="n-p0002",
-        argument_type=ArgumentType.EVIDENCE,
-        paragraph_id="p0002",
-        content="original",
-        status=ArgumentStatus.ADOPTED,
-        candidate_hypotheses=[
-            _hyp("h1", text="x", relation=HypothesisRelation.OPPOSE),
-        ],
-        adopted_hypothesis_id="missing-hid",
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    # 失败：原文逐字节保留、未注入假设文本。
-    assert original_paragraphs.get("p0002") in result.final_document
-    assert b"x" not in result.final_document
-    out_by_id = {n.argument_id: n for n in result.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.ADOPTED
-    assert WRITEBACK_ERROR_TAG in out_by_id["n-p0002"].issue_tags
-
-
-# --------------------------------------------------------------------------- #
-# 幂等与不修改输入（ADR-0011、PRD §11 回写幂等测试）
-# --------------------------------------------------------------------------- #
-
-
-def test_writeback_idempotent_re_run_produces_same_bytes():
-    """重跑同一棵（已翻正的）树得同一份 final_document——supplement 永不累积。"""
-
-    doc = b"keep\n\nbase\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="base",
-        hypothesis=_hyp("h9", text="addendum", relation=HypothesisRelation.EXPAND),
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-
-    first = writeback(argument_tree, original_paragraphs)
-    # 重跑：输入 first.argument_tree（含 corrected 节点，仍携 adopted_hypothesis_id）。
-    second = writeback(first.argument_tree, original_paragraphs)
-
-    assert first.final_document == second.final_document
-    # 补充块只出现一次（不重复注入）。
-    assert second.final_document.count(SUPPLEMENT_AUDIT_MARKER.encode()) == 1
-    # 状态收敛：被采纳节点翻正为 corrected（影子节点保持原状、未被触及）。
-    out_by_id = {n.argument_id: n for n in second.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
-
-
-def test_writeback_resumes_from_partial_run_no_double_injection():
-    """模拟中断后重试：树含 adopted + corrected 混合（前次部分翻正）。
-
-    断言：corrected 段不重复注入、adopted 段续跑翻正、final_document 与全量重跑一致、
-    状态收敛至 corrected。
-    """
-
-    doc = b"keep\n\nseg-a\n\nseg-b\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    h_a = _hyp("ha", text="AddA", relation=HypothesisRelation.EXPAND)
-    h_b = _hyp("hb", text="AddB", relation=HypothesisRelation.EXPAND)
-    # 前次已翻正 n-p0002（corrected）、n-p0003 仍 adopted（中断）。
-    seg_a = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="seg-a",
-        hypothesis=h_a,
-        status=ArgumentStatus.CORRECTED,
-    )
-    seg_b = _adopted_argument(
-        argument_id="n-p0003",
-        paragraph_id="p0003",
-        content="seg-b",
-        hypothesis=h_b,
-        status=ArgumentStatus.ADOPTED,
-    )
-    tree_partial = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        seg_a,
-        seg_b,
-        Argument(argument_id="n-p0004", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0004", content="keep2"),
-    ]
-
-    # 全量基线：两段皆 adopted。
-    tree_fresh = [
-        tree_partial[0],
-        _adopted_argument(
-            argument_id="n-p0002",
-            paragraph_id="p0002",
-            content="seg-a",
-            hypothesis=h_a,
-            status=ArgumentStatus.ADOPTED,
-        ),
-        _adopted_argument(
-            argument_id="n-p0003",
-            paragraph_id="p0003",
-            content="seg-b",
-            hypothesis=h_b,
-            status=ArgumentStatus.ADOPTED,
-        ),
-        tree_partial[3],
-    ]
-
-    baseline = writeback(tree_fresh, original_paragraphs)
-    resumed = writeback(tree_partial, original_paragraphs)
-
-    # 重试与全量重跑终稿一致（corrected 段不重复注入、adopted 段续跑缝合）。
-    assert resumed.final_document == baseline.final_document
-    # 每条补充块恰好一次。
-    assert resumed.final_document.count(b"ha-supplement:ha") == 1
-    assert resumed.final_document.count(b"ha-supplement:hb") == 1
-    # 状态收敛至 corrected。
-    out_by_id = {n.argument_id: n for n in resumed.argument_tree}
-    assert out_by_id["n-p0002"].status is ArgumentStatus.CORRECTED
-    assert out_by_id["n-p0003"].status is ArgumentStatus.CORRECTED
-
-
-def test_writeback_does_not_mutate_input_tree():
-    """回写不修改输入树：输入节点 status / issue_tags / content 不变。"""
-
-    doc = b"keep\n\nchange\n\nkeep2\n"
-    original_paragraphs = OriginalParagraphs.from_text(doc)
-    argument = _adopted_argument(
-        argument_id="n-p0002",
-        paragraph_id="p0002",
-        content="change",
-        hypothesis=_hyp("h1", text="fixed", relation=HypothesisRelation.OPPOSE),
-    )
-    argument_tree = [
-        Argument(argument_id="n-p0001", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001", content="keep"),
-        argument,
-        Argument(argument_id="n-p0003", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0003", content="keep2"),
-    ]
-    before_statuses = [n.status for n in argument_tree]
-    before_tags = [list(n.issue_tags) for n in argument_tree]
-    before_contents = [n.content for n in argument_tree]
-
-    result = writeback(argument_tree, original_paragraphs)
-
-    # 输入未变；输出是新实例。
-    assert [n.status for n in argument_tree] == before_statuses
-    assert [list(n.issue_tags) for n in argument_tree] == before_tags
-    assert [n.content for n in argument_tree] == before_contents
-    assert all(out is not inp for out, inp in zip(result.argument_tree, argument_tree, strict=True))
-    # 输入 adopted 节点仍 adopted；输出对应节点已 corrected。
-    assert argument_tree[1].status is ArgumentStatus.ADOPTED
-    assert result.argument_tree[1].status is ArgumentStatus.CORRECTED
+        assert original_paragraphs.get(pid) in out
+    # 确认段被替换。
+    assert "替换文本".encode() in out

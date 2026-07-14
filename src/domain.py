@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -65,13 +66,16 @@ class HypothesisRelation(StrEnum):
 
 
 class HypothesisStatus(StrEnum):
-    """假设取证三态（ADR-0008），与原文侧 ``credible/doubtful/error`` 对称：
+    """假设状态（ADR-0008 + PRD §1 重构）。
 
-    ``supported``（成立）↔ ``credible``、``doubtful``（存疑）↔ ``doubtful``、
-    ``refuted``（被推翻）↔ ``error``。``confidence`` 不参与此判决，仅用于同节点多条
+    ``pending`` 为 propose 期状态（hypothesis_propose 节点产出、尚未取证）；judgment
+    节点（Slice 5）据 ``citations`` 取证后落终态 ``supported / doubtful / refuted``，与
+    原文侧 ``credible/doubtful/error`` 对称：``supported`` ↔ ``credible``、``doubtful`` ↔
+    ``doubtful``、``refuted`` ↔ ``error``。``confidence`` 不参与此判决，仅用于同节点多条
     ``supported`` 假设的排序。
     """
 
+    PENDING = "pending"
     SUPPORTED = "supported"
     DOUBTFUL = "doubtful"
     REFUTED = "refuted"
@@ -125,15 +129,16 @@ class Hypothesis(BaseModel):
     """一条可证伪的修订假设（ADR-0007/0008）。
 
     ``hypothesis_id`` 由开药 Agent 确定性派生（节点 id + 关系 + 文本 + 序号），
-    供 HITL-2（#9）采纳与回写（#10）幂等链引用。``status`` 为取证终判，
-    是双轨合并（#6）矩阵 ``原文.status × 假设.status`` 的唯一输入；
-    ``confidence`` 0-1，仅排序、不裁决。
+    供 HITL-2（#9）采纳与回写（#10）幂等链引用。``status`` 初值为 ``pending``
+    （hypothesis_propose 产出、尚未取证），judgment（Slice 5）取证后落终态
+    ``supported / doubtful / refuted``，是双轨合并（#6）矩阵
+    ``原文.status × 假设.status`` 的唯一输入；``confidence`` 0-1，仅排序、不裁决。
     """
 
     hypothesis_id: str
     text: str
     relation: HypothesisRelation
-    status: HypothesisStatus = HypothesisStatus.DOUBTFUL
+    status: HypothesisStatus = HypothesisStatus.PENDING
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
@@ -169,3 +174,63 @@ class Argument(BaseModel):
     candidate_hypotheses: list[Hypothesis] = Field(default_factory=list)
     merge_decision: MergeDecision | None = None
     adopted_hypothesis_id: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# 贯穿 state 域类型（ADR-0021 / PRD §17·Slice 1）
+#
+# session_context 为贯穿全链的运行上下文（单写者=入口注入、全链只读，进 LLM 检索与生成
+# seam 的背景）；query_time_range 为本文所需数据查询时间范围（单写者=parse+partition，
+# 当前伪代码桩，真实 LLM 时间识别待后续切片）。二者以单一嵌套对象流转，不污染顶层 channel。
+# --------------------------------------------------------------------------- #
+
+
+class TimeRange(BaseModel):
+    """数据查询时间范围（ADR-0021）。
+
+    ``start`` / ``end`` 为日期（可空，表示无界）；``rationale`` 为时间窗的说明。
+    当前由 ``parse+partition`` 以桩值注入（不真实调 LLM 识别），供 retrieval / rewrite /
+    judgment 限定时间窗与提供时间上下文。
+    """
+
+    start: date | None = None
+    end: date | None = None
+    rationale: str = ""
+
+
+class SessionContext(BaseModel):
+    """贯穿全链的运行上下文（ADR-0021）。
+
+    单写者=入口注入（``runtime/run_real.py``，与 ``original_doc`` 同入 START），全链只读。
+    供 LLM 检索与生成 seam 携带一致的运行背景（同一会话多轮调用可对齐）。
+    ``current_time`` 由入口注入（非节点内 ``datetime.now()``），保证可测、可复现。
+    """
+
+    session_id: str = ""
+    user_id: str = ""
+    current_time: datetime
+    user_prompt: str = ""
+
+
+DEFAULT_QUERY_TIME_RANGE: TimeRange = TimeRange(
+    start=date(2025, 1, 1),
+    end=date(2026, 12, 31),
+    rationale="默认值·真实识别待后续",
+)
+"""``query_time_range`` 的伪代码桩（PRD §22 / ADR-0021）。
+
+当前不真实调 LLM 识别时间范围——由 ``parse+partition`` 直接注入此默认值（2025–2026）。
+真实 LLM 时间识别属后续切片（PRD Out of Scope），届时替换为 LLM 产出的 ``TimeRange``。
+"""
+
+DEFAULT_SESSION_CONTEXT: SessionContext = SessionContext(
+    session_id="",
+    user_id="",
+    current_time=datetime(2025, 1, 1, 0, 0, 0),
+    user_prompt="",
+)
+"""``session_context`` 的确定性桩（ADR-0021）。
+
+入口未显式注入时（如测试 ``orch.run(doc)``）用此桩，保 ``current_time`` 固定、可测可复现。
+真实运行时刻由 ``runtime/run_real.py`` 注入（``datetime.now()``），不在此处取实时时间。
+"""

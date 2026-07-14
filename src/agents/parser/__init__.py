@@ -13,6 +13,7 @@ from agents.parser.contract import (
     LlmClient,
     ParagraphView,
     ParsedNodeProposal,
+    ParseOutput,
     ParseResult,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "ParagraphView",
     "ParsedNodeProposal",
     "ParseResult",
+    "ParseOutput",
     "LlmClient",
     "FakeLlmClient",
     "parse",

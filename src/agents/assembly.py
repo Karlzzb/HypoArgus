@@ -27,23 +27,44 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Protocol
 
-from agents.consistency import consistency as consistency_fn
 from agents.hitl1 import Hitl1Gate
-from agents.hitl1 import confirm as hitl1_confirm
-from agents.hitl2 import ConservativeHitl2Gate, Hitl2Gate, Hitl2GateError
+from agents.hitl1 import confirm_partition as hitl1_confirm_partition
+from agents.hitl1.contract import (
+    DEFAULT_MAX_PARTITION_RETRIES,
+    Hitl1Outcome,
+    Hitl1Route,
+)
+from agents.hitl2 import ConservativeHitl2Gate, Hitl2Confirmation, Hitl2Gate, Hitl2GateError
 from agents.hitl2 import confirm as hitl2_confirm
 from agents.hypothesis import HypothesisLlmClient
-from agents.hypothesis import hypothesize as hypothesize_fn
-from agents.impact import impact as impact_fn
-from agents.merge import apply_partial_updates, merge_with_partials
-from agents.merge import merge as merge_fn
+from agents.hypothesis import propose_hypotheses as propose_hypotheses_fn
+from agents.judgment import (
+    FakeJudgmentLlmClient,
+    JudgmentLlmClient,
+    JudgmentOutcome,
+    judge_and_adjudicate,
+)
 from agents.parser import LlmClient
 from agents.parser import parse as parse_fn
-from agents.verification import VerifyLlmClient
-from agents.verification import verify as verify_fn
-from agents.writeback import WritebackResult, writeback
-from domain import Argument, ArgumentStatus, ArgumentType, Hypothesis
-from infra.retrieval import RetrievalLayer
+from agents.parser.contract import ParseOutput
+from agents.rewrite_loop import (
+    FakeRewriteLlmClient,
+    RewriteLlmClient,
+    RewriteLoopOutcome,
+)
+from agents.rewrite_loop import (
+    propose_rewrites as propose_rewrites_fn,
+)
+from domain import (
+    DEFAULT_QUERY_TIME_RANGE,
+    Argument,
+    ArgumentStatus,
+    ArgumentType,
+    Hypothesis,
+    SessionContext,
+    TimeRange,
+)
+from infra.retrieval import Source
 from original_paragraphs import OriginalParagraphs
 from status_machine import mark_argument_error
 
@@ -56,14 +77,11 @@ if TYPE_CHECKING:
 __all__ = [
     "ParseFn",
     "Hitl1Fn",
-    "VerifyFn",
-    "HypothesisFn",
-    "MergeFn",
-    "ImpactFn",
-    "ConsistencyFn",
+    "HypothesisProposeFn",
+    "RetrievalFn",
+    "JudgmentFn",
+    "RewriteLoopFn",
     "Hitl2Fn",
-    "WritebackFn",
-    "WritebackResult",
     "Agents",
     "AgentEntry",
     "RealDeps",
@@ -74,74 +92,124 @@ __all__ = [
 
 
 class ParseFn(Protocol):
-    """论证结构解析（#2 接入真实 LLM 解析）。返回初始论证树。"""
+    """论证结构解析（#2 接入真实 LLM 解析）。返回初始论证树 + 时间范围（桩）+ 段落摘要。
 
-    def __call__(self, original_paragraphs: OriginalParagraphs) -> list[Argument]: ...
+    partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0021 / Slice 1）：
+    partition 的纯代码切分 + 字节级自检由 build 闭包承担，本 Protocol 承载 parse 语义——
+    产 ``ParseOutput``（argument_tree + query_time_range 桩 + paragraph_summaries）。
+    """
+
+    def __call__(self, original_paragraphs: OriginalParagraphs) -> ParseOutput: ...
 
 
 class Hitl1Fn(Protocol):
-    """HITL-1 结构确认（#2 接入，可跳过）。返回确认后的树。"""
+    """HITL-1 partition 确认闸门（ADR-0018·重定义）。
 
-    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
-
-
-class VerifyFn(Protocol):
-    """线路 1 · 体检（#4 接入 ReAct）。返回对部分节点的可信度裁决（by argument_id）。"""
-
-    def __call__(
-        self, argument_tree: list[Argument]
-    ) -> dict[str, ArgumentStatus]: ...
-
-
-class HypothesisFn(Protocol):
-    """线路 2 · 开药（#5 接入）。返回对部分节点的候选假设列表（by argument_id）。"""
+    读 ``argument_tree`` + 打回计数 ``retry_count``，经 :func:`agents.hitl1.confirm_partition`
+    产 :class:`agents.hitl1.Hitl1Outcome`（确认后的树 + 路由 CONTINUE/REPLAY + 计数 + 耗尽标签）。
+    确认继续（SKIP/ACCEPT/EDIT）→ 下游；打回重跑（REPLAY）→ 重跑 parse+partition（按 user
+    prompt，当前伪代码桩）；打回有界，超限向前 + 贴 partition_retry_exhausted（受控分支、
+    非异常降级）。既有结构编辑（reparent/merge/split/...）收编于「确认继续」语义。
+    """
 
     def __call__(
-        self, argument_tree: list[Argument]
+        self, argument_tree: list[Argument], retry_count: int
+    ) -> Hitl1Outcome: ...
+
+
+class JudgmentFn(Protocol):
+    """裁决五合一节点（#4 取证 + #5 取证 + #6 merge + #7 impact + #8 consistency·Slice 5）。
+
+    吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/consistency
+    纯函数、整树写回 ``argument_tree``（单写者，故裁撤 ``argument_credibility`` partial channel）。
+    输入压缩铁律见 :mod:`agents.judgment`：只喂 ``argument.content`` + 假说 ``text`` +
+    citation 片段 + 背景；不回灌 status/weight/parent_id/children_ids/issue_tags/merge_decision。
+    """
+
+    def __call__(
+        self,
+        argument_tree: list[Argument],
+        hypotheses: dict[str, list[Hypothesis]],
+        citations: dict[str, list[Source]],
+        session_context: SessionContext,
+        query_time_range: TimeRange,
+    ) -> JudgmentOutcome: ...
+
+
+class HypothesisProposeFn(Protocol):
+    """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。
+
+    逐 argument 读 ``paragraph_summaries`` 调 ``propose``（不取证），产 pending 假设
+    partial（by ``argument_id``）。取证落终态属 Slice 5 的 judgment 节点。
+    """
+
+    def __call__(
+        self,
+        argument_tree: list[Argument],
+        paragraph_summaries: dict[str, str],
     ) -> dict[str, list[Hypothesis]]: ...
 
 
-class MergeFn(Protocol):
-    """双轨合并算子（#6 接入确定性 12 格矩阵）。返回标注后的同一棵树。"""
+class RetrievalFn(Protocol):
+    """批量检索（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）。
 
-    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
+    紧随 hypothesis_propose：批量接收 ``argument_tree`` + ``hypotheses``（含假说文本，作
+    查询输入）+ ``query_time_range`` + ``session_context``，统一返回 citations
+    （key 为 ``argument_id`` 如 ``n0001`` / ``bg-...`` 或 ``hypothesis_id`` 如 ``h-...``，
+    两套 id 不冲突）。当前桩不真实检索、产空 citations（``infra.retrieval`` 接口层
+    的白名单 / 权限 / 模板契约不动，真实后端后续切片接入）。读 ``session_context`` /
+    ``query_time_range`` 不触发联网——仅穿背景供真实后端就位。
+    """
+
+    def __call__(
+        self,
+        argument_tree: list[Argument],
+        hypotheses: dict[str, list[Hypothesis]],
+        query_time_range: TimeRange,
+        session_context: SessionContext,
+    ) -> dict[str, list[Source]]: ...
 
 
-class ImpactFn(Protocol):
-    """影响传导（#7 接入，串行·不产文本）。返回标注后的同一棵树。"""
+class RewriteLoopFn(Protocol):
+    """逐段重写提议（#10·Slice 6·ADR-0017）。返回提议重写表 + per-段失败日志。
 
-    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
+    对被触达段（supported 假说 / 命中 citations）由 LLM 提议重写文本、未触达段省略；
+    产 ``proposed_rewrites``（仅触达段）+ per-段 LLM 失败日志（``errors``）。rewrite_loop
+    **不碰 ``argument_tree``**（新流程按段/文本工作，与 argument 状态解耦）；失败段记日志 +
+    回退原文（信号在 ``errors`` channel、不写 ``argument_tree``）。输入压缩铁律见
+    :mod:`agents.rewrite_loop`：只喂 ``paragraph_summary`` + argument ``content`` /
+    ``argument_type`` + 假说 ``text`` + citation 片段 + 背景；不回灌内部状态字段。
 
+    LLM seam 经 :func:`create_real_agents` 的 ``rewrite_llm`` 注入（``real`` 工厂以
+    ``partial(propose_rewrites, llm=...)`` 预绑定）；桩（``_stub_rewrite_loop``）内部构造
+    :class:`FakeRewriteLlmClient`。故本 Protocol 不显式载 ``llm`` 参数。
+    """
 
-class ConsistencyFn(Protocol):
-    """一致性校验（#8 接入，批注门禁·只贴 issue_tags·不打回）。"""
-
-    def __call__(self, argument_tree: list[Argument]) -> list[Argument]: ...
+    def __call__(
+        self,
+        argument_tree: list[Argument],
+        citations: dict[str, list[Source]],
+        paragraph_summaries: dict[str, str],
+        original_paragraphs: OriginalParagraphs,
+        session_context: SessionContext,
+        query_time_range: TimeRange,
+    ) -> RewriteLoopOutcome: ...
 
 
 class Hitl2Fn(Protocol):
-    """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。
+    """HITL-2 终稿文本确认闸门（#9 接入，不可跳过硬闸门·Slice 6 重定位）。
 
-    接收标注完成的树 + 只读原文表（HITL-2 对比左栏数据源，ADR-0005），返回采纳后的树。
+    接收只读原文表 + rewrite_loop 的 ``proposed_rewrites``，逐段确认 / 编辑 / 驳回，
+    拼装 ``final_document``（确认→提议文本、编辑→编辑文本、驳回 / 未触达→逐字节原文），
+    返回 :class:`Hitl2Confirmation`（终稿 bytes + resolved_rewrites）。绝不替人拍板
+    （ADR-0010）；``Hitl2GateError`` 原样上抛。
     """
 
     def __call__(
-        self, argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
-    ) -> list[Argument]: ...
-
-
-class WritebackFn(Protocol):
-    """修订回写（#10 真实分流·幂等）。返回终稿 bytes + 状态翻正后的树。
-
-    接收修订确认后的终版树 + 只读原文表，按段落原子缝合（ADR-0001/0005/0011）：
-    未变更段逐字节拷回、变更段按被采纳假设的关系分流（对立→替换、递进→改写、
-    扩展→段尾追加带审计标识）；成功置 ``corrected``、失败停留 ``adopted`` 并贴
-    ``writeback_error``，重跑幂等不重复注入。
-    """
-
-    def __call__(
-        self, argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
-    ) -> WritebackResult: ...
+        self,
+        original_paragraphs: OriginalParagraphs,
+        proposed_rewrites: dict[str, str],
+    ) -> Hitl2Confirmation: ...
 
 
 @dataclass
@@ -154,13 +222,11 @@ class Agents:
 
     parse: ParseFn
     hitl1: Hitl1Fn
-    verification: VerifyFn
-    hypothesis: HypothesisFn
-    merge: MergeFn
-    impact: ImpactFn
-    consistency: ConsistencyFn
+    hypothesis_propose: HypothesisProposeFn
+    retrieval: RetrievalFn
+    judgment: JudgmentFn
+    rewrite_loop: RewriteLoopFn
     hitl2: Hitl2Fn
-    writeback: WritebackFn
 
 
 # --------------------------------------------------------------------------- #
@@ -168,15 +234,16 @@ class Agents:
 # --------------------------------------------------------------------------- #
 
 
-def _stub_parse(original_paragraphs: OriginalParagraphs) -> list[Argument]:
-    """解析桩：每段一个只读 background 影子节点。
+def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
+    """解析桩：每段一个只读 background 影子节点 + 桩 query_time_range + 空 summaries。
 
     影子节点不参与校验与传导、状态恒 ``unverified``、永不进入 ``adopted``，
     故回写对每段都走逐字节拷回通道——tracer bullet 的字节级承诺由此成立。
-    真实解析（#2）将在此识别 main_claim/sub_claim/evidence/qualification 并建父子树。
+    真实解析（#2）将在此识别 main_claim/sub_claim/evidence/qualification 并建父子树、
+    并顺产 paragraph_summaries。query_time_range 恒为桩（真实 LLM 时间识别属后续切片）。
     """
 
-    return [
+    argument_tree = [
         Argument(
             argument_id=f"n-{pid}",
             argument_type=ArgumentType.BACKGROUND,
@@ -185,87 +252,120 @@ def _stub_parse(original_paragraphs: OriginalParagraphs) -> list[Argument]:
         )
         for pid in original_paragraphs.paragraph_ids()
     ]
+    return ParseOutput(
+        argument_tree=argument_tree,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        paragraph_summaries={},
+    )
 
 
-def _stub_hitl1(argument_tree: list[Argument]) -> list[Argument]:
-    """HITL-1 桩：跳过结构确认，树原样返回（跳过即不改原文一个字）。"""
+def _stub_hitl1(argument_tree: list[Argument], retry_count: int) -> Hitl1Outcome:
+    """HITL-1 桩：partition 确认闸门保守继续（不打回）。
 
-    return argument_tree
+    恒返回 CONTINUE、计数不变、不 exhausted——桩路径下不触发打回循环、parse+partition
+    仅运行一次，「无触达段终稿逐字节等于原文」承诺由此成立。真实闸门（真实 ``interrupt`` +
+    ``Command(resume)``）属后续切片；partition prompt 驱动重切（ADR-0020）亦为后续切片。
+    """
+
+    return Hitl1Outcome(
+        argument_tree=[n.model_copy(deep=True) for n in argument_tree],
+        route=Hitl1Route.CONTINUE,
+        retry_count=retry_count,
+        exhausted=False,
+    )
 
 
-def _stub_verification(argument_tree: list[Argument]) -> dict[str, ArgumentStatus]:
-    """体检桩：不校验、不更新状态。"""
-
-    return {}
-
-
-def _stub_hypothesis(argument_tree: list[Argument]) -> dict[str, list[Hypothesis]]:
+def _stub_hypothesis_propose(
+    argument_tree: list[Argument], paragraph_summaries: dict[str, str]
+) -> dict[str, list[Hypothesis]]:
     """开药桩：不生成假设。"""
 
     return {}
 
 
-def _merge(argument_tree: list[Argument]) -> list[Argument]:
-    """合并算子（委托纯函数 :func:`agents.merge.merge`）。
+def _stub_retrieval(
+    argument_tree: list[Argument],
+    hypotheses: dict[str, list[Hypothesis]],
+    query_time_range: TimeRange,
+    session_context: SessionContext,
+) -> dict[str, list[Source]]:
+    """检索桩（PRD §8 / Slice 4）：不真实检索、只穿 state、产空 citations。
 
-    双轨合并是确定性纯函数、无 LLM / 检索依赖（ADR-0006 12 格矩阵），故无桩——
-    tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回 ``{}``，输入树全为
-    ``unverified`` 且 ``candidate_hypotheses`` 空，合并逐节点判 ``KEEP``、不裁剪、
-    不置 ``adopted``，故「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
+    ``session_context`` / ``query_time_range`` 被读取（穿至 seam、供真实后端就位）但不
+    触发联网；``argument_tree`` / ``hypotheses`` 接过但不发起查询。返回空 citations
+    → 下游 judgment / rewrite_loop 见无素材、不触达任何段，「无触达段终稿逐字节等于原文」
+    承诺继续成立。真实后端（批量循环 ``RetrievalLayer.retrieve``）后续切片接入，
+    ``infra.retrieval`` 接口层不变。
     """
 
-    return merge_fn(argument_tree)
+    return {}
 
 
-def _impact(argument_tree: list[Argument]) -> list[Argument]:
-    """影响传导算子（委托纯函数 :func:`agents.impact.impact`）。
+def _stub_judgment(
+    argument_tree: list[Argument],
+    hypotheses: dict[str, list[Hypothesis]],
+    citations: dict[str, list[Source]],
+    session_context: SessionContext,
+    query_time_range: TimeRange,
+) -> JudgmentOutcome:
+    """裁决桩（ADR-0019·Slice 5）：不判终态、调纯函数向前（空裁决 → 全 KEEP → 未触达）。
 
-    影响传导是确定性纯函数、无 LLM / 检索依赖（ADR-0003 串行·不产文本、ADR-0013
-    剩余支撑率公式），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下两线路均返回
-    ``{}``、合并逐节点判 ``KEEP``、影子上层论点无子节点参与传导，故影响传导不动任何节点，
-    「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
+    委托 :func:`judge_and_adjudicate` 用 :class:`agents.judgment.FakeJudgmentLlmClient`
+    （默认空 :class:`JudgmentResult`）——无裁决 → ``argument_credibility`` 空、假说保持
+    ``pending``，merge 矩阵全 KEEP、impact 不动、consistency 不贴标，故「无触达段终稿逐字节
+    等于原文」承诺成立。真实裁决（吃 citations 判终态）由 :func:`create_real_agents` 注入
+    ``judgment_llm`` 时启用。merge/impact/consistency 为**不动**的既有纯函数、本桩与真实
+    装配共用同一串联（judgment 节点 = 这三纯函数的串联编排，逻辑不在此处重写）。
     """
 
-    return impact_fn(argument_tree)
-
-
-def _consistency(argument_tree: list[Argument]) -> list[Argument]:
-    """一致性校验算子（委托纯函数 :func:`agents.consistency.consistency`）。
-
-    一致性校验是确定性纯函数、无 LLM / 检索依赖（ADR-0012 批注门禁·单次扫描·
-    只贴 ``issue_tags``），故无桩——tracer bullet 与真实装配共用同一实现。桩路径下
-    解析产出每段一个 ``background`` 影子节点：无混段、无多根、无主论点重复、无重复
-    限定，一致性校验不贴任何标签，「无采纳改动 → 终稿逐字节等于原文」承诺继续成立。
-    """
-
-    return consistency_fn(argument_tree)
+    return judge_and_adjudicate(
+        argument_tree,
+        hypotheses,
+        citations,
+        session_context,
+        query_time_range,
+        llm=FakeJudgmentLlmClient(),
+    )
 
 
 def _stub_hitl2(
-    argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
-) -> list[Argument]:
+    original_paragraphs: OriginalParagraphs, proposed_rewrites: dict[str, str]
+) -> Hitl2Confirmation:
     """HITL-2 桩（委托保守默认闸门 :class:`ConservativeHitl2Gate`）。
 
-    无待决内容时一键通过（PASS）；桩路径下解析产出每段一个 ``background`` 影子节点，
-    无 ``doubtful``/``error``/``conflict``/激活候选 → 一律 PASS、无人采纳 → 逐字节拷回。
-    真实人判 ``interrupt`` + checkpointer 属后续切片。
+    无提议重写时一键通过（PASS）；桩路径下 rewrite_loop 产空 ``proposed_rewrites``
+    （无触达段）→ 一律 PASS、无人确认 → 终稿逐字节等于原文。真实人判
+    ``interrupt`` + checkpointer 属后续切片。
     """
 
-    return hitl2_confirm(argument_tree, original_paragraphs, ConservativeHitl2Gate())
+    return hitl2_confirm(original_paragraphs, proposed_rewrites, ConservativeHitl2Gate())
 
 
-def _stub_writeback(
-    argument_tree: list[Argument], original_paragraphs: OriginalParagraphs
-) -> WritebackResult:
-    """回写算子（委托纯函数 :func:`agents.writeback.writeback`）。
+def _stub_rewrite_loop(
+    argument_tree: list[Argument],
+    citations: dict[str, list[Source]],
+    paragraph_summaries: dict[str, str],
+    original_paragraphs: OriginalParagraphs,
+    session_context: SessionContext,
+    query_time_range: TimeRange,
+) -> RewriteLoopOutcome:
+    """逐段重写提议桩（委托 :func:`agents.rewrite_loop.propose_rewrites` + :class:`FakeRewriteLlmClient`）。
 
-    回写是确定性纯函数、无 LLM / 检索依赖（ADR-0001/0005/0011、PRD §11 纯函数子缝），
-    故无桩——tracer bullet 与真实装配共用同一实现。桩路径下解析产出每段一个
-    ``background`` 影子节点、无人采纳 → 全部逐字节拷回，``final_document`` 逐字节等于原文；
-    采纳路径下（HITL-2 #9 注入会采纳的闸门时）按关系分流缝合、翻 ``corrected``。
+    桩路径下解析产出每段一个 ``background`` 影子节点、无 supported 假说、无 citations →
+    无触达段 → ``propose_rewrites`` 永不调 LLM、产空 ``proposed_rewrites`` → hitl2 PASS →
+    终稿逐字节等于原文。真实重写（触达段 LLM 提议）由 :func:`create_real_agents` 注入
+    ``rewrite_llm`` 时启用。
     """
 
-    return writeback(argument_tree, original_paragraphs)
+    return propose_rewrites_fn(
+        argument_tree,
+        citations,
+        paragraph_summaries,
+        original_paragraphs,
+        session_context,
+        query_time_range,
+        llm=FakeRewriteLlmClient(),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -315,7 +415,7 @@ def _guarded(
     """stage 异常兜底：``body()`` 正常返回 patch；异常（非 :class:`Hitl2GateError`）→
     ``fallback()`` + 日志、单向向前推进（PRD §13）。
 
-    9 个下游 stage 的兜底形状此前各自重复 ``try / except Hitl2GateError: raise /
+    各下游 stage 的兜底形状此前各自重复 ``try / except Hitl2GateError: raise /
     except Exception: log + fallback``——收口于此：各 stage 只声明「正常返回」与
     「降级 patch」两件本质之事，样板集中一处（locality）。``Hitl2GateError`` 为硬闸门
     正确性硬停，**原样上抛、不兜底**（绝不无人拍板自动采纳，ADR-0010）。
@@ -334,11 +434,15 @@ def _guarded(
 # --------------------------------------------------------------------------- #
 
 
-def _partition_node(_agents: Agents) -> NodeFn:
-    def partition_node(state: PipelineState) -> dict[str, object]:
-        """确定性段落切分 + 固化只读原文表（纯代码·零 LLM）。
+def _parse_partition_node(agents: Agents) -> NodeFn:
+    def parse_partition_node(state: PipelineState) -> dict[str, object]:
+        """parse+partition 合并节点（PRD §1 / ADR-0021 / Slice 1）。
 
-        纯代码、无智能体波动，不包兜底——分区不变式自检失败即正确性 bug、应硬停。
+        partition 纯代码切分 + 字节级自检（硬停，不兜底），parse 建树 + 顺产
+        query_time_range（桩）/ paragraph_summaries（异常 → 记日志 + 空树向前，PRD §13）。
+        partition 不变式自检失败即正确性 bug、应硬停（与原 ``_partition_node`` 一致）；
+        parse 部分经 ``_guarded`` 兜底，异常时仍写回 ``original_paragraphs``、
+        产空 argument_tree + 桩 query_time_range + 空 summaries 向前推进。
         """
 
         original_doc: bytes = state["original_doc"]
@@ -346,183 +450,260 @@ def _partition_node(_agents: Agents) -> NodeFn:
         # original_paragraphs 自检：分区不变式（字节级还原是代码级确定的，不依赖任何模型）。
         rebuilt = b"".join(original_paragraphs.get(pid) for pid in original_paragraphs.paragraph_ids())
         assert rebuilt == original_doc, "分区不变式自检失败：拼接 ≠ 原始输入"
-        return {"original_paragraphs": original_paragraphs, "argument_tree": []}
 
-    return partition_node
-
-
-def _parse_node(agents: Agents) -> NodeFn:
-    def parse_node(state: PipelineState) -> dict[str, object]:
-        """论证结构解析（#2 接入真实 LLM）。异常 → 记日志 + 保留空树向前（PRD §13）。"""
-
-        original_paragraphs = state["original_paragraphs"]
-        return _guarded(
-            "parse",
-            lambda: {"argument_tree": agents.parse(original_paragraphs)},
-            lambda: {"argument_tree": []},
+        out = _guarded(
+            "parse+partition",
+            lambda: _parse_output_patch(agents.parse(original_paragraphs)),
+            lambda: _parse_output_patch(ParseOutput()),
         )
+        return {**out, "original_paragraphs": original_paragraphs}
 
-    return parse_node
+    return parse_partition_node
+
+
+def _parse_output_patch(out: ParseOutput) -> dict[str, object]:
+    """把 ParseOutput 摊成写回 PipelineState 的 patch（三 channel）。"""
+
+    return {
+        "argument_tree": out.argument_tree,
+        "query_time_range": out.query_time_range,
+        "paragraph_summaries": out.paragraph_summaries,
+    }
+
+
+def _hitl1_outcome_patch(outcome: Hitl1Outcome) -> dict[str, object]:
+    """把 :class:`Hitl1Outcome` 摊成写回 PipelineState 的 patch（route + 计数 + 树 + 耗尽标签）。"""
+
+    patch: dict[str, object] = {
+        "argument_tree": outcome.argument_tree,
+        "hitl1_route": outcome.route.value,
+        "partition_retry_count": outcome.retry_count,
+    }
+    if outcome.exhausted:
+        # 受控分支（非异常降级）：贴 partition_retry_exhausted、向前推进。
+        patch["errors"] = ["[hitl1] partition_retry_exhausted: 打回超 max retries，向前推进"]
+    return patch
 
 
 def _hitl1_node(agents: Agents) -> NodeFn:
     def hitl1_node(state: PipelineState) -> dict[str, object]:
-        """HITL-1 结构确认（#2 接入，可跳过）。异常 → 记日志 + 保留 stale 树向前。"""
+        """HITL-1 partition 确认闸门（ADR-0018）。
+
+        人确认段落切分是否合理：确认继续（skip/accept/edit）→ 条件边走默认下游；
+        打回重跑（replay）→ 条件边路由回 ``parse+partition``（按 user prompt，当前伪代码桩、
+        重切原样不触达原文）。打回有界（``max_retries`` 默认 3，ADR-0018）；超限向前推进 +
+        贴 ``partition_retry_exhausted``（受控分支、**不**经 ``_guarded`` 异常降级）。
+        ``agents.hitl1`` 异常仍经 ``_guarded``：记日志 + 保留 stale 树 + route=continue 向前。
+        """
 
         argument_tree = state["argument_tree"]
+        retry_count = int(state.get("partition_retry_count", 0))
         return _guarded(
             "hitl1",
-            lambda: {"argument_tree": agents.hitl1(argument_tree)},
-            lambda: {"argument_tree": argument_tree},
+            lambda: _hitl1_outcome_patch(agents.hitl1(argument_tree, retry_count)),
+            lambda: {
+                "argument_tree": argument_tree,
+                "hitl1_route": Hitl1Route.CONTINUE.value,
+                "partition_retry_count": retry_count,
+            },
         )
 
     return hitl1_node
 
 
-def _verification_node(agents: Agents) -> NodeFn:
-    def verification_node(state: PipelineState) -> dict[str, object]:
-        """线路 1 · 体检（#4 接入 ReAct）。异常 → 覆盖范围内未判决节点置 error + 日志。
+def _judgment_node(agents: Agents) -> NodeFn:
+    def judgment_node(state: PipelineState) -> dict[str, object]:
+        """裁决五合一节点（ADR-0019·Slice 5）。异常 → 覆盖范围内未判决节点置 error + 日志。
 
-        整体异常（非单节点 LLM 抛错——单节点异常由体检内部已置 ``error``）时，把
-        ``claim`` / ``evidence`` 范围内仍 ``unverified`` / ``pending`` 的节点就地置
-        ``error``（PRD §13「目标节点置错误状态」），整树写入 ``argument_tree``；不写
-        ``argument_credibility``（无 partial 可信）。下游合并据此见 ``error`` 状态。
+        吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/
+        consistency 纯函数、整树写回 ``argument_tree``（单写者，故裁撤
+        ``argument_credibility`` partial channel）；终态化后的假说写回 ``hypotheses``
+        channel。整体异常时把 ``claim`` / ``evidence`` 范围内仍 ``unverified`` / ``pending``
+        的节点就地置 ``error``（PRD §13「目标节点置错误状态」），整树写入；``hypotheses``
+        保持 ``pending`` 不动（裁决失败不伪造终态）——下游 HITL-2 见 ``error`` 待决 → 原文
+        逐字节还原。
         """
 
         argument_tree = state["argument_tree"]
+        hypotheses = state.get("hypotheses", {})
+        citations = state.get("citations", {})
+        session_context = state["session_context"]
+        query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
+
+        def body() -> dict[str, object]:
+            outcome = agents.judgment(
+                argument_tree,
+                hypotheses,
+                citations,
+                session_context,
+                query_time_range,
+            )
+            return {
+                "argument_tree": outcome.argument_tree,
+                "hypotheses": outcome.hypotheses,
+            }
+
         return _guarded(
-            "verification",
-            lambda: {"argument_credibility": agents.verification(argument_tree)},
-            lambda: {"argument_tree": _mark_verify_scope_error(argument_tree, reason="verify")},
+            "judgment",
+            body,
+            lambda: {
+                "argument_tree": _mark_verify_scope_error(argument_tree, reason="judgment")
+            },
         )
 
-    return verification_node
+    return judgment_node
 
 
-def _hypothesis_node(agents: Agents) -> NodeFn:
-    def hypothesis_node(state: PipelineState) -> dict[str, object]:
-        """线路 2 · 开药（#5 接入）。异常 → 记日志 + 无假设向前（不置节点 error）。
+def _hypothesis_propose_node(agents: Agents) -> NodeFn:
+    def hypothesis_propose_node(state: PipelineState) -> dict[str, object]:
+        """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。异常 → 记日志 + 无假设向前。
 
-        开药不持有节点 ``status``（只产 ``candidate_hypotheses``），整体异常即「本轮
-        无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
+        逐 argument 读 ``paragraph_summaries``（非整段 content）调 ``propose``，产 pending
+        假设 partial。开药不持有节点 ``status``（只产 ``candidate_hypotheses``），整体异常
+        即「本轮无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
         """
 
         argument_tree = state["argument_tree"]
+        paragraph_summaries = state.get("paragraph_summaries", {})
         return _guarded(
-            "hypothesis",
-            lambda: {"hypotheses": agents.hypothesis(argument_tree)},
+            "hypothesis_propose",
+            lambda: {
+                "hypotheses": agents.hypothesis_propose(
+                    argument_tree, paragraph_summaries
+                )
+            },
             lambda: {},
         )
 
-    return hypothesis_node
+    return hypothesis_propose_node
 
 
-def _merge_node(agents: Agents) -> NodeFn:
-    def merge_node(state: PipelineState) -> dict[str, object]:
-        """双轨合并算子（#6 接入 12 格矩阵）。异常 → 记日志 + 保留已合流的 combined 向前。
+def _retrieval_node(agents: Agents) -> NodeFn:
+    def retrieval_node(state: PipelineState) -> dict[str, object]:
+        """批量检索节点（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）。异常 → 降级空
+        citations + 日志、单向向前（PRD §13）。
 
-        先字段级合流两线路 partial（``status`` ← 体检、``candidate_hypotheses`` ← 开药），
-        再跑矩阵裁决。合并的两步 staging 收口于 :func:`merge_with_partials`（不再由调度层
-        显式串接）。合并算子本身异常时，partial 已合流的中间态可信——保留之向前（无
-        ``merge_decision``，下游以体检/开药结果继续），记日志。
+        读 ``argument_tree`` + ``hypotheses`` + ``query_time_range`` + ``session_context``，
+        调 ``agents.retrieval`` 批量检索、统一写回 ``citations`` channel（单写者=retrieval、
+        reducer=_merge_dict）。当前桩不真实检索、返回空 citations（真实后端后续切片接入，
+        ``infra.retrieval`` 接口层不变）。``session_context`` / ``query_time_range`` 被读取
+        但不触发联网——仅穿背景供真实后端就位。检索 fn 异常即「本轮无 citations」——不卡死，
+        记日志、空 citations 向前，下游见无素材、不触达任何段，终稿逐字节等于原文。
         """
 
         argument_tree = state["argument_tree"]
-        v_updates = state.get("argument_credibility", {})
-        h_updates = state.get("hypotheses", {})
+        hypotheses = state.get("hypotheses", {})
+        query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
+        session_context = state["session_context"]
         return _guarded(
-            "merge",
-            lambda: {"argument_tree": merge_with_partials(argument_tree, v_updates, h_updates, agents.merge)},
-            # 兜底取「已合流、未裁决」中间态——apply_partial_updates 为 merge 模块公开
-            # 纯函数（兜底语义需要、非 staging 串接，不构成内部步骤泄漏）。
-            lambda: {"argument_tree": apply_partial_updates(argument_tree, v_updates, h_updates)},
+            "retrieval",
+            lambda: {
+                "citations": agents.retrieval(
+                    argument_tree,
+                    hypotheses,
+                    query_time_range,
+                    session_context,
+                )
+            },
+            lambda: {"citations": {}},
         )
 
-    return merge_node
-
-
-def _impact_node(agents: Agents) -> NodeFn:
-    def impact_node(state: PipelineState) -> dict[str, object]:
-        """影响传导（#7 接入，串行·不产文本）。异常 → 记日志 + 保留 stale 树向前。"""
-
-        argument_tree = state["argument_tree"]
-        return _guarded(
-            "impact",
-            lambda: {"argument_tree": agents.impact(argument_tree)},
-            lambda: {"argument_tree": argument_tree},
-        )
-
-    return impact_node
-
-
-def _consistency_node(agents: Agents) -> NodeFn:
-    def consistency_node(state: PipelineState) -> dict[str, object]:
-        """一致性校验（#8 接入，批注门禁·不打回）。异常 → 记日志 + 保留 stale 树向前。"""
-
-        argument_tree = state["argument_tree"]
-        return _guarded(
-            "consistency",
-            lambda: {"argument_tree": agents.consistency(argument_tree)},
-            lambda: {"argument_tree": argument_tree},
-        )
-
-    return consistency_node
+    return retrieval_node
 
 
 def _hitl2_node(agents: Agents) -> NodeFn:
     def hitl2_node(state: PipelineState) -> dict[str, object]:
-        """HITL-2 修订确认（#9 接入，不可跳过硬闸门）。异常 → 记日志 + 保留 stale 树向前。
+        """HITL-2 终稿文本确认闸门（#9·Slice 6 重定位·不可跳过硬闸门）。
 
-        接收标注完成的树 + 只读原文表（HITL-2 对比左栏数据源，ADR-0005），返回采纳后的树。
+        接收只读原文表 + rewrite_loop 的 ``proposed_rewrites``，逐段确认 / 编辑 / 驳回，
+        拼装 ``final_document``（确认→提议文本、编辑→编辑文本、驳回 / 未触达→逐字节原文）。
         :class:`Hitl2GateError`（含硬闸门拒绝越权 PASS）为正确性硬停，**原样上抛、不兜底**
-        （绝不无人拍板自动采纳，ADR-0010）；其余异常兜底：记日志 + 保留 stale 树（无人采纳）
-        → 回写逐字节还原。
+        （绝不无人拍板自动采纳，ADR-0010）；其余异常兜底：记日志 + 回退原文 bytes 拼接
+        （保护原文底线）向前。
         """
 
-        argument_tree = state["argument_tree"]
         original_paragraphs = state["original_paragraphs"]
+        proposed_rewrites = state.get("proposed_rewrites", {})
+
+        def body() -> dict[str, object]:
+            confirmation = agents.hitl2(original_paragraphs, proposed_rewrites)
+            return {"final_document": confirmation.final_document}
+
         return _guarded(
             "hitl2",
-            lambda: {"argument_tree": agents.hitl2(argument_tree, original_paragraphs)},
-            lambda: {"argument_tree": argument_tree},
+            body,
+            # 回退原文 bytes（保护原文底线）；无确认 → 逐字节等于原文。
+            lambda: {
+                "final_document": b"".join(
+                    original_paragraphs.get(pid) for pid in original_paragraphs.paragraph_ids()
+                )
+            },
         )
 
     return hitl2_node
 
 
-def _writeback_node(agents: Agents) -> NodeFn:
-    def writeback_node(state: PipelineState) -> dict[str, object]:
-        """修订回写（#10 接入真实分流·幂等）。异常 → 记日志 + 回退原文 bytes 向前（PRD §13）。
+def _rewrite_loop_node(agents: Agents) -> NodeFn:
+    def rewrite_loop_node(state: PipelineState) -> dict[str, object]:
+        """逐段重写提议（#10·Slice 6·ADR-0017）。异常 → 降级空 proposed_rewrites + 日志、
+        单向向前（PRD §13）。
 
-        按段落原子缝合终稿 bytes、翻正采纳节点状态。回写整体异常时保护原文底线：回退为
-        只读原文表逐字节拼接（== 原始输入，分区不变式），``adopted`` 节点保留 ``adopted`` 不
-        翻正、待 :meth:`runtime.orchestrator.Orchestrator.resume_writeback` 续跑（issue #11 衔接
-        #10）；记日志。幂等：续跑据持久化的 ``adopted_hypothesis_id`` 重新推导、不重复注入。
+        读 ``argument_tree``（触达判定：段内有 supported 假说 / 命中 citations）+ ``citations``
+        + ``paragraph_summaries`` + ``original_paragraphs``（规范段序）+ 贯穿背景
+        （``session_context`` / ``query_time_range``），调 ``agents.rewrite_loop`` 逐段提议重写、
+        写回 ``proposed_rewrites`` channel（单写者=rewrite_loop、读者=hitl2、reducer=_merge_dict）。
+        per-段 LLM 失败由 :func:`agents.rewrite_loop.propose_rewrites` 捕获、记入 ``outcome.errors``
+        （该段省略、回退原文）；整体异常 → ``_guarded`` 降级空 proposed_rewrites + 日志向前——
+        rewrite_loop **不碰 ``argument_tree``**（信号在 errors channel、不写树）。
         """
 
         argument_tree = state["argument_tree"]
+        citations = state.get("citations", {})
+        paragraph_summaries = state.get("paragraph_summaries", {})
         original_paragraphs = state["original_paragraphs"]
+        session_context = state["session_context"]
+        query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
 
-        def success() -> dict[str, object]:
-            result = agents.writeback(argument_tree, original_paragraphs)
-            return {"final_document": result.final_document, "argument_tree": result.argument_tree}
+        def body() -> dict[str, object]:
+            outcome = agents.rewrite_loop(
+                argument_tree,
+                citations,
+                paragraph_summaries,
+                original_paragraphs,
+                session_context,
+                query_time_range,
+            )
+            patch: dict[str, object] = {"proposed_rewrites": outcome.proposed_rewrites}
+            if outcome.errors:
+                patch["errors"] = outcome.errors
+            return patch
 
         return _guarded(
-            "writeback",
-            success,
-            # 回退原文 bytes（保护原文底线）；adopted 节点不动、待续跑。
-            lambda: {
-                "final_document": b"".join(original_paragraphs.get(pid) for pid in original_paragraphs.paragraph_ids()),
-                "argument_tree": argument_tree,
-            },
+            "rewrite_loop",
+            body,
+            lambda: {"proposed_rewrites": {}},
         )
 
-    return writeback_node
+    return rewrite_loop_node
 
 
 # --------------------------------------------------------------------------- #
 # manifest：单一数据源驱动 Agents 构造 + default_pipeline（ADR-0014）
 # --------------------------------------------------------------------------- #
+
+
+def _hitl1_route(state: PipelineState) -> str | list[str] | None:
+    """hitl1 条件路由（ADR-0018 受控打回边 ``hitl1 → parse+partition``）。
+
+    读 ``hitl1_route`` channel：``"replay"`` → 返回 ``"parse+partition"``（重跑上游、
+    有界）；其余（``"continue"`` / 缺省）→ 返回 ``None`` 走默认下游（依赖 hitl1 的节点们）。
+    超限打回由 :func:`_hitl1_outcome_patch` 改写为 ``"continue"`` + 贴标签，故此处不会
+    再路由到上游。
+    """
+
+    if state.get("hitl1_route") == Hitl1Route.REPLAY.value:
+        return "parse+partition"
+    return None
 
 
 @dataclass(frozen=True)
@@ -531,11 +712,10 @@ class RealDeps:
 
     llm: LlmClient
     hitl1_gate: Hitl1Gate
-    verify_llm: VerifyLlmClient | None = None
+    judgment_llm: JudgmentLlmClient | None = None
     hypothesis_llm: HypothesisLlmClient | None = None
-    retrieval: RetrievalLayer | None = None
+    rewrite_llm: RewriteLlmClient | None = None
     hitl2_gate: Hitl2Gate | None = None
-    max_iterations: int = 8
 
 
 @dataclass(frozen=True)
@@ -548,7 +728,8 @@ class AgentEntry:
     :attr:`real` 为条件替换工厂（``RealDeps → fn | None``，返回 ``None`` 即保留桩；纯函数
     Agent 与 ``partition`` 为 ``None``）；:attr:`deps` 为上游 stage 名（``()`` 接 START）；
     :attr:`build` 据 :class:`Agents` 产出 :data:`runtime.orchestrator.NodeFn`（含
-    :func:`_guarded` 兜底）。
+    :func:`_guarded` 兜底）；:attr:`route` / :attr:`max_replays` 见 :class:`runtime.orchestrator.StageSpec`
+    （条件路由 seam + 循环预算，ADR-0018；多数 stage 为 ``None`` / ``0``）。
     """
 
     name: str
@@ -557,90 +738,72 @@ class AgentEntry:
     real: Callable[[RealDeps], Any] | None
     deps: tuple[str, ...]
     build: Callable[[Agents], NodeFn]
+    route: Callable[[PipelineState], str | list[str] | None] | None = None
+    max_replays: int = 0
 
 
 MANIFEST: tuple[AgentEntry, ...] = (
     AgentEntry(
-        name="partition",
-        field=None,
-        stub=None,
-        real=None,
-        deps=(),
-        build=_partition_node,
-    ),
-    AgentEntry(
-        name="parse",
+        name="parse+partition",
         field="parse",
         stub=_stub_parse,
         real=lambda d: partial(parse_fn, llm=d.llm),
-        deps=("partition",),
-        build=_parse_node,
+        deps=(),
+        build=_parse_partition_node,
     ),
     AgentEntry(
         name="hitl1",
         field="hitl1",
         stub=_stub_hitl1,
-        real=lambda d: partial(hitl1_confirm, gate=d.hitl1_gate),
-        deps=("parse",),
+        real=lambda d: partial(hitl1_confirm_partition, gate=d.hitl1_gate),
+        deps=("parse+partition",),
         build=_hitl1_node,
+        route=_hitl1_route,
+        max_replays=DEFAULT_MAX_PARTITION_RETRIES,
     ),
     AgentEntry(
-        name="verification",
-        field="verification",
-        stub=_stub_verification,
+        name="hypothesis_propose",
+        field="hypothesis_propose",
+        stub=_stub_hypothesis_propose,
         real=lambda d: (
-            partial(
-                verify_fn,
-                llm=d.verify_llm,
-                retrieval=d.retrieval,
-                max_iterations=d.max_iterations,
-            )
-            if d.verify_llm is not None and d.retrieval is not None
+            partial(propose_hypotheses_fn, llm=d.hypothesis_llm)
+            if d.hypothesis_llm is not None
             else None
         ),
         deps=("hitl1",),
-        build=_verification_node,
+        build=_hypothesis_propose_node,
     ),
     AgentEntry(
-        name="hypothesis",
-        field="hypothesis",
-        stub=_stub_hypothesis,
+        name="retrieval",
+        field="retrieval",
+        stub=_stub_retrieval,
+        real=None,  # 真实批量检索后端后续切片接入（PRD §8 / Out of Scope）；当前伪代码桩产空 citations。
+        deps=("hypothesis_propose",),
+        build=_retrieval_node,
+    ),
+    AgentEntry(
+        name="judgment",
+        field="judgment",
+        stub=_stub_judgment,
         real=lambda d: (
-            partial(
-                hypothesize_fn,
-                llm=d.hypothesis_llm,
-                retrieval=d.retrieval,
-                max_iterations=d.max_iterations,
-            )
-            if d.hypothesis_llm is not None and d.retrieval is not None
+            partial(judge_and_adjudicate, llm=d.judgment_llm)
+            if d.judgment_llm is not None
             else None
         ),
-        deps=("hitl1",),
-        build=_hypothesis_node,
+        deps=("retrieval",),
+        build=_judgment_node,
     ),
     AgentEntry(
-        name="merge",
-        field="merge",
-        stub=_merge,
-        real=None,
-        deps=("verification", "hypothesis"),
-        build=_merge_node,
-    ),
-    AgentEntry(
-        name="impact",
-        field="impact",
-        stub=_impact,
-        real=None,
-        deps=("merge",),
-        build=_impact_node,
-    ),
-    AgentEntry(
-        name="consistency",
-        field="consistency",
-        stub=_consistency,
-        real=None,
-        deps=("impact",),
-        build=_consistency_node,
+        name="rewrite_loop",
+        field="rewrite_loop",
+        stub=_stub_rewrite_loop,
+        real=lambda d: (
+            partial(propose_rewrites_fn, llm=d.rewrite_llm)
+            if d.rewrite_llm is not None
+            else None
+        ),
+        deps=("judgment",),
+        build=_rewrite_loop_node,
     ),
     AgentEntry(
         name="hitl2",
@@ -649,16 +812,8 @@ MANIFEST: tuple[AgentEntry, ...] = (
         real=lambda d: partial(
             hitl2_confirm, gate=d.hitl2_gate or ConservativeHitl2Gate()
         ),
-        deps=("consistency",),
+        deps=("rewrite_loop",),
         build=_hitl2_node,
-    ),
-    AgentEntry(
-        name="writeback",
-        field="writeback",
-        stub=_stub_writeback,
-        real=None,
-        deps=("hitl2",),
-        build=_writeback_node,
     ),
 )
 
@@ -680,40 +835,38 @@ def create_real_agents(
     *,
     llm: LlmClient,
     hitl1_gate: Hitl1Gate,
-    verify_llm: VerifyLlmClient | None = None,
+    judgment_llm: JudgmentLlmClient | None = None,
     hypothesis_llm: HypothesisLlmClient | None = None,
-    retrieval: RetrievalLayer | None = None,
+    rewrite_llm: RewriteLlmClient | None = None,
     hitl2_gate: Hitl2Gate | None = None,
-    max_iterations: int = 8,
 ) -> Agents:
-    """返回「真实解析 + 真实 HITL-1 +（可选）真实体检/开药 + 真实合并 + 真实影响传导 +
-    真实一致性校验 + 真实 HITL-2 + 真实回写」的智能体组。
+    """返回「真实解析 + 真实 HITL-1 +（可选）真实开药 + 真实裁决 +（可选）真实重写提议 +
+    真实 HITL-2」的智能体组。
 
-    在 :func:`create_stub_agents` 基础上替换桩为真实实现。合并算子（#6）、影响传导（#7）、
-    一致性校验（#8）与回写（#10）均为确定性纯函数、无 LLM / 检索依赖，已随
-    :func:`create_stub_agents` 真实接入（桩路径与真实装配共用同一实现），此处不再替换——
-    故「无采纳改动 → 终稿逐字节等于原文」的 tracer bullet 承诺继续成立（解析产出真实树、
-    HITL-1 可编辑结构、HITL-2 默认保守闸门不采纳）。``llm`` 为解析 seam（具体 provider
+    在 :func:`create_stub_agents` 基础上替换桩为真实实现。``llm`` 为解析 seam（具体 provider
     适配器属生产装配）；``hitl1_gate`` 为 HITL-1 注入闸门（真实 interrupt+checkpointer
-    属后续切片）。当且仅当 ``verify_llm`` 与 ``retrieval`` 同时给出时，体检桩（#4）替换为
-    真实 ReAct 实现——体检只写回节点状态、不改 ``content``，故字节级承诺依然成立。当且仅当
-    ``hypothesis_llm`` 与 ``retrieval`` 同时给出时，开药桩（#5）替换为真实「投机生成 +
-    逐条取证」实现——开药只写回 ``candidate_hypotheses``、不改 ``content`` 或 ``status``
-    （与体检乐观并行、不读体检结论，ADR-0002），字节级承诺依然成立。合并（#6）读两线路
-    合流后的 ``status`` × ``candidate_hypotheses`` 矩阵裁决，只贴 ``merge_decision`` /
-    ``issue_tags`` / 裁剪假设、不置 ``adopted``、不改 ``content``；影响传导（#7）读合并后的
-    树按剩余支撑率判 ``invalid`` / 贴 ``weakening``、复用既有成立假设激活，亦不改
-    ``content`` / 不新建假设；一致性校验（#8）在影响传导之后、HITL-2 之前单次扫描那棵标注
-    完成的树，只追加 ``issue_tags`` 批注（去重）、不打回、不改 ``content`` / ``status`` /
-    ``merge_decision``——字节级承诺依然成立。HITL-2（#9）为不可跳过的硬闸门：
-    ``hitl2_gate`` 缺省时用 :class:`ConservativeHitl2Gate`（无待决→一键通过、有待决→全驳回、
-    绝不自动采纳，ADR-0010）；HITL-2 采纳即置 ``adopted`` + 持久化
-    ``adopted_hypothesis_id``（ADR-0011）。回写（#10）据 ``adopted_hypothesis_id`` 按关系
-    分流缝合（对立→替换、递进→改写、扩展→段尾追加带审计标识），成功翻 ``corrected``、失败
-    停留 ``adopted`` 并贴 ``writeback_error``、重跑幂等不重复注入——故注入会采纳的闸门时终稿
-    不再逐字节等于原文（变更段已缝合），未变更段仍逐字节还原。真实人判 ``interrupt`` +
-    ``Command(resume)`` + checkpointer 属后续切片；回写幂等续跑入口见
-    :meth:`runtime.orchestrator.Orchestrator.resume_writeback`（#11）。
+    属后续切片）。``hypothesis_llm`` 给出时开药桩（#5 · Slice 3 重定义为仅 propose）替换为真实
+    「投机生成」实现——逐 argument 读 ``paragraph_summaries`` 调 ``propose``、产 pending
+    假说、只写回 ``candidate_hypotheses``、不改 ``content`` 或 ``status``，字节级承诺依然
+    成立。``judgment_llm`` 给出时裁决桩（#4 取证 + #5 取证 + #6 merge + #7 impact + #8
+    consistency 五合一·Slice 5）替换为真实裁判实现——吃 citations 判 per-argument /
+    per-hypothesis 终态、再按序调 merge/impact/consistency 纯函数、整树写回
+    ``argument_tree``（单写者，裁撤 ``argument_credibility`` partial channel）；merge/impact/
+    consistency 为确定性纯函数、无 LLM/检索依赖（桩路径与真实装配共用同一串联、逻辑不动），
+    故无独立 ``real`` 工厂；裁决只写回 ``status`` / ``merge_decision`` / ``issue_tags`` /
+    裁剪假设、不改 ``content``、不置 ``adopted``，字节级承诺依然成立。``rewrite_llm`` 给出时
+    重写桩（#10·Slice 6·ADR-0017）替换为真实逐段提议重写实现——对被触达段（supported 假说 /
+    命中 citations）调 ``propose_rewrite`` 产 ``proposed_rewrites``、未触达段省略，**不碰
+    ``argument_tree``**（按段 / 文本工作、与 argument 状态解耦）。HITL-2（#9·Slice 6 重定位
+    为终稿文本确认闸门）为不可跳过的硬闸门：``hitl2_gate`` 缺省时用
+    :class:`ConservativeHitl2Gate`（无提议重写→一键通过、有提议重写→全驳回、原文逐字节保留、
+    绝不自动采纳，ADR-0010）；逐段确认 / 编辑 / 驳回 ``proposed_rewrites`` 后由
+    ``assemble_final_document`` 拼装 ``final_document``（确认→提议文本、编辑→编辑文本、驳回 /
+    未触达→逐字节原文）——故注入会确认的闸门时终稿不再逐字节等于原文（变更段用确认文本），
+    未变更段仍逐字节还原。原独立 ``writeback`` 节点裁撤、终稿在 hitl2 落地；``adopted`` /
+    ``corrected`` / ``adopted_hypothesis_id`` 在新流程不再被写（domain 字段保留不删）。真实
+    人判 ``interrupt`` + ``Command(resume)`` + checkpointer 属后续切片；终稿拼装幂等续跑入口见
+    :meth:`runtime.orchestrator.Orchestrator.resume_rewrite`（#11）。
 
     manifest 驱动：遍历 :data:`MANIFEST`，对有 ``real`` 工厂的条目调 ``real(deps)``，返回非
     ``None`` 者替换对应 ``field``；纯函数 Agent（``real=None``）与 ``partition`` 不替换。
@@ -722,11 +875,10 @@ def create_real_agents(
     deps = RealDeps(
         llm=llm,
         hitl1_gate=hitl1_gate,
-        verify_llm=verify_llm,
+        judgment_llm=judgment_llm,
         hypothesis_llm=hypothesis_llm,
-        retrieval=retrieval,
+        rewrite_llm=rewrite_llm,
         hitl2_gate=hitl2_gate,
-        max_iterations=max_iterations,
     )
     agents = create_stub_agents()
     patches: dict[str, Any] = {}

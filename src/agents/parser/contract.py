@@ -12,13 +12,14 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import ArgumentType
+from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentType, TimeRange
 
 __all__ = [
     "WEIGHT_RUBRIC",
     "ParagraphView",
     "ParsedNodeProposal",
     "ParseResult",
+    "ParseOutput",
     "LlmClient",
     "FakeLlmClient",
 ]
@@ -63,9 +64,30 @@ class ParsedNodeProposal(BaseModel):
 
 
 class ParseResult(BaseModel):
-    """LLM 解析输出：一组节点提议。"""
+    """LLM 解析输出：一组节点提议 + 时间范围（桩）+ 段落摘要。
+
+    ``query_time_range`` 当前为桩（``DEFAULT_QUERY_TIME_RANGE``，默认 2025–2026）——agent 端
+    不真实依赖 LLM 识别时间，真实 LLM 时间识别属后续切片（PRD Out of Scope）。
+    ``paragraph_summaries`` 为 ``paragraph_id → 摘要``，由同一次 LLM 调用顺产，供
+    hypothesis_propose / rewrite_loop 读取（避免逐点喂入时上下文爆炸，ADR-0021）。
+    """
 
     proposals: list[ParsedNodeProposal] = Field(default_factory=list)
+    query_time_range: TimeRange = Field(default_factory=lambda: DEFAULT_QUERY_TIME_RANGE.model_copy(deep=True))
+    paragraph_summaries: dict[str, str] = Field(default_factory=dict)
+
+
+class ParseOutput(BaseModel):
+    """``parse+partition`` 节点的产出（agent 铸造，写回 ``PipelineState`` 三 channel）。
+
+    - ``argument_tree``：解析器铸造成的初始论证树（逐字节拷回 ``content``、LLM 无权改写）。
+    - ``query_time_range``：桩值（agent 注入 ``DEFAULT_QUERY_TIME_RANGE``，不真实调 LLM 识别）。
+    - ``paragraph_summaries``：从 LLM ``ParseResult`` 顺产的 ``paragraph_id → 摘要``。
+    """
+
+    argument_tree: list[Argument] = Field(default_factory=list)
+    query_time_range: TimeRange = Field(default_factory=lambda: DEFAULT_QUERY_TIME_RANGE.model_copy(deep=True))
+    paragraph_summaries: dict[str, str] = Field(default_factory=dict)
 
 
 class LlmClient(Protocol):

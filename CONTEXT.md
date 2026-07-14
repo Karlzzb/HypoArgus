@@ -28,28 +28,58 @@
 ## 状态
 
 - **节点状态机**：`unverified` → `pending_verification` → (`credible` | `doubtful` | `error`) → `adopted`（HITL-2 采纳·待回写）→ `corrected`（回写成功）。回写失败停留 `adopted` 可重试。`invalid` = 影响传导判上层论点失去支撑。见 ADR-0011。
+  **注（Slice 6）**：新流程（rewrite_loop + hitl2 终稿闸门）按段落 / 文本工作，与 argument 的 `status` 解耦——`adopted`/`corrected`/`adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）；终稿文本确认只经 hitl2 逐段确认 / 编辑 / 驳回 `proposed_rewrites`。
 - **error vs invalid**：`error` 是事实验证判叶子论据自证其伪；`invalid` 是影响传导判上层论点被拖垮。
 - **adopted**：已采纳待回写的中间态，持久记录「采纳了哪条假说」，是回写幂等重试的依据。
 
 ## 智能体角色
 
 - **全局调度 Agent**：中枢编排、状态管理、HITL 调度、单向流控制。
-- **论证结构解析 Agent**：唯一语义解析入口，产出论证树。
-- **假设生成 Agent**：在原文边界内为节点生成可证伪的候选修订假设。
-- **事实验证 Agent**：ReAct 机制多源检索校验论据真伪，写回节点状态。
-- **影响传导 Agent**：校验结果沿树向上传导，评估对上层论点的影响。
-- **一致性校验 Agent**：中立质检，仅贴批注标签（`issue_tags`），无打回权。
-- **修订回写 Agent**：按段落原子缝合，产出终稿。
+- **论证结构解析 Agent**：唯一语义解析入口，产出论证树 + `paragraph_summaries` + `query_time_range` 桩。
+- **假设生成 Agent**：在原文边界内为节点**仅 propose** 产 pending 候选修订假说（取证移至 judgment）。
+- **裁决 Agent (judgment)**：检索之后的单一判断节点，五合一——吃 `citations` 判 per-argument / per-hypothesis 终态、再按序串联 merge / impact / consistency 纯函数（ADR-0019）。
+- **重写循环 Agent (rewrite_loop)**：judgment 之后逐段提议重写文本；对被触达段产 `proposed_rewrites`、未触达段省略（ADR-0017）。
+- **终稿确认 Agent (hitl2)**：逐段确认 / 编辑 / 驳回 `proposed_rewrites` 后拼装终稿（ADR-0017 重定位）。原独立「修订回写 Agent」已裁撤，终稿在 hitl2 落地。
 
 ## 关键算子 / 机制
 
-- **线路 1 / 体检**：对 claim & evidence 正向查询与纠错，产出原文状态 `credible / doubtful / error`。
-- **线路 2 / 开药**：对节点生成假说并对假说取证，产出假说状态 `supported / doubtful / refuted`（「无假说」= 空数组）。与原文 `credible/doubtful/error` 对称。见 ADR-0008。
-- **双轨合并算子 (Merge Operator)**：合并两线路结果，按 12 格矩阵裁决。见 ADR-0006。
+- **原文侧终态（judgment 取证）**：对 claim & evidence 据 `citations` 判终态，产出原文状态 `credible / doubtful / error`（原 verification ReAct 体检职责，Slice 5 并入 judgment）。
+- **线路 2 / 开药**：对节点**仅 propose** 产 pending 假说（「无假说」= 空数组）；取证（吃 citations 判终态 `supported / doubtful / refuted`）由 judgment 节点完成（Slice 5）。与原文 `credible/doubtful/error` 对称。见 ADR-0008。
+- **双轨合并算子 (Merge Operator)**：按 12 格矩阵裁决 `原文.status × 假说.status`（judgment 内串联调用，非独立 stage）。见 ADR-0006。
 - **裁决动作 (MergeAction)**：合并算子对单节点的六种裁决：`keep`（保留原文）、`replace` / `rewrite` / `supplement`（成立假说按语义关系分流，见回写三操作）、`conflict`（原文 credible 且对立假说成立，贴签交人判）、`freeze`（原文 credible 且递进/扩展假说成立，严格冻结原文不动）。见 ADR-0006。
 - **回写三操作**：`替换 (replace)` / `改写 (rewrite)` / `补充 (supplement)`。由**假说与原文的语义关系**（`relation: oppose/advance/expand`）决定：**对立→替换、递进→改写、扩展→补充**。关系由假设生成 Agent 标注，一假说一关系。见 ADR-0006、ADR-0007。
 - **conflict**：原文 `credible` 且对立假说亦成立时贴的标签，交 HITL-2 人判，系统不自动裁决。
-- **HITL**：节点 1（结构确认，可跳过）、节点 2（修订内容确认，双轨决策大闸）。
+- **HITL**：节点 1、节点 2。重构后语义见下「重构方向术语」：hitl1=partition 确认闸门（有界打回）、hitl2=终稿文本确认闸门。
+
+## 重构方向术语（ADR-0017~0021·已落地）
+
+下列术语为流水线重构（`docs/PRD-pipeline-restructure.md`）所接受的方向，Slice 1–6 已全部落地（实现进度见 `docs/pipeline-restructure-tasks.md`）。
+术语一旦定义即作为后续代码切片的契约语言；字段流向以 `docs/STATE.md` §1 为唯一描述点。
+
+- **会话上下文 (session_context)**：贯穿全链的运行上下文，单一嵌套对象，含 `session_id` / `user_id` / `current_time` / `user_prompt`。
+  单写者=入口注入（与 `original_doc` 同入 START），全链只读；供 LLM 检索与生成 seam 携带一致运行背景。
+  取代 ADR-0016「业务字段仅走 `RunnableConfig`」的做法（`RunnableConfig` 仍承载 langgraph 原生 metadata / callbacks / checkpointer）。见 ADR-0021。
+- **查询时间范围 (query_time_range)**：本文所需的数据查询时间范围（`start` / `end` / `rationale`）。
+  单写者=`parse+partition`（当前伪代码桩，默认 2025–2026，真实 LLM 时间识别待后续切片）；读者=retrieval / rewrite / judgment。
+  供下游检索限定在正确时间窗、供 LLM 决策有时间上下文。见 ADR-0021。
+- **段落摘要 (paragraph_summary)**：每段的摘要文本（`paragraph_id → 摘要`），由 `parse+partition` 在同一次 LLM 调用里顺产。
+  供 hypothesis_propose / rewrite_loop 读取，避免一次性 / 逐点喂入时上下文爆炸；**不并入 `OriginalParagraphs`**（保其字节级无损只读表身份）。见 ADR-0021 / STATE.md §1。
+- **judgment 节点**：检索之后的单一判断节点，五合一（verification 取证 + hypothesis 取证 + merge 裁决 + impact 传导 + consistency 批注）。
+  控制流合并为 1，但 merge / impact / consistency 的**纯函数逻辑保留、不交 LLM 裁决**；取证由新 LLM seam 吃 `citations` 判终态，不再 ReAct 逐段逐点检索。
+  重构 ADR-0002（乐观并行）/ ADR-0006（12 格矩阵合流）的双线路并行设计。见 ADR-0019。
+- **重写循环 (rewrite_loop)**：逐段提议重写文本的节点。
+  对**被触达段**（有 supported 假说 / 相关 citations）由 LLM 提议重写；**未触达段逐字节拷回**。
+  产出 `proposed_rewrites: dict[paragraph_id, str]`（仅被触达段），供 HITL-2 确认。
+  重写阶段放弃「终稿逐字节一致 / content 不被 LLM 改写 / 幂等纯函数回写」三条承诺（仅被触达段；未触达段仍逐字节忠实；HITL-2 仍为唯一决策闸门）。见 ADR-0017。
+- **resolved_rewrites**：HITL-2 决策应用后的段文本表（`paragraph_id → 终稿文本`，仅含被确认 / 编辑段；驳回 / 未触达段省略）。
+  由 hitl2 的 `resolve_rewrites` 产、`assemble_final_document` 据之按规范顺序拼 `final_document`（确认 / 编辑段用其文本、驳回 / 未触达段逐字节原文）。
+  也是崩溃恢复续跑入口 `Orchestrator.resume_rewrite(resolved_rewrites, original_paragraphs)` 的入参——按段文本幂等重推导，不再依赖 `adopted_hypothesis_id`。
+- **hitl1（语义变更）**：从「结构确认·可跳过」重定义为 **partition 确认闸门**：人确认段落切分是否合理，不合理则按用户 prompt 重跑 `parse+partition`。
+  打回**打破「绝不打回」**（PRD §13 / DEVELOPMENT §1），须**有界**（max retries 默认 3）；超限向前推进 + 贴 `partition_retry_exhausted`。
+  partition「按 prompt 重切」当前为伪代码桩。见 ADR-0018 / ADR-0020。
+- **hitl2（语义变更）**：重定位为**终稿文本确认闸门**：逐段确认 / 编辑 / 驳回 `proposed_rewrites`，拼成 `final_document`。
+  被确认段用提议文本、被编辑段用编辑文本、被驳回段回退原文、未触达段逐字节原文。
+  仍不可跳过、`Hitl2GateError` 原样上抛、绝不替人拍板（ADR-0010 不动）；原 `writeback` 节点裁撤，终稿在此落地。`adopted`/`corrected`/`adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）。见 ADR-0017。
 
 ## 实现映射
 

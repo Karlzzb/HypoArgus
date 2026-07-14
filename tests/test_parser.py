@@ -14,12 +14,145 @@ from agents.parser import (
     LlmClient,
     ParagraphView,
     ParsedNodeProposal,
+    ParseOutput,
     ParseResult,
     parse,
 )
-from domain import ArgumentStatus, ArgumentType
+from domain import (
+    DEFAULT_QUERY_TIME_RANGE,
+    DEFAULT_SESSION_CONTEXT,
+    ArgumentStatus,
+    ArgumentType,
+    SessionContext,
+    TimeRange,
+)
 from original_paragraphs import OriginalParagraphs
 from tree_invariants import validate_tree
+
+# --------------------------------------------------------------------------- #
+# 贯穿 state 域类型（ADR-0021 / PRD §17·Slice 1）
+#
+# SessionContext / TimeRange 为贯穿全链的运行上下文与时间范围；query_time_range 当前为桩
+# （默认 2025–2026，真实 LLM 时间识别待后续切片）。这些类型是 LLM seam 输入背景的载体。
+# --------------------------------------------------------------------------- #
+
+
+def test_time_range_carries_start_end_rationale():
+    """TimeRange 承载 start / end / rationale 三字段（date | None）。"""
+
+    tr = TimeRange(start="2025-01-01", end="2026-12-31", rationale="本文数据窗")
+    assert tr.start is not None
+    assert tr.end is not None
+    assert tr.rationale == "本文数据窗"
+
+
+def test_default_query_time_range_is_2025_2026_stub():
+    """DEFAULT_QUERY_TIME_RANGE 为伪代码桩：2025 起始、2026 结束、rationale 标注待真实识别。"""
+
+    assert DEFAULT_QUERY_TIME_RANGE.start == __import__("datetime").date(2025, 1, 1)
+    assert DEFAULT_QUERY_TIME_RANGE.end == __import__("datetime").date(2026, 12, 31)
+    assert "真实识别" in DEFAULT_QUERY_TIME_RANGE.rationale
+
+
+def test_session_context_carries_session_user_time_prompt():
+    """SessionContext 承载 session_id / user_id / current_time / user_prompt 四字段。"""
+
+    import datetime
+
+    now = datetime.datetime(2026, 7, 13, 12, 0, 0)
+    sc = SessionContext(
+        session_id="s1",
+        user_id="u1",
+        current_time=now,
+        user_prompt="精简冗余论据",
+    )
+    assert sc.session_id == "s1"
+    assert sc.user_id == "u1"
+    assert sc.current_time == now
+    assert sc.user_prompt == "精简冗余论据"
+
+
+def test_default_session_context_is_deterministic():
+    """DEFAULT_SESSION_CONTEXT 为确定性桩（current_time 固定、可测可复现）。"""
+
+    assert DEFAULT_SESSION_CONTEXT.current_time is not None
+    # 同进程内两次取值稳定（不依赖 datetime.now）。
+    assert DEFAULT_SESSION_CONTEXT.current_time == DEFAULT_SESSION_CONTEXT.current_time
+
+
+# --------------------------------------------------------------------------- #
+# ParseResult 扩展（ADR-0021 / PRD §17·Slice 1）
+#
+# parse+partition 在同一次 LLM 调用里多吐 query_time_range（桩，默认 2025–2026）与
+# paragraph_summaries（paragraph_id → 摘要）。当前 query_time_range 由 agent 注桩、
+# 不真实调 LLM 识别；paragraph_summaries 真实由 LLM 顺产。
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_result_defaults_carry_stub_time_range_and_empty_summaries():
+    """ParseResult() 默认携带桩 query_time_range（2025–2026）与空 paragraph_summaries。"""
+
+    result = ParseResult()
+    assert result.query_time_range == DEFAULT_QUERY_TIME_RANGE
+    assert result.query_time_range.start is not None
+    assert result.query_time_range.start.year == 2025
+    assert result.query_time_range.end is not None
+    assert result.query_time_range.end.year == 2026
+    assert result.paragraph_summaries == {}
+
+
+def test_parse_result_accepts_paragraph_summaries_from_llm():
+    """ParseResult 可承载 LLM 顺产的 paragraph_summaries（paragraph_id → 摘要）。"""
+
+    result = ParseResult(paragraph_summaries={"p0001": "主论点段", "p0002": "论据段"})
+    assert result.paragraph_summaries["p0001"] == "主论点段"
+    assert result.paragraph_summaries["p0002"] == "论据段"
+
+
+# --------------------------------------------------------------------------- #
+# parse() 返回 ParseOutput（ADR-0021 / PRD §17·Slice 1）
+#
+# parse+partition 在同一次 LLM 调用里多吐 query_time_range（桩）与 paragraph_summaries；
+# 公开函数 parse() 因此返回 ParseOutput（argument_tree + query_time_range + paragraph_summaries），
+# 供 build 闭包写回 PipelineState 三 channel。
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_returns_parse_output_with_stub_time_range_and_summaries():
+    """parse() 返回 ParseOutput：argument_tree 铸树、query_time_range 桩、
+    paragraph_summaries 取自 LLM ParseResult。"""
+
+    original_paragraphs = _store("主论点段。\n\n论据段。\n")
+    summaries = {"p0001": "主论点段摘要", "p0002": "论据段摘要"}
+    llm = FakeLlmClient(
+        ParseResult(
+            proposals=[
+                _proposal("p0001", ArgumentType.MAIN_CLAIM),
+                _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
+            ],
+            paragraph_summaries=summaries,
+        )
+    )
+    out = parse(original_paragraphs, llm)
+    # argument_tree 仍按既有铸树逻辑产出（两核心节点）。
+    assert isinstance(out, ParseOutput)
+    by_id = {n.argument_id: n for n in out.argument_tree}
+    assert by_id["n0000"].paragraph_id == "p0001"
+    assert by_id["n0001"].paragraph_id == "p0002"
+    # query_time_range 为桩（agent 注入，不真实调 LLM 识别）。
+    assert out.query_time_range == DEFAULT_QUERY_TIME_RANGE
+    # paragraph_summaries 顺产自同一次 LLM 调用。
+    assert out.paragraph_summaries == summaries
+
+
+def test_parse_output_summaries_empty_when_llm_omits():
+    """LLM 未给 paragraph_summaries → ParseOutput.paragraph_summaries 为空（仍产 argument_tree）。"""
+
+    original_paragraphs = _store("段。\n")
+    llm = FakeLlmClient([_proposal("p0001", ArgumentType.MAIN_CLAIM)])
+    out = parse(original_paragraphs, llm)
+    assert out.paragraph_summaries == {}
+    assert len(out.argument_tree) == 1
 
 
 def _store(*paragraphs: str) -> OriginalParagraphs:
@@ -56,7 +189,7 @@ def test_parse_byte_copies_content_from_store_not_llm():
     para = "# 标题\n\n正文段落。\n"
     original_paragraphs = _store(para)
     llm = FakeLlmClient([_proposal("p0001", ArgumentType.MAIN_CLAIM)])
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     assert arguments[0].content == _dec(original_paragraphs.get("p0001"))
     # LLM 提议模型无 content 字段——LLM 输出永不成为节点文本。
     assert "content" not in ParsedNodeProposal.model_fields
@@ -72,7 +205,7 @@ def test_parse_rejects_invented_paragraph_id():
             _proposal("invented", ArgumentType.EVIDENCE),  # 不存在 → 丢弃
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     ids = {n.paragraph_id for n in arguments}
     assert "invented" not in ids
     assert all(n.paragraph_id == "p0001" for n in arguments)
@@ -93,7 +226,7 @@ def test_parse_argument_has_singular_paragraph_id():
             _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
         ]
     )
-    for argument in parse(original_paragraphs, llm):
+    for argument in parse(original_paragraphs, llm).argument_tree:
         assert isinstance(argument.paragraph_id, str)
         assert argument.paragraph_id in {"p0001", "p0002"}
 
@@ -109,7 +242,7 @@ def test_parse_one_paragraph_can_host_multiple_arguments():
             _proposal("p0001", ArgumentType.EVIDENCE, parent_index=0),
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     p1_arguments = [n for n in arguments if n.paragraph_id == "p0001"]
     assert len(p1_arguments) == 3
 
@@ -124,7 +257,7 @@ def test_parse_cross_paragraph_argument_via_parent_child():
             _proposal("p0002", ArgumentType.SUB_CLAIM, parent_index=0),
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     by_id = {n.argument_id: n for n in arguments}
     # n0000 在 p0001，n0001 在 p0002，后者 parent 指向前者。
     assert by_id["n0000"].paragraph_id == "p0001"
@@ -143,7 +276,7 @@ def test_parse_unproposed_paragraph_becomes_background_shadow():
 
     original_paragraphs = _store("第一段。\n\n第二段（无提议）。\n")
     llm = FakeLlmClient([_proposal("p0001", ArgumentType.MAIN_CLAIM)])
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     p2 = [n for n in arguments if n.paragraph_id == "p0002"]
     assert len(p2) == 1
     assert p2[0].argument_type == ArgumentType.BACKGROUND
@@ -155,7 +288,7 @@ def test_parse_shadow_arguments_are_readonly_weight_zero():
 
     original_paragraphs = _store("段。\n")
     llm = FakeLlmClient([_proposal("p0001", ArgumentType.BACKGROUND, argument_weight=50)])
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     bg = [n for n in arguments if n.argument_type == ArgumentType.BACKGROUND][0]
     assert bg.argument_weight == 0
 
@@ -174,7 +307,7 @@ def test_parse_core_vs_shadow_classification():
             _proposal("p0006", ArgumentType.EVALUATION),
         ]
     )
-    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm) if not n.argument_id.startswith("bg-")}
+    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm).argument_tree if not n.argument_id.startswith("bg-")}
     assert not by_para["p0001"].argument_type.is_shadow
     assert not by_para["p0002"].argument_type.is_shadow
     assert not by_para["p0003"].argument_type.is_shadow
@@ -198,7 +331,7 @@ def test_parse_parent_index_resolves_to_argument_id():
             _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     by_id = {n.argument_id: n for n in arguments}
     assert by_id["n0001"].parent_id == "n0000"
 
@@ -213,7 +346,7 @@ def test_parse_self_or_oob_parent_index_becomes_root():
             _proposal("p0002", ArgumentType.EVIDENCE, parent_index=999),  # 越界
         ]
     )
-    by_id = {n.argument_id: n for n in parse(original_paragraphs, llm)}
+    by_id = {n.argument_id: n for n in parse(original_paragraphs, llm).argument_tree}
     assert by_id["n0000"].parent_id is None
     assert by_id["n0001"].parent_id is None
 
@@ -228,7 +361,7 @@ def test_parse_breaks_llm_cycle():
             _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),  # n0001→n0000
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     validate_tree(arguments)  # 不抛即通过
     # 至少一个被断为根。
     assert any(n.parent_id is None for n in arguments)
@@ -245,7 +378,7 @@ def test_parse_backfills_children_bidirectionally():
             _proposal("p0003", ArgumentType.EVIDENCE, parent_index=0),
         ]
     )
-    arguments = parse(original_paragraphs, llm)
+    arguments = parse(original_paragraphs, llm).argument_tree
     validate_tree(arguments)
     by_id = {n.argument_id: n for n in arguments}
     assert set(by_id["n0000"].children_ids) == {"n0001", "n0002"}
@@ -266,7 +399,7 @@ def test_parse_weight_rubric_preserved():
             _proposal("p0002", ArgumentType.EVIDENCE, argument_weight=30),
         ]
     )
-    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm) if not n.argument_id.startswith("bg-")}
+    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm).argument_tree if not n.argument_id.startswith("bg-")}
     assert by_para["p0001"].argument_weight == 85
     assert by_para["p0002"].argument_weight == 30
 
@@ -284,7 +417,7 @@ def test_parse_clamps_out_of_range_weight():
             _proposal("p0002", ArgumentType.EVIDENCE, argument_weight=-5),
         ]
     )
-    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm) if not n.argument_id.startswith("bg-")}
+    by_para = {n.paragraph_id: n for n in parse(original_paragraphs, llm).argument_tree if not n.argument_id.startswith("bg-")}
     assert by_para["p0001"].argument_weight == 100
     assert by_para["p0002"].argument_weight == 0
 
@@ -299,7 +432,7 @@ def test_parse_arguments_start_unverified():
 
     original_paragraphs = _store("段。\n")
     llm = FakeLlmClient([_proposal("p0001", ArgumentType.MAIN_CLAIM)])
-    for argument in parse(original_paragraphs, llm):
+    for argument in parse(original_paragraphs, llm).argument_tree:
         assert argument.status == ArgumentStatus.UNVERIFIED
 
 

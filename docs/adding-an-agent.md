@@ -4,6 +4,10 @@
 manifest 驱动下触点为 **3**（ADR-0014），无需改 `runtime/orchestrator.py`——`default_pipeline()` 遍历 `MANIFEST` 自动纳入新 stage。
 术语见 `CONTEXT.md`；模块边界与装配总览见 `docs/DEVELOPMENT.md` §2/§4；测试约定见 `docs/TESTING.md` §5。
 
+> **⚠ 本指南的 `verification` 走读示例早于 Slice 5**：`agents/verification/`（ReAct 体检）已在 Slice 5 五合一中删除，其职责并入 `agents/judgment/`（吃 citations 判终态 + 串联 merge/impact/consistency，ADR-0019）。
+> 故示例中的具体代码 / 行号 / `import` **已失效**——但所述的**装配模式**（seam agent 子包拆分 + `Agents` 字段 + 一条 `MANIFEST` 条目 + `_guarded` build 闭包 + 双 adapter）仍准确。
+> 想看「活」的 seam agent 范例，读 `src/agents/judgment/{contract,agent,__init__}.py`（结构与本指南所述 verification 范例同形）；本指南待后续切片以 judgment 为范例重写。
+
 ## 0. 心智模型：一条 `AgentEntry` = 一个 stage
 
 每条 `agents/assembly.py:AgentEntry`（`agents/assembly.py:542`）四字段，把「agent 实现」与「图拓扑」收口为一行：
@@ -24,8 +28,8 @@ manifest 驱动下触点为 **3**（ADR-0014），无需改 `runtime/orchestrato
 
 | 形态 | 位置 | seam | `real` 工厂 | 例子 |
 |---|---|---|---|---|
-| **seam agent** | 子包 `agents/<name>/{contract,agent,__init__}.py` | 有（`Protocol` + `Fake*`） | 非 `None`（条件替换桩） | `parser`/`verification`/`hypothesis`/`hitl1`/`hitl2` |
-| **纯函数 agent** | 扁平 `agents/<name>.py` | 无（确定性、桩 = 真实） | `None`（不替换） | `merge`/`impact`/`consistency`/`writeback` |
+| **seam agent** | 子包 `agents/<name>/{contract,agent,__init__}.py` | 有（`Protocol` + `Fake*`） | 非 `None`（条件替换桩） | `parser`/`hypothesis`/`judgment`/`rewrite_loop`/`hitl1`/`hitl2` |
+| **纯函数 agent** | 扁平 `agents/<name>.py` | 无（确定性、桩 = 真实） | `None`（不替换） | `merge`/`impact`/`consistency` |
 
 seam agent 拆子包（ADR-0014）：`contract.py` 放 `Protocol` + `Fake*` 桩 + 结构化 I/O 模型（provider-free），`agent.py` 放纯函数，`__init__` re-export 保 `from agents.<name> import ...` 路径不变。
 下文以 seam agent 为主线走读真例 `verification`，§4 给纯函数变体侧边栏。
@@ -150,7 +154,7 @@ AgentEntry(
 
 ## 4. 纯函数变体侧边栏（`real=None`）
 
-无 LLM/检索依赖的确定性 agent（如 `merge`/`impact`/`consistency`/`writeback`）更简：
+无 LLM/检索依赖的确定性 agent（如 `merge`/`impact`/`consistency`）更简：
 
 - 扁平单文件 `agents/<name>.py`（无 `contract.py`/`__init__` 子包）。
 - `MANIFEST` 条目 `stub` 即真实实现、`real=None`（`create_real_agents` 不替换）：

@@ -53,7 +53,7 @@
 
 ## 重构方向术语（ADR-0017~0021·已落地）
 
-下列术语为流水线重构（`docs/PRD-pipeline-restructure.md`）所接受的方向，Slice 1–6 已全部落地（实现进度见 `docs/pipeline-restructure-tasks.md`）。
+下列术语为流水线重构（ADR-0017~0021）所接受的方向，Slice 1–6 已全部落地。
 术语一旦定义即作为后续代码切片的契约语言；字段流向以 `docs/STATE.md` §1 为唯一描述点。
 
 - **会话上下文 (session_context)**：贯穿全链的运行上下文，单一嵌套对象，含 `session_id` / `user_id` / `current_time` / `user_prompt`。

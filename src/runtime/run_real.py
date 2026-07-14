@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
 from datetime import datetime
 
 from langchain_core.language_models import BaseChatModel
@@ -38,10 +39,34 @@ from infra.llm_adapters import (
     QwenRewriteLlmClient,
 )
 from infra.llm_provider import build_qwen_chat_model
+from infra.observability import build_langfuse_callback
 from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate
 from runtime.orchestrator import Orchestrator, RunResult
 
 __all__ = ["run_real_pipeline", "main"]
+
+
+def _build_session_config(session_id: str) -> dict[str, object]:
+    """装配 ``RunnableConfig``：注入 Langfuse callback + trace 聚合 metadata。
+
+    ``build_langfuse_callback`` 在未配置 Langfuse（缺环境变量）或未安装 SDK 时返回 ``None``——
+    此时**不**注入 ``callbacks`` / ``metadata``，``Orchestrator.run_with_report`` 行为与离线态
+    完全一致（零侵入，不破坏离线测试）。配置齐全时把 Langfuse handler 与
+    ``langfuse_session_id`` / ``langfuse_user_id`` / ``langfuse_tags`` 放入 ``metadata``，
+    Langfuse handler 据之落 trace 会话 / 用户 / 标签（见 :mod:`infra.observability`）。
+    """
+
+    handler = build_langfuse_callback()
+    if handler is None:
+        return {}
+    return {
+        "callbacks": [handler],
+        "metadata": {
+            "langfuse_session_id": session_id,
+            "langfuse_user_id": os.environ.get("HYPOARGUS_USER_ID", "hypoargus"),
+            "langfuse_tags": ["real-run"],
+        },
+    }
 
 
 def run_real_pipeline(
@@ -51,6 +76,7 @@ def run_real_pipeline(
     hitl1_gate: object | None = None,
     hitl2_gate: object | None = None,
     session_context: SessionContext | None = None,
+    session_config: dict[str, object] | None = None,
 ) -> RunResult:
     """驱动「真实 LLM + 交互闸门」整条流水线。
 
@@ -60,6 +86,10 @@ def run_real_pipeline(
     ``session_context`` 缺省时由入口构造（``current_time=datetime.now()``，真实运行时刻由入口
     注入、非节点内取时，ADR-0021；``user_prompt`` 取 ``--prompt``，``session_id``/``user_id``
     取环境或空），与 ``original_doc`` 同入 START、全链只读。
+
+    ``session_config`` 缺省时由 :func:`_build_session_config` 装配 Langfuse callback（配置齐全）
+    或空 dict（未配置，零侵入）；调用方可显式注入 fake callback / 覆盖 metadata。Langfuse handler
+    经 ``RunnableConfig.callbacks`` 线程贯穿整条 Agent 链路（ADR-0016）。
     """
 
     chat = chat_model or build_qwen_chat_model()
@@ -77,8 +107,11 @@ def run_real_pipeline(
         current_time=datetime.now(),
         user_prompt="",
     )
+    config = session_config if session_config is not None else _build_session_config(
+        ctx.session_id or str(uuid.uuid4())
+    )
     return Orchestrator(agents=agents).run_with_report(
-        original_doc, session_context=ctx
+        original_doc, session_config=config, session_context=ctx
     )
 
 
@@ -123,8 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     raw = _read_input(args.input)
+    session_id = os.environ.get("HYPOARGUS_SESSION_ID") or str(uuid.uuid4())
     ctx = SessionContext(
-        session_id=os.environ.get("HYPOARGUS_SESSION_ID", ""),
+        session_id=session_id,
         user_id=os.environ.get("HYPOARGUS_USER_ID", ""),
         current_time=datetime.now(),
         user_prompt=args.prompt,
@@ -133,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         raw,
         chat_model=build_qwen_chat_model(args.model),
         session_context=ctx,
+        session_config=_build_session_config(session_id),
     )
     _write_output(args.output, report.final_document)
     for err in report.errors:

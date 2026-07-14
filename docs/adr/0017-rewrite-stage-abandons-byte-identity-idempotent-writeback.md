@@ -3,7 +3,7 @@
 ## 状态
 
 已接受（2026-07-13）。部分覆盖 ADR-0011 与 `docs/DEVELOPMENT.md` §1 的 tracer bullet 承诺。
-本 ADR 是流水线重构（`docs/PRD-pipeline-restructure.md`）的偏离记录之一，配套见 ADR-0018 ~ ADR-0021。
+本 ADR 是流水线重构的偏离记录之一，配套见 ADR-0018 ~ ADR-0021。
 
 ## 背景
 

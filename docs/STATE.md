@@ -53,7 +53,7 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 
 ### 1.2 重构方向新增字段（ADR-0017~0021·已落地）
 
-下表为流水线重构（`docs/PRD-pipeline-restructure.md`）所接受的契约。Slice 1–6 已全部落地
+下表为流水线重构（ADR-0017~0021）所接受的契约。Slice 1–6 已全部落地
 （`session_context` / `query_time_range` / `paragraph_summaries` / `citations` / `partition_retry_count` /
 `hitl1_route` 均已并入 `PipelineState`；`proposed_rewrites` Slice 6 落地后已并入 §1 主表，本小节不再重复其定义）。
 本小节为过渡期描述点，遵循「单一定义点、避免漂移」维护约定（已并入 §1 主表者此处不再赘述）。

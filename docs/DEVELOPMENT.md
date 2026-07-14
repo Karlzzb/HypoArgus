@@ -17,7 +17,7 @@ START → parse+partition → hitl1 → hypothesis_propose → retrieval
 ```
 
 > **重构方向（ADR-0017~0021·已落地）**：Slice 1–6 全部落地（parse+partition 合并、hitl1 重定义、hypothesis_propose、retrieval 桩、judgment 五合一、rewrite_loop 新增 + hitl2 重定位为终稿闸门 + writeback 裁撤）。
-> 进度见 `docs/pipeline-restructure-tasks.md`；术语见 `CONTEXT.md`「重构方向术语」；字段流向见 `docs/STATE.md` §1。
+> 术语见 `CONTEXT.md`「重构方向术语」；字段流向见 `docs/STATE.md` §1。
 
 目标单向图（Slice 6 落地后）：
 

@@ -39,6 +39,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from api_layer.metrics import OpsMetrics
 from api_layer.trace_store import EventType, TraceEvent, TraceEventStoreBase
 
 __all__ = ["EventTranslator"]
@@ -120,6 +121,8 @@ class EventTranslator:
         hidden: frozenset[str],
         clock: Callable[[], datetime] = _utcnow,
         prior_node_instances: dict[str, int] | None = None,
+        metrics: OpsMetrics | None = None,
+        redactor: Any | None = None,
     ) -> None:
         self._store = store
         self._session_id = session_id
@@ -128,6 +131,10 @@ class EventTranslator:
         self._manifest_index = manifest_index
         self._hidden = hidden
         self._clock = clock
+        self._metrics = metrics
+        # 脱敏钩子（PRD §3.3）：默认关（None / enabled False → 不脱敏）；注入则对 payload
+        # string 叶递归脱敏，落库前 + 推前端前同源（翻译层是 trace_events 单一 chokepoint）。
+        self._redactor = redactor
         self._queue: asyncio.Queue[TraceEvent | Any] = asyncio.Queue()
         self._drainer: asyncio.Task[None] | None = None
         # node_id → 已触发次数（node_instance = 触发前计数，从 0 起）。续跑段 seed 自
@@ -198,12 +205,18 @@ class EventTranslator:
     def _mint(self, event_type: EventType, payload: dict[str, Any]) -> TraceEvent:
         seq = self._next_seq
         self._next_seq += 1
+        # 脱敏钩子（PRD §3.3）：enabled 时对 payload 递归脱敏 string 叶，落库 / 推前端前同源。
+        safe_payload = (
+            self._redactor.redact_obj(payload)
+            if self._redactor is not None and getattr(self._redactor, "enabled", False)
+            else payload
+        )
         return TraceEvent(
             session_id=self._session_id,
             trace_id=self._trace_id,
             event_seq=seq,
             event_type=event_type,
-            payload=payload,
+            payload=safe_payload,
             ts=self._clock(),
         )
 
@@ -365,7 +378,10 @@ class EventTranslator:
             self._drainer = asyncio.create_task(self._drain())
 
     async def _drain(self) -> None:
-        """串行 await store.append；写失败降级记错、不抛（ADR-0023 不变量）。"""
+        """串行 await store.append；写失败降级记错、不抛（ADR-0023 不变量）。
+
+        落库后记 ``event_push_latency_seconds`` = 落库时刻 − ``event.ts``（PRD §11.1）。
+        """
 
         while True:
             item = await self._queue.get()
@@ -373,6 +389,10 @@ class EventTranslator:
                 return
             try:
                 await self._store.append(item)
+                if self._metrics is not None:
+                    latency = (self._clock() - item.ts).total_seconds()
+                    if latency >= 0:
+                        self._metrics.event_push_latency_seconds.set(latency)
             except Exception:
                 _logger.exception(
                     "trace_events append 失败（trace_id=%s event_seq=%s type=%s）——降级、不阻塞图",

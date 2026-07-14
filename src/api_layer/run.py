@@ -42,6 +42,8 @@ from agents.hitl1 import Hitl1Action, Hitl1Question, Hitl1Reply
 from agents.hitl2 import Hitl2Action, Hitl2Question, Hitl2Reply
 from api_layer.errors import PAUSE_TTL_SECONDS, ApiError, ErrorCode
 from api_layer.graph_view import VisibilityConfig, compute_hidden_names
+from api_layer.logging_setup import log_context, set_trace_id
+from api_layer.metrics import OpsMetrics
 from api_layer.session_cache import PauseMeta, SessionCacheBase
 from api_layer.trace_store import InMemoryTraceEventStore, TraceEventStoreBase
 from api_layer.translator import EventTranslator
@@ -202,12 +204,16 @@ class RunService:
         visibility: VisibilityConfig | None = None,
         config: RunServiceConfig | None = None,
         clock: Callable[[], datetime] = _utcnow,
+        metrics: OpsMetrics | None = None,
+        redactor: Any | None = None,
     ) -> None:
         self._orch = orch
         self._cache = session_cache
         self._trace_store: TraceEventStoreBase = trace_store or InMemoryTraceEventStore()
         # Langfuse LangChain callback handler（可选外部 sink）：注入则进 ``RunnableConfig.callbacks``，
         # 与 ``astream_events`` 消费端共存（ADR-0023）。``None`` = 未配置 / 离线态、不注入。
+        # T-08：建议传入经 :func:`api_layer.langfuse_wrap.wrap_langfuse_handler` 包装的计数代理，
+        # 使 Langfuse 写失败经 ``langfuse_errors_total`` 可见（裸 handler 亦可，但失败不可见）。
         self._langfuse_handler = langfuse_handler
         vis = visibility if visibility is not None else VisibilityConfig()
         self._visibility = vis
@@ -216,6 +222,13 @@ class RunService:
         self._hidden: frozenset[str] = compute_hidden_names(MANIFEST, vis)
         self._config = config or RunServiceConfig()
         self._clock = clock
+        self._metrics = metrics
+        # 脱敏钩子（PRD §3.3，默认关）：注入翻译层，落库 / 推前端前同源递归脱敏。
+        self._redactor = redactor
+        # T-08：在跑 run 的请求任务句柄（session_id → asyncio.Task），供 OpsService 孤儿
+        # 扫描 cancel。一期请求即请求任务本身，正常路径 120s 超时已自清理；此登记仅防御
+        # 病理性长挂（wait_for 未触发）的显式 cancel。
+        self._in_progress: dict[str, asyncio.Task[object]] = {}
 
     # fresh / resume 二态的对外入口。 ----------------------------------- #
 
@@ -243,9 +256,33 @@ class RunService:
 
         await self._enforce_ownership(sid, user_id)
 
-        if has_query:
-            return await self._run_fresh(request, user_id=user_id)
-        return await self._run_resume(request, user_id=user_id)
+        # T-08：结构化日志运行身份（session_id / user_id 由本块管生命周期；trace_id 在
+        # mint / resume 复用后由 :func:`set_trace_id` 设置，退出统一清空）。
+        with log_context(session_id=sid, trace_id="", user_id=user_id):
+            # T-08：登记在跑请求任务，供 OpsService 孤儿扫描 cancel（防御病理性长挂）。
+            task = asyncio.current_task()
+            if task is not None:
+                self._in_progress[sid] = task
+            try:
+                if has_query:
+                    return await self._run_fresh(request, user_id=user_id)
+                return await self._run_resume(request, user_id=user_id)
+            finally:
+                if task is not None:
+                    self._in_progress.pop(sid, None)
+
+    async def cancel_orphan(self, session_id: str) -> bool:
+        """T-08 孤儿扫描 seam：取消该会话在跑的请求任务（如有）。
+
+        正常路径锁 TTL（900s）远大于请求超时（120s），孤儿扫描命中时请求任务多已自清理，
+        本方法为防御病理性长挂的显式 cancel。返回是否找到并取消了任务。
+        """
+
+        task = self._in_progress.pop(session_id, None)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     # ------------------------------------------------------------------ #
     # 会话所有权（PRD §3.2）
@@ -298,6 +335,7 @@ class RunService:
             )
 
         trace_id = str(uuid.uuid4())
+        set_trace_id(trace_id)
         # 获执行锁：INSERT OCND；冲突未过期 → LOCK_EXIST（重复提交）。
         acquired = await self._cache.lock_session(sid, trace_id, now=self._clock())
         if not acquired:
@@ -349,6 +387,7 @@ class RunService:
             raise ApiError(ErrorCode.PAUSE_EXPIRED, f"断点已过期（session={sid}）")
 
         trace_id = pause.trace_id
+        set_trace_id(trace_id)
         state = await self._orch.graph.aget_state(self._config_dict(sid))
         node = state.next[0] if state.next else None
         translator = await self._new_translator(sid, trace_id)
@@ -502,6 +541,8 @@ class RunService:
             hidden=self._hidden,
             clock=self._clock,
             prior_node_instances=prior_instances,
+            metrics=self._metrics,
+            redactor=self._redactor,
         )
 
     async def _drive(
@@ -515,12 +556,21 @@ class RunService:
         astream_events 既是图驱动（消费 async generator 即推进图）又是事件源；翻译层 ``feed``
         仅入队、不 await 落库 → 图推进不被慢写反压（ADR-0023 不变量）。generator 在 interrupt
         暂停或终态时完成；其后由 :meth:`_classify` 据 ``aget_state`` 产 human_pause / stream_finish。
+
+        T-08：包 ``finally`` 记 ``graph_execution_duration_seconds``（墙钟，含超时取消路径）。
         """
 
-        async for ev in self._orch.graph.astream_events(
-            graph_input, config=config, version="v2"
-        ):
-            await translator.feed(ev)
+        start = self._clock()
+        try:
+            async for ev in self._orch.graph.astream_events(
+                graph_input, config=config, version="v2"
+            ):
+                await translator.feed(ev)
+        finally:
+            if self._metrics is not None:
+                self._metrics.graph_execution_duration_seconds.set(
+                    (self._clock() - start).total_seconds()
+                )
 
     async def _cleanup_terminal(self, session_id: str) -> None:
         """终态 / abort / 过期清理：删 pause_meta + 锁行。"""

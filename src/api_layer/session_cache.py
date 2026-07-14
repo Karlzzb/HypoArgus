@@ -29,6 +29,7 @@ from api_layer.errors import PAUSE_TTL_SECONDS
 
 __all__ = [
     "PauseMeta",
+    "LockInfo",
     "SessionCacheBase",
     "InMemorySessionCache",
     "PostgresSessionCache",
@@ -56,6 +57,14 @@ class PauseMeta:
     trace_id: str
     node_id: str
     pause_time: datetime
+
+
+@dataclass(frozen=True)
+class LockInfo:
+    """``session_locks`` 行的扫描视图（T-08 sweep）：``session_id`` + ``trace_id``。"""
+
+    session_id: str
+    trace_id: str
 
 
 class SessionCacheBase(ABC):
@@ -151,6 +160,33 @@ class SessionCacheBase(ABC):
     @abstractmethod
     async def clean_idle(self, *, now: datetime | None = None) -> int:
         """惰性清理：删过期锁（``last_heartbeat + ttl < now``）+ 过期 pause_meta。返回清理条数。"""
+        ...
+
+    # ------------------------------------------------------------------ #
+    # 主动扫描 / 计数（T-08·sweep + /health）
+    # ------------------------------------------------------------------ #
+
+    @abstractmethod
+    async def list_expired_locks(self, *, now: datetime | None = None) -> list[LockInfo]:
+        """枚举过期锁行（``last_heartbeat + ttl < now``），返回 ``(session_id, trace_id)``。
+
+        供 T-08 sweep：对每行查 pause_meta 判孤儿 vs 合法 HITL 暂停（cache 不耦合该判定）。
+        """
+        ...
+
+    @abstractmethod
+    async def list_expired_pauses(self, *, now: datetime | None = None) -> list[PauseMeta]:
+        """枚举过期 pause_meta（``pause_time + PAUSE_TTL_SECONDS < now``）。"""
+        ...
+
+    @abstractmethod
+    async def count_active_locks(self, *, now: datetime | None = None) -> int:
+        """活跃锁数（``last_heartbeat + ttl >= now``），供 /health。"""
+        ...
+
+    @abstractmethod
+    async def ping(self) -> bool:
+        """底层可达性探活（PG 实现发 ``SELECT 1``）；不可达 → ``False``。"""
         ...
 
 
@@ -260,6 +296,33 @@ class InMemorySessionCache(SessionCacheBase):
             self._pauses.pop(sid, None)
             n += 1
         return n
+
+    async def list_expired_locks(self, *, now: datetime | None = None) -> list[LockInfo]:
+        moment = now or self._clock()
+        return [
+            LockInfo(session_id=sid, trace_id=trace)
+            for sid, (trace, _acq, hb, ttl) in self._locks.items()
+            if hb + timedelta(seconds=ttl) < moment
+        ]
+
+    async def list_expired_pauses(self, *, now: datetime | None = None) -> list[PauseMeta]:
+        moment = now or self._clock()
+        return [
+            m
+            for m in self._pauses.values()
+            if m.pause_time + timedelta(seconds=PAUSE_TTL_SECONDS) < moment
+        ]
+
+    async def count_active_locks(self, *, now: datetime | None = None) -> int:
+        moment = now or self._clock()
+        return sum(
+            1
+            for _trace, _acq, hb, ttl in self._locks.values()
+            if hb + timedelta(seconds=ttl) >= moment
+        )
+
+    async def ping(self) -> bool:
+        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -463,3 +526,50 @@ class PostgresSessionCache(SessionCacheBase):
             )
             n += cur.rowcount or 0
         return int(n)
+
+    async def list_expired_locks(self, *, now: datetime | None = None) -> list[LockInfo]:
+        moment = now or _utcnow()
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT session_id, trace_id FROM session_locks "
+                "WHERE last_heartbeat + make_interval(secs => ttl_seconds) < %s",
+                (moment,),
+            )
+            rows = await cur.fetchall()
+        return [LockInfo(session_id=str(r[0]), trace_id=str(r[1])) for r in rows]
+
+    async def list_expired_pauses(self, *, now: datetime | None = None) -> list[PauseMeta]:
+        moment = now or _utcnow()
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT session_id, trace_id, node_id, pause_time FROM pause_meta "
+                "WHERE pause_time + interval '30 minutes' < %s",
+                (moment,),
+            )
+            rows = await cur.fetchall()
+        return [
+            PauseMeta(
+                session_id=str(r[0]),
+                trace_id=str(r[1]),
+                node_id=str(r[2]),
+                pause_time=r[3],
+            )
+            for r in rows
+        ]
+
+    async def count_active_locks(self, *, now: datetime | None = None) -> int:
+        moment = now or _utcnow()
+        row = await self._fetchone(
+            "SELECT count(*) FROM session_locks "
+            "WHERE last_heartbeat + make_interval(secs => ttl_seconds) >= %s",
+            (moment,),
+        )
+        return int(row[0]) if row is not None else 0
+
+    async def ping(self) -> bool:
+        try:
+            async with self._pool.connection() as conn:
+                await conn.execute("SELECT 1")
+        except Exception:
+            return False
+        return True

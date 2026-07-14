@@ -340,6 +340,11 @@ class WSSenderService:
     def metrics(self) -> WsMetrics:
         return self._metrics
 
+    def active_connection_count(self) -> int:
+        """当前活跃 WS-sender 连接数（同会话新连接取代旧连接，故 = 活跃句柄数）。供 /health。"""
+
+        return len(self._active)
+
     async def serve(
         self, websocket: _WebSocket, session_id: str, user_id: str
     ) -> None:

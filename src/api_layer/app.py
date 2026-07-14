@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Header, Request, WebSocket, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from agents.assembly import MANIFEST
@@ -34,6 +35,9 @@ from api_layer.graph_view import (
 )
 from api_layer.run import RunRequest, RunResponse, RunService
 from api_layer.ws import WSSenderService
+
+if TYPE_CHECKING:
+    from api_layer.ops import OpsService
 
 __all__ = ["GraphResponse", "create_app", "default_visibility_path"]
 
@@ -75,11 +79,12 @@ class GraphResponse(BaseModel):
 
 @dataclass(frozen=True)
 class _AppDeps:
-    """装配应用所需依赖（图驱动服务 + WS-sender + 可见性配置路径）。"""
+    """装配应用所需依赖（图驱动服务 + WS-sender + 可见性配置路径 + 运维服务）。"""
 
     run_service: RunService
     ws_service: WSSenderService | None
     visibility_path: Path | None
+    ops_service: OpsService | None
 
 
 def _graph_view_to_response(gv: GraphView) -> GraphResponse:
@@ -113,6 +118,7 @@ def create_app(
     *,
     ws_service: WSSenderService | None = None,
     visibility_path: Path | None = None,
+    ops_service: OpsService | None = None,
 ) -> FastAPI:
     """装配 FastAPI 应用。
 
@@ -122,12 +128,14 @@ def create_app(
     ``trace_events``，WS 断开不中止 run）；缺省 ``None`` 不挂 WS 路由（T-06 前的离线态）。
     ``visibility_path`` 缺省 ``None`` → 全可见（``VisibilityConfig()``），故 ``hitl1→parse+partition``
     回放边出现（PRD §5.4）；传入路径则按部署 override 隐藏节点（文件缺失 → 全可见，不抛）。
+    ``ops_service`` 注入则挂 ``GET /health`` + ``GET /metrics``（T-08·PRD §11）；缺省不挂。
     """
 
     deps = _AppDeps(
         run_service=run_service,
         ws_service=ws_service,
         visibility_path=visibility_path,
+        ops_service=ops_service,
     )
     app = FastAPI(title="HypoArgus 控制面", version="0.1.0")
     app.state.deps = deps
@@ -174,5 +182,23 @@ def create_app(
         session_id = websocket.query_params.get("session_id") or ""
         user_id = websocket.headers.get("x-user-id") or websocket.headers.get("X-User-Id") or ""
         await deps.ws_service.serve(websocket, session_id, user_id)
+
+    # T-08·PRD §11：运维端点（/health + /metrics）。未注入 ``ops_service`` 则不挂。
+    if deps.ops_service is not None:
+        ops = deps.ops_service
+
+        @app.get("/health")
+        async def get_health() -> JSONResponse:
+            """``{db, active_sessions, active_locks, ws_connections}``（PRD §11）。"""
+
+            return JSONResponse(await ops.health())
+
+        @app.get("/metrics")
+        async def get_metrics() -> PlainTextResponse:
+            """Prometheus 文本（PRD §11.1 全量指标）。"""
+
+            return PlainTextResponse(
+                await ops.metrics_text(), media_type="text/plain; version=0.0.4"
+            )
 
     return app

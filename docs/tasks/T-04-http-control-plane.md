@@ -1,10 +1,10 @@
 ---
 id: T-04
 title: HTTP 控制面（/api/agent/run + /graph + 所有权 + session_locks + pause_meta）
-status: todo
-assignee: ""
+status: done
+assignee: "karl"
 blocked_by: ["T-03", "T-02"]
-covers_adr: ["0022"]
+covers_adr: ["0022", "0024"]
 covers_prd: ["§5", "§3.2", "§4.2.3", "§4.2.4", "§4.2.5", "§4.2.6", "§8", "§9.2", "§9.3", "§9.7"]
 layer: [api, storage, tests]
 type: feature
@@ -79,16 +79,16 @@ type: feature
 
 ## Acceptance criteria
 
-- [ ] `src/api_layer/` 包落地；pyproject 增 async web 框架 + `langgraph-checkpoint-postgres` + `psycopg`/`asyncpg` 依赖（conda `HypoArgus` 可装可跑）。
-- [ ] `SessionCacheBase` 抽象基类 + Postgres 实现落地；不含 `get_state`/`save_state`。
-- [ ] `pause_meta` / `session_owner` / `session_locks` 三表 schema 落地（迁移脚本或建表 SQL 记录在仓）。
-- [ ] `POST /api/agent/run` 支持发起（`query`）与续跑（`human_response`），互斥校验、fresh/resume 判定、终止态阻塞返回、`NEED_HUMAN_INPUT` 由 `aget_state` 判定、`human_question`/`hint` 取自 checkpoint。
-- [ ] 全量错误码可达且语义正确：`LOCK_EXIST`（重复提交 / 未处理断点）、`PAUSE_EXPIRED`（断点 30min 超时）、`PARAM_ERROR`、`FORBIDDEN`（跨用户）、`SESSION_LIMIT`、`GRAPH_TIMEOUT`。
-- [ ] 会话所有权强制：跨用户访问 → 403；`session_id` 首见登记绑定。
-- [ ] `session_locks` 行跨请求持有；HITL 暂停期不释放、续跑复用、`stream_finish` 删行。
-- [ ] `GET /api/agent/graph` 返回 §5.4 形状，来自 `build_graph_view`，含 `hitl1→parse+partition` 回放边。
-- [ ] 集成测试：无前端即可用脚本 / `httpx` 驱动完整 HITL 流程（发起 → `NEED_HUMAN_INPUT` → 回填 → `SUCCESS`）与并发 / 跨用户 / 超时 / 重复提交场景。
-- [ ] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
+- [x] `src/api_layer/` 包落地；pyproject 增 async web 框架 + `langgraph-checkpoint-postgres` + `psycopg`/`asyncpg` 依赖（conda `HypoArgus` 可装可跑）。
+- [x] `SessionCacheBase` 抽象基类 + Postgres 实现落地；不含 `get_state`/`save_state`。
+- [x] `pause_meta` / `session_owner` / `session_locks` 三表 schema 落地（迁移脚本或建表 SQL 记录在仓）。
+- [x] `POST /api/agent/run` 支持发起（`query`）与续跑（`human_response`），互斥校验、fresh/resume 判定、终止态阻塞返回、`NEED_HUMAN_INPUT` 由 `aget_state` 判定、`human_question`/`hint` 取自 checkpoint。
+- [x] 全量错误码可达且语义正确：`LOCK_EXIST`（重复提交 / 未处理断点）、`PAUSE_EXPIRED`（断点 30min 超时）、`PARAM_ERROR`、`FORBIDDEN`（跨用户）、`SESSION_LIMIT`、`GRAPH_TIMEOUT`。
+- [x] 会话所有权强制：跨用户访问 → 403；`session_id` 首见登记绑定。
+- [x] `session_locks` 行跨请求持有；HITL 暂停期不释放、续跑复用、`stream_finish` 删行。
+- [x] `GET /api/agent/graph` 返回 §5.4 形状，来自 `build_graph_view`，含 `hitl1→parse+partition` 回放边。
+- [x] 集成测试：无前端即可用脚本 / `httpx` 驱动完整 HITL 流程（发起 → `NEED_HUMAN_INPUT` → 回填 → `SUCCESS`）与并发 / 跨用户 / 超时 / 重复提交场景。
+- [x] 质量门通过（`ruff check` + `mypy --strict` + `pytest`）。
 
 ## Blocked by
 

@@ -15,6 +15,12 @@ dependencies = [
     "langchain-openai>=0.2",
     "langfuse>=3.0",
     "pyyaml>=6.0",
+    # T-04 HTTP 控制面（ADR-0024）：async-native web 框架 + Postgres checkpointer + side-meta 驱动。
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +31,12 @@ dev = [
     "langchain-openai>=0.2",
     "langfuse>=3.0",
     "pyyaml>=6.0",
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
@@ -34,11 +46,16 @@ dev = [
 [tool.setuptools]
 # 扁平 src 布局（ADR-0014）：src/ 为包根，顶层裸名导入。
 package-dir = {"" = "src"}
+include-package-data = true
 # 顶层裸模块（domain core 平铺于 src/ 根，不入子包）。
 py-modules = ["domain", "original_paragraphs", "partition", "status_machine", "tree_invariants"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# schema.sql 随 api_layer 包分发，供 PostgresSessionCache.setup() 经 importlib.resources 读。
+api_layer = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

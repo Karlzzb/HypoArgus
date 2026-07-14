@@ -64,3 +64,39 @@ async def pg_checkpointer():
             yield saver
     finally:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# Postgres SessionCache 集成测试夹具（T-04·ADR-0024）
+#
+# side-metadata 三表（pause_meta / session_owner / session_locks）落同一 Postgres
+# （ADR-0022）。读 HYPOARGUS_PG_DSN（.env 注入）；不可达即 skip——不阻塞离线单测。
+# 与 pg_checkpointer 共用同一 PG 实例；各 test 用唯一 session_id 避免碰撞。
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+async def pg_session_cache():
+    """产一个已 setup 的 :class:`PostgresSessionCache`（side-meta 三表已建）。
+
+    PG 不可达时 skip。
+    """
+
+    from api_layer.session_cache import PostgresSessionCache
+    from runtime.checkpoint import CheckpointConfigError, resolve_pg_dsn
+
+    try:
+        dsn = resolve_pg_dsn()
+    except CheckpointConfigError as exc:
+        pytest.skip(f"Postgres SessionCache 未配置：{exc}")
+        raise  # pragma: no cover  # noqa: RET504 — mypy: pytest.skip 不返回
+    try:
+        async with PostgresSessionCache(dsn) as cache:
+            try:
+                await cache.setup()
+            except Exception as exc:  # psycopg.OperationalError 等
+                pytest.skip(f"Postgres 不可达：{exc}")
+                return  # pragma: no cover
+            yield cache
+    finally:
+        pass

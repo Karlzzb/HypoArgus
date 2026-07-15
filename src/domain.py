@@ -200,7 +200,7 @@ class ParagraphRecord(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# 贯穿 state 域类型（ADR-0021 / PRD §17·Slice 1）
+# 贯穿 state 域类型（ADR-0017 / PRD §17·Slice 1）
 #
 # session_context 为贯穿全链的运行上下文（单写者=入口注入、全链只读，进 LLM 检索与生成
 # seam 的背景）；query_time_range 为本文所需数据查询时间范围（单写者=parse+partition，
@@ -209,7 +209,7 @@ class ParagraphRecord(BaseModel):
 
 
 class TimeRange(BaseModel):
-    """数据查询时间范围（ADR-0021）。
+    """数据查询时间范围（ADR-0017）。
 
     ``start`` / ``end`` 为日期（可空，表示无界）；``rationale`` 为时间窗的说明。
     当前由 ``parse+partition`` 以桩值注入（不真实调 LLM 识别），供 retrieval / rewrite /
@@ -222,7 +222,7 @@ class TimeRange(BaseModel):
 
 
 class SessionContext(BaseModel):
-    """贯穿全链的运行上下文（ADR-0021）。
+    """贯穿全链的运行上下文（ADR-0017）。
 
     单写者=入口注入（``runtime/run_real.py``，与 ``original_doc`` 同入 START），全链只读。
     供 LLM 检索与生成 seam 携带一致的运行背景（同一会话多轮调用可对齐）。
@@ -240,7 +240,7 @@ DEFAULT_QUERY_TIME_RANGE: TimeRange = TimeRange(
     end=date(2026, 12, 31),
     rationale="默认值·真实识别待后续",
 )
-"""``query_time_range`` 的伪代码桩（PRD §22 / ADR-0021）。
+"""``query_time_range`` 的伪代码桩（PRD §22 / ADR-0017）。
 
 当前不真实调 LLM 识别时间范围——由 ``parse+partition`` 直接注入此默认值（2025–2026）。
 真实 LLM 时间识别属后续切片（PRD Out of Scope），届时替换为 LLM 产出的 ``TimeRange``。
@@ -252,7 +252,7 @@ DEFAULT_SESSION_CONTEXT: SessionContext = SessionContext(
     current_time=datetime(2025, 1, 1, 0, 0, 0),
     user_prompt="",
 )
-"""``session_context`` 的确定性桩（ADR-0021）。
+"""``session_context`` 的确定性桩（ADR-0017）。
 
 入口未显式注入时（如测试 ``orch.run(doc)``）用此桩，保 ``current_time`` 固定、可测可复现。
 真实运行时刻由 ``runtime/run_real.py`` 注入（``datetime.now()``），不在此处取实时时间。

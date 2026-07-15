@@ -1,4 +1,4 @@
-"""Langfuse 观测 seam：把 LangChain/LangGraph callback handler 接到流水线（ADR-0016 回调线程）。
+"""Langfuse 观测 seam：把 LangChain/LangGraph callback handler 接到流水线（ADR-0017 回调线程）。
 
 ``Orchestrator.run_with_report`` 已透传 ``RunnableConfig`` 到 ``graph.invoke``，其 ``callbacks``
 线程贯穿整条 Agent 链路、业务节点零侵入（见 :mod:`runtime.orchestrator` 的 ``session_config``

@@ -34,7 +34,7 @@ from original_paragraphs import OriginalParagraphs
 from tree_invariants import validate_tree
 
 # --------------------------------------------------------------------------- #
-# 贯穿 state 域类型（ADR-0021 / PRD §17·Slice 1）
+# 贯穿 state 域类型（ADR-0017 / PRD §17·Slice 1）
 #
 # SessionContext / TimeRange 为贯穿全链的运行上下文与时间范围；query_time_range 当前为桩
 # （默认 2025–2026，真实 LLM 时间识别待后续切片）。这些类型是 LLM seam 输入背景的载体。
@@ -85,7 +85,7 @@ def test_default_session_context_is_deterministic():
 
 
 # --------------------------------------------------------------------------- #
-# ParseResult 扩展（ADR-0021 / PRD §17·Slice 1）
+# ParseResult 扩展（ADR-0017 / PRD §17·Slice 1）
 #
 # parse+partition 在同一次 LLM 调用里多吐 query_time_range（桩，默认 2025–2026）与
 # paragraph_summaries（paragraph_id → 摘要）。当前 query_time_range 由 agent 注桩、
@@ -120,7 +120,7 @@ def test_parse_result_accepts_paragraph_summaries_from_llm():
 
 
 # --------------------------------------------------------------------------- #
-# parse() 返回 ParseOutput（ADR-0021 / PRD §17·Slice 1）
+# parse() 返回 ParseOutput（ADR-0017 / PRD §17·Slice 1）
 #
 # parse+partition 在同一次 LLM 调用里多吐 query_time_range（桩）与段落摘要（折叠进
 # paragraph_list.summary）；公开函数 parse() 因此返回 ParseOutput（argument_tree +

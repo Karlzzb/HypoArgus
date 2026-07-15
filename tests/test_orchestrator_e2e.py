@@ -114,7 +114,7 @@ def test_e2e_rejects_str_input():
 
 
 # --------------------------------------------------------------------------- #
-# 贯穿 state：session_context + query_time_range（ADR-0021 / PRD §17·Slice 1）
+# 贯穿 state：session_context + query_time_range（ADR-0017 / PRD §17·Slice 1）
 #
 # session_context 由入口注入（与 original_doc 同入 START）、全链只读；query_time_range
 # 由 parse+partition 注桩（默认 2025–2026）。二者须贯穿到 END、且不破坏「无触达段终稿
@@ -156,7 +156,7 @@ def test_e2e_injected_session_context_reaches_end_and_keeps_byte_identity():
 
 
 # --------------------------------------------------------------------------- #
-# 批量检索节点（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）
+# 批量检索节点（PRD §8 / ADR-0017 · Slice 4 · 当前伪代码桩）
 #
 # retrieval 节点紧随 hypothesis_propose：批量接收 argument_tree + hypotheses +
 # query_time_range + session_context，统一写回 citations channel。当前为伪代码桩——
@@ -197,11 +197,13 @@ def test_e2e_retrieval_stub_empty_citations_byte_identity():
 
 
 def test_e2e_retrieval_node_threads_context_and_query_time_range():
-    """retrieval 节点把 session_context / query_time_range / argument_tree / hypotheses 穿给检索 fn。
+    """retrieval 节点把 session_context / query_time_range / argument_tree / hypotheses /
+    paragraph_list 穿给检索 fn。
 
-    用记录型 retrieval fn 替换桩，断言 build 闭包从 state 读出四类输入并下传——
-    「session_context / query_time_range 被读取」的 seam 诚实性由此守住（真实后端
-    后续切片接入时这些背景已就位、拓扑不动）。
+    用记录型 retrieval fn 替换桩，断言 build 闭包从 state 读出五类输入并下传——
+    「session_context / query_time_range 被读取」与「paragraph_list 被读取（PRD §Q2 最小放宽，
+    段原文经此通道下传真实后端）」的 seam 诚实性由此守住（真实后端后续切片接入时这些背景
+    已就位、拓扑不动）。
     """
 
     import datetime
@@ -212,12 +214,13 @@ def test_e2e_retrieval_node_threads_context_and_query_time_range():
     seen: dict[str, object] = {}
 
     def recording_retrieval(
-        argument_tree, hypotheses, query_time_range, session_context
+        argument_tree, hypotheses, query_time_range, session_context, paragraph_list
     ):
         seen["argument_tree"] = argument_tree
         seen["hypotheses"] = hypotheses
         seen["query_time_range"] = query_time_range
         seen["session_context"] = session_context
+        seen["paragraph_list"] = paragraph_list
         return {}  # 仍产空 citations，不触达原文
 
     agents = replace(base, retrieval=recording_retrieval)
@@ -233,11 +236,13 @@ def test_e2e_retrieval_node_threads_context_and_query_time_range():
     out = orch.run(doc, session_context=sc)
 
     assert out == doc  # 记录型 fn 仍不触达原文 → 逐字节还原
-    # 四类输入自 state 穿至检索 fn。
+    # 五类输入自 state 穿至检索 fn。
     assert len(seen["argument_tree"]) == 3  # parse 桩产 3 段影子节点
     assert seen["hypotheses"] == {}  # hypothesis_propose 桩产空
     assert seen["query_time_range"] == DEFAULT_QUERY_TIME_RANGE  # parse+partition 注的桩
     assert seen["session_context"] == sc  # 入口注入、贯穿到 retrieval
+    assert len(seen["paragraph_list"]) == 3  # parse 桩产 3 段聚合根
+    assert all(r.original_content for r in seen["paragraph_list"])  # 段原文经 paragraph_list 下传
 
 
 # --------------------------------------------------------------------------- #

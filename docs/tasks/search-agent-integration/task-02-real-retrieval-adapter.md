@@ -68,7 +68,7 @@
 
 ### Q1 — 挂 retrieval seam（否 replace-judgment 拓扑）
 
-- 接 retrieval seam（填 manifest `real=None`）。judgment 节点 + 其内串联的 merge/impact/consistency 纯函数**原样不动**（ADR-0019：judgment 是检索后唯一整树写者；子智能体不复制 12 格矩阵 / invalid 传导 / issue_tags）。
+- 接 retrieval seam（填 manifest `real=None`）。judgment 节点 + 其内串联的 merge/impact/consistency 纯函数**原样不动**（ADR-0017：judgment 是检索后唯一整树写者；子智能体不复制 12 格矩阵 / invalid 传导 / issue_tags）。
 - `with_llm=False` 跑、丢弃 `verdict`、judgment 的 `QwenJudgmentLlmClient` 照旧吃 `citations` 判终态——无双倍 LLM 成本、judgment 仍是唯一裁决者。
 - 否掉"复用 verdict"（需新增 state channel 传 verdict = 改框架，或 judgment 再调一次子智能体 = 双倍调用）。
 

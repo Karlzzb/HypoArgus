@@ -49,7 +49,7 @@ vendor 的子智能体源码入仓，作 vendored third-party 排除出严格质
 ### Q1 — 挂载点：retrieval seam，否掉"替换 retrieval+judgment"拓扑
 
 子智能体接入 retrieval seam（填 manifest 的 `real=None`）。
-judgment 节点 + 其内串联的 merge/impact/consistency 纯函数**原样不动**（ADR-0019：judgment 是检索后唯一整树写者；子智能体不复制 12 格矩阵 / invalid 传导 / issue_tags）。
+judgment 节点 + 其内串联的 merge/impact/consistency 纯函数**原样不动**（ADR-0017：judgment 是检索后唯一整树写者；子智能体不复制 12 格矩阵 / invalid 传导 / issue_tags）。
 否掉 standby 区集成文档主张的"SearchAgent 替换 retrieval + judgment 两节点 / `hypothesis_propose → search_agent → downstream`"拓扑。
 verdict 处理（精化版 a）：子智能体以 `with_llm=False` 跑（装 `DeterministicEvidenceJudge`、确定性、不调 LLM、零成本，但 judge 仍嵌 flow 内不可跳过）；**丢弃** `TaskDecision.verdict`；judgment 的 `QwenJudgmentLlmClient` 照旧吃 `citations` 判终态。
 否掉"复用 verdict"方案（需新增 state channel 传 verdict = 改框架，或 judgment 再调一次子智能体 = 双倍调用）。

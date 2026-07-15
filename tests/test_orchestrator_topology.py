@@ -85,7 +85,7 @@ def test_default_pipeline_is_immutable_tuple_of_frozen_specs():
     # hitl1 紧随 parse+partition。
     hitl1 = next(s for s in spec if s.name == "hitl1")
     assert hitl1.deps == ("parse+partition",)
-    # hitl1 为 partition 确认闸门 + 有界打回（ADR-0018）：条件路由 seam 表达受控打回边
+    # hitl1 为 partition 确认闸门 + 有界打回（ADR-0017）：条件路由 seam 表达受控打回边
     # hitl1 → parse+partition；max_replays 为打回上限（驱动图 recursion 预算缩放）。
     assert hitl1.route is not None
     assert hitl1.max_replays == 3
@@ -95,7 +95,7 @@ def test_default_pipeline_is_immutable_tuple_of_frozen_specs():
     # retrieval 紧随 hypothesis_propose（批量检索桩·Slice 4）。
     retrieval = next(s for s in spec if s.name == "retrieval")
     assert retrieval.deps == ("hypothesis_propose",)
-    # judgment 五合一节点（ADR-0019）紧随 retrieval。
+    # judgment 五合一节点（ADR-0017）紧随 retrieval。
     judgment = next(s for s in spec if s.name == "judgment")
     assert judgment.deps == ("retrieval",)
     # rewrite_loop 紧随 judgment（逐段提议重写·Slice 6）。

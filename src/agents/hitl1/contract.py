@@ -1,4 +1,4 @@
-"""HITL-1 partition 确认闸门契约（PRD §10 节点 1、ADR-0018）。
+"""HITL-1 partition 确认闸门契约（PRD §10 节点 1、ADR-0017）。
 
 ADR-0014 子包拆分：``contract.py`` 放会话级决策 + 编辑 op 判别联合 + 闸门 Protocol +
 Fake 桩 + partition 闸门产出，``agent.py`` 放 ``confirm`` / ``confirm_partition`` 纯函数。
@@ -9,7 +9,7 @@ Fake 桩 + partition 闸门产出，``agent.py`` 放 ``confirm`` / ``confirm_par
 - **确认继续**（``SKIP`` / ``ACCEPT`` / ``EDIT``）——既有结构编辑语义收编于此：跳过 / 接受 /
   应用结构编辑序列后向下游推进（编辑改树形不改文本）。
 - **打回重跑**（``REPLAY``）——按用户 prompt 重跑 ``parse+partition``（当前伪代码桩，
-  ADR-0020）；打回**打破「绝不打回」**（ADR-0018），须**有界**（max retries 默认 3），
+  ADR-0017）；打回**打破「绝不打回」**（ADR-0017），须**有界**（max retries 默认 3），
   超限向前推进 + 贴 ``partition_retry_exhausted``（受控分支、非异常降级）。
 
 与解析器对 LLM 的防御性兜底**非对称**：解析器遇环即断、越界即兜底（LLM 不可信）；HITL-1
@@ -49,7 +49,7 @@ __all__ = [
 
 
 class Hitl1Action(StrEnum):
-    """HITL-1 会话级决策（ADR-0018：两类语义收编）。
+    """HITL-1 会话级决策（ADR-0017：两类语义收编）。
 
     ``SKIP`` / ``ACCEPT`` / ``EDIT`` = **确认继续**（跳过 / 接受 / 应用结构编辑后向下游）；
     ``REPLAY`` = **打回重跑** ``parse+partition``（有界，超限贴标签向前）。
@@ -58,7 +58,7 @@ class Hitl1Action(StrEnum):
     SKIP = "skip"  # 跳过 → 确认继续，不改动原文一个字
     ACCEPT = "accept"  # 接受解析树原样 → 确认继续
     EDIT = "edit"  # 应用结构编辑序列 → 确认继续
-    REPLAY = "replay"  # 打回重跑 parse+partition（ADR-0018·有界）
+    REPLAY = "replay"  # 打回重跑 parse+partition（ADR-0017·有界）
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +127,7 @@ class Hitl1Decision(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# partition 确认闸门产出（ADR-0018）
+# partition 确认闸门产出（ADR-0017）
 # --------------------------------------------------------------------------- #
 
 
@@ -135,14 +135,14 @@ class Hitl1Route(StrEnum):
     """hitl1 节点的路由裁决：确认继续向下游 / 打回重跑上游。
 
     ``confirm_partition`` 据闸门决策产出，图层级条件边据 ``hitl1_route`` channel 读之
-    路由（ADR-0018 受控打回边 ``hitl1 → parse+partition``）。
+    路由（ADR-0017 受控打回边 ``hitl1 → parse+partition``）。
     """
 
     CONTINUE = "continue"  # 确认继续 → 下游（verification ∥ hypothesis）
     REPLAY = "replay"  # 打回重跑 → parse+partition（有界；超限改 CONTINUE + 贴标签）
 
 
-#: 打回重跑的最大次数（ADR-0018，默认 3）。超限即向前推进 + 贴 ``partition_retry_exhausted``。
+#: 打回重跑的最大次数（ADR-0017，默认 3）。超限即向前推进 + 贴 ``partition_retry_exhausted``。
 DEFAULT_MAX_PARTITION_RETRIES = 3
 
 

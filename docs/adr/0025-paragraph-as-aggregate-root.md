@@ -3,7 +3,7 @@
 ## 状态
 
 已接受（2026-07-15）。取代 ADR-0005 决策 2（「节点存原句」→「段落存原句」）。
-本 ADR 是「段落为聚合根」数据结构重对齐的记录，配套 PRD 见 `docs/prd-paragraph-aggregate-root.md`、任务拆解见 `docs/tasks/paragraph-aggregate-root.md`。
+本 ADR 是「段落为聚合根」数据结构重对齐的记录；字段流向见 `docs/STATE.md` §1（`paragraph_list`）/ §2.3（`ParagraphRecord`），术语见 `CONTEXT.md`。
 
 ## 背景
 

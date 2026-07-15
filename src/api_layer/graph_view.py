@@ -10,7 +10,7 @@
 - 起始边：``deps == ()`` 的节点接 ``__start__``（orchestrator 的 ``START``）。
 - 终止边：不被任何节点依赖的节点接 ``__end__``（orchestrator 的 ``END``）。
 - 回放边：``route is not None`` 且 ``max_replays > 0`` 的节点有一条条件回放边回到其上游
-  dep（ADR-0018：``hitl1 → parse+partition``，``cond="replay"``、``max=max_replays``）。
+  dep（ADR-0017：``hitl1 → parse+partition``，``cond="replay"``、``max=max_replays``）。
 
 可见性旋钮（``config/visibility.yaml`` 经 :func:`load_visibility` 载入）只影响**展示**：
 ``visible=False`` 节点不出现在 ``nodes``、其前后可见节点补直连边（隐藏中间节点 H 时，每条
@@ -180,7 +180,7 @@ def build_graph_view(
         if entry.name not in depended:
             raw_edges.append(GraphEdge(source=entry.name, target=_END_NODE))
         if entry.route is not None and entry.max_replays > 0:
-            # ADR-0018 受控打回边：回到上游 dep（hitl1 → parse+partition）。
+            # ADR-0017 受控打回边：回到上游 dep（hitl1 → parse+partition）。
             # 架构不变式：有 route 且 max_replays>0 的节点恰一上游 dep（打回目标）。
             target = entry.deps[0]
             raw_edges.append(

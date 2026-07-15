@@ -6,28 +6,29 @@
 
 ## 1. 节点身份
 
-- **图/阶段名**：`retrieval`（MANIFEST @ `src/agents/assembly.py:849-859`）
+- **图/阶段名**：`retrieval`（MANIFEST @ `src/agents/assembly.py:856-867`）
 - **节点入口闭包**：`_retrieval_node(agents)` → `retrieval_node(state)`
-  - 源码：`src/agents/assembly.py:625-655`
-- **注入的可调用**：`agents.retrieval`（Protocol `RetrievalFn` @ `assembly.py:165-182`）
-- **当前实现**：桩 `_stub_retrieval` @ `assembly.py:316-331`，返回空 citations；
-  **真实检索后端 = `None`，显式 Out of Scope**（MANIFEST `real=None`，`assembly.py:852`）。
+  - 源码：`src/agents/assembly.py:630-663`
+- **注入的可调用**：`agents.retrieval`（Protocol `RetrievalFn` @ `assembly.py:165-186`）
+- **当前实现**：桩 `_stub_retrieval` @ `assembly.py:320-336`，返回空 citations；
+  **真实检索后端 = `None`，显式 Out of Scope**（MANIFEST `real=None`，`assembly.py:860`）。
   `infra.retrieval` 接口层在接入真实后端时**不变**。
 
-> 桩读取 `session_context` / `query_time_range` 但不触发联网——仅"穿背景"供真实后端就位。
+> 桩读取 `session_context` / `query_time_range` / `paragraph_list` 但不触发联网——仅"穿背景"供真实后端就位。
 > 检索 fn 异常即"本轮无 citations"：记日志、空 citations 向前，下游见无素材、终稿逐字节等于原文（PRD §13 单向向前）。
 
 ## 2. 输入（从 state 读取）
 
-读取全部发生在节点闭包 `assembly.py:638-641`。
-`RetrievalFn` Protocol 形参与之一一对应（`assembly.py:176-182`）。
+读取全部发生在节点闭包 `assembly.py:644-648`。
+`RetrievalFn` Protocol 形参与之一一对应（`assembly.py:179-186`）。
 
 | 字段 | 类型 | 读取处 | 通道定义 | 写者（上游来源） | 备注 |
 |---|---|---|---|---|---|
-| `argument_tree` | `list[Argument]` | `assembly.py:638`（`state["argument_tree"]`） | `orchestrator.py:155`，reducer `merge_argument_tree` | parse+partition / judgment | 桩不据此搜索，但携带以便真实后端按 `argument_id` 索引 citations。 |
-| `hypotheses` | `dict[str, list[Hypothesis]]` | `assembly.py:639`（`state.get("hypotheses", {})`） | `orchestrator.py:156`，reducer `_merge_dict` | hypothesis_propose（唯一写者） | 缺省 `{}`。`Hypothesis.text` 是检索的 query 输入（`RetrievalFn` docstring `assembly.py:168-169`）。 |
-| `query_time_range` | `TimeRange` | `assembly.py:640`（`state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)`） | `orchestrator.py:153`，无 reducer | parse+partition（桩值） | 缺省 `DEFAULT_QUERY_TIME_RANGE`。 |
-| `session_context` | `SessionContext` | `assembly.py:641`（`state["session_context"]`） | `orchestrator.py:152`，无 reducer | entry 注入（`runtime/run_real.py`） | **必填键**，直接索引（非 `.get`）。全链只读。 |
+| `argument_tree` | `list[Argument]` | `assembly.py:644`（`state["argument_tree"]`） | `orchestrator.py:155`，reducer `merge_argument_tree` | parse+partition / judgment | 桩不据此搜索，但携带以便真实后端按 `argument_id` 索引 citations。 |
+| `hypotheses` | `dict[str, list[Hypothesis]]` | `assembly.py:645`（`state.get("hypotheses", {})`） | `orchestrator.py:156`，reducer `_merge_dict` | hypothesis_propose（唯一写者） | 缺省 `{}`。`Hypothesis.text` 是检索的 query 输入（`RetrievalFn` docstring `assembly.py:168-169`）。 |
+| `query_time_range` | `TimeRange` | `assembly.py:646`（`state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)`） | `orchestrator.py:153`，无 reducer | parse+partition（桩值） | 缺省 `DEFAULT_QUERY_TIME_RANGE`。 |
+| `session_context` | `SessionContext` | `assembly.py:647`（`state["session_context"]`） | `orchestrator.py:152`，无 reducer | entry 注入（`runtime/run_real.py`） | **必填键**，直接索引（非 `.get`）。全链只读。 |
+| `paragraph_list` | `list[ParagraphRecord]` | `assembly.py:648`（`state.get("paragraph_list", [])`） | `orchestrator.py:154`，reducer `merge_paragraph_list` | parse+partition / hitl1 | 缺省 `[]`。PRD §Q2 最小放宽：补回段原文通道（`Argument` 无文本字段，ADR-0025 代价）。forward `target_text` 取段 `original_content` 属 Slice 2 适配器侧构造，本节点只读穿下去。与 judgment / hypothesis_propose / rewrite_loop 同 family。 |
 
 ### 支撑类型定义
 
@@ -40,10 +41,10 @@
 
 | 字段 | 类型 | reducer | 写入处 | 唯一写者？ |
 |---|---|---|---|---|
-| `citations` | `dict[str, list[Source]]` | `_merge_dict` | `assembly.py:644-651`（正常路径：`{"citations": agents.retrieval(...)}`）；`assembly.py:652`（兜底：`{"citations": {}}`） | **是**——retrieval 是 `citations` 唯一写者（STATE.md §1 line 44、§1.2 line 69）。 |
+| `citations` | `dict[str, list[Source]]` | `_merge_dict` | `assembly.py:652-658`（正常路径：`{"citations": agents.retrieval(...)}`）；`assembly.py:660`（兜底：`{"citations": {}}`） | **是**——retrieval 是 `citations` 唯一写者（STATE.md §1 line 44、§1.2 line 69）。 |
 | `errors`（仅兜底路径） | `list[str]` | `_append_errors`（append） | `assembly.py:465` 经 `_log_error_patch` | 非 retrieval 的正式输出，仅在异常兜底时 append。 |
 
-写入经 `_guarded("retrieval", body, fallback)`（`assembly.py:642-653`）：
+写入经 `_guarded("retrieval", body, fallback)`（`assembly.py:649-661`）：
 任何非 `Hitl2GateError` / 非 `GraphBubbleUp` 异常降级为 `{"citations": {}}` + `errors` append。
 
 ## 4. 检索结果元素 schema — `Source`
@@ -73,6 +74,6 @@
 ## 6. 接入真实后端的契约边界
 
 - `RetrievalLayer.retrieve` 真实后端位于 `src/infra/retrieval.py`；
-  接入时 **state 侧契约（上述输入 4 字段、输出 `citations` 单写者、`Source` schema、`_merge_dict` 按 key 替换语义）应保持不变**。
+  接入时 **state 侧契约（上述输入 5 字段、输出 `citations` 单写者、`Source` schema、`_merge_dict` 按 key 替换语义）应保持不变**。
 - 当前桩 `real=None`，故真实后端尚未联网；
-  外部子代理开发人员据此 4 输入 / 1 输出 + `Source` schema 规划接入。
+  外部子代理开发人员据此 5 输入 / 1 输出 + `Source` schema 规划接入。

@@ -170,7 +170,7 @@ def test_retrieval_exception_falls_back_to_empty_citations_and_logs():
 
     base = create_stub_agents()
 
-    def throwing_retrieval(argument_tree, hypotheses, query_time_range, session_context):
+    def throwing_retrieval(argument_tree, hypotheses, query_time_range, session_context, paragraph_list):
         raise RuntimeError("retrieval boom")
 
     agents = replace(base, retrieval=throwing_retrieval)
@@ -225,7 +225,7 @@ def test_guarded_still_swallows_plain_runtime_error() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# hitl1 partition 确认闸门 + 有界打回（ADR-0018 / ADR-0020·Slice 2）
+# hitl1 partition 确认闸门 + 有界打回（ADR-0017 §2/§4·Slice 2）
 #
 # hitl1 重定义为 partition 确认闸门：确认继续（skip/accept/edit）→ 下游；打回重跑
 # （replay）→ 重跑 parse+partition（按 user prompt，当前伪代码桩——原样重切、字节级自检不变）。

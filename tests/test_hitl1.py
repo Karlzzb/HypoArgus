@@ -469,7 +469,7 @@ def test_confirm_edit_sequence_invalid_step_rejects_wholesale():
 
 
 # --------------------------------------------------------------------------- #
-# slice 6（重构·ADR-0018）：confirm_partition — partition 确认闸门 + 有界打回
+# slice 6（重构·ADR-0017）：confirm_partition — partition 确认闸门 + 有界打回
 #
 # hitl1 重定义为 partition 确认闸门：人确认段落切分是否合理；确认继续（skip/accept/edit）
 # → 下游；打回重跑（replay）→ 重跑 parse+partition（按 user prompt，当前伪代码桩）。

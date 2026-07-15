@@ -97,7 +97,7 @@ __all__ = [
 class ParseFn(Protocol):
     """论证结构解析（#2 接入真实 LLM 解析）。返回初始论证树 + 时间范围（桩）+ 段落摘要。
 
-    partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0021 / Slice 1）：
+    partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0017 / Slice 1）：
     partition 的纯代码切分 + 字节级自检由 build 闭包承担，本 Protocol 承载 parse 语义——
     产 ``ParseOutput``（argument_tree + query_time_range 桩 + paragraph_list（含 summary））。
     """
@@ -106,7 +106,7 @@ class ParseFn(Protocol):
 
 
 class Hitl1Fn(Protocol):
-    """HITL-1 partition 确认闸门（ADR-0018·重定义）。
+    """HITL-1 partition 确认闸门（ADR-0017·重定义）。
 
     读 ``argument_tree`` + ``paragraph_list`` + 打回计数 ``retry_count``，经
     :func:`agents.hitl1.confirm_partition` 产 :class:`agents.hitl1.Hitl1Outcome`（确认后的树 +
@@ -163,14 +163,17 @@ class HypothesisProposeFn(Protocol):
 
 
 class RetrievalFn(Protocol):
-    """批量检索（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）。
+    """批量检索（PRD §8 / ADR-0017 · Slice 4 · 当前伪代码桩）。
 
     紧随 hypothesis_propose：批量接收 ``argument_tree`` + ``hypotheses``（含假说文本，作
-    查询输入）+ ``query_time_range`` + ``session_context``，统一返回 citations
+    查询输入）+ ``query_time_range`` + ``session_context`` + ``paragraph_list``，统一返回 citations
     （key 为 ``argument_id`` 如 ``n0001`` / ``bg-...`` 或 ``hypothesis_id`` 如 ``h-...``，
     两套 id 不冲突）。当前桩不真实检索、产空 citations（``infra.retrieval`` 接口层
     的白名单 / 权限 / 模板契约不动，真实后端后续切片接入）。读 ``session_context`` /
-    ``query_time_range`` 不触发联网——仅穿背景供真实后端就位。
+    ``query_time_range`` / ``paragraph_list`` 不触发联网——仅穿背景供真实后端就位。
+    ``paragraph_list`` 是 PRD §Q2 最小放宽：补回段原文通道（``Argument`` 无文本字段，
+    ADR-0025 代价），forward ``target_text`` 取段 ``original_content`` 属 Slice 2 适配器侧构造，
+    本 Protocol 只穿下去；与 judgment / hypothesis_propose / rewrite_loop 同 family。
     """
 
     def __call__(
@@ -179,6 +182,7 @@ class RetrievalFn(Protocol):
         hypotheses: dict[str, list[Hypothesis]],
         query_time_range: TimeRange,
         session_context: SessionContext,
+        paragraph_list: list[ParagraphRecord],
     ) -> dict[str, list[Source]]: ...
 
 
@@ -293,7 +297,7 @@ def _stub_hitl1(
 
     恒返回 CONTINUE、计数不变、不 exhausted——桩路径下不触发打回循环、parse+partition
     仅运行一次，「无触达段终稿逐字节等于原文」承诺由此成立。真实闸门（真实 ``interrupt`` +
-    ``Command(resume)``）属后续切片；partition prompt 驱动重切（ADR-0020）亦为后续切片。
+    ``Command(resume)``）属后续切片；partition prompt 驱动重切（ADR-0017）亦为后续切片。
     """
 
     return Hitl1Outcome(
@@ -318,11 +322,12 @@ def _stub_retrieval(
     hypotheses: dict[str, list[Hypothesis]],
     query_time_range: TimeRange,
     session_context: SessionContext,
+    paragraph_list: list[ParagraphRecord],
 ) -> dict[str, list[Source]]:
     """检索桩（PRD §8 / Slice 4）：不真实检索、只穿 state、产空 citations。
 
-    ``session_context`` / ``query_time_range`` 被读取（穿至 seam、供真实后端就位）但不
-    触发联网；``argument_tree`` / ``hypotheses`` 接过但不发起查询。返回空 citations
+    ``session_context`` / ``query_time_range`` / ``paragraph_list`` 被读取（穿至 seam、供真实
+    后端就位）但不触发联网；``argument_tree`` / ``hypotheses`` 接过但不发起查询。返回空 citations
     → 下游 judgment / rewrite_loop 见无素材、不触达任何段，「无触达段终稿逐字节等于原文」
     承诺继续成立。真实后端（批量循环 ``RetrievalLayer.retrieve``）后续切片接入，
     ``infra.retrieval`` 接口层不变。
@@ -339,7 +344,7 @@ def _stub_judgment(
     session_context: SessionContext,
     query_time_range: TimeRange,
 ) -> JudgmentOutcome:
-    """裁决桩（ADR-0019·Slice 5）：不判终态、调纯函数向前（空裁决 → 全 KEEP → 未触达）。
+    """裁决桩（ADR-0017·Slice 5）：不判终态、调纯函数向前（空裁决 → 全 KEEP → 未触达）。
 
     委托 :func:`judge_and_adjudicate` 用 :class:`agents.judgment.FakeJudgmentLlmClient`
     （默认空 :class:`JudgmentResult`）——无裁决 → ``argument_credibility`` 空、假说保持
@@ -472,7 +477,7 @@ def _guarded(
 
 def _parse_partition_node(agents: Agents) -> NodeFn:
     def parse_partition_node(state: PipelineState) -> dict[str, object]:
-        """parse+partition 合并节点（PRD §1 / ADR-0021 / Slice 1）。
+        """parse+partition 合并节点（PRD §1 / ADR-0017 / Slice 1）。
 
         partition 纯代码切分 + 字节级自检（硬停，不兜底），parse 建树 + 顺产
         query_time_range（桩）/ paragraph_list（异常 → 记日志 + 空树向前，PRD §13）。
@@ -525,11 +530,11 @@ def _hitl1_outcome_patch(outcome: Hitl1Outcome) -> dict[str, object]:
 
 def _hitl1_node(agents: Agents) -> NodeFn:
     def hitl1_node(state: PipelineState) -> dict[str, object]:
-        """HITL-1 partition 确认闸门（ADR-0018）。
+        """HITL-1 partition 确认闸门（ADR-0017）。
 
         人确认段落切分是否合理：确认继续（skip/accept/edit）→ 条件边走默认下游；
         打回重跑（replay）→ 条件边路由回 ``parse+partition``（按 user prompt，当前伪代码桩、
-        重切原样不触达原文）。打回有界（``max_retries`` 默认 3，ADR-0018）；超限向前推进 +
+        重切原样不触达原文）。打回有界（``max_retries`` 默认 3，ADR-0017）；超限向前推进 +
         贴 ``partition_retry_exhausted``（受控分支、**不**经 ``_guarded`` 异常降级）。
         ``agents.hitl1`` 异常仍经 ``_guarded``：记日志 + 保留 stale 树 + route=continue 向前。
         """
@@ -554,7 +559,7 @@ def _hitl1_node(agents: Agents) -> NodeFn:
 
 def _judgment_node(agents: Agents) -> NodeFn:
     def judgment_node(state: PipelineState) -> dict[str, object]:
-        """裁决五合一节点（ADR-0019·Slice 5）。异常 → 覆盖范围内未判决节点置 error + 日志。
+        """裁决五合一节点（ADR-0017·Slice 5）。异常 → 覆盖范围内未判决节点置 error + 日志。
 
         吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/
         consistency 纯函数、整树写回 ``argument_tree``（单写者，故裁撤
@@ -624,21 +629,23 @@ def _hypothesis_propose_node(agents: Agents) -> NodeFn:
 
 def _retrieval_node(agents: Agents) -> NodeFn:
     def retrieval_node(state: PipelineState) -> dict[str, object]:
-        """批量检索节点（PRD §8 / ADR-0019 · Slice 4 · 当前伪代码桩）。异常 → 降级空
+        """批量检索节点（PRD §8 / ADR-0017 · Slice 4 · 当前伪代码桩）。异常 → 降级空
         citations + 日志、单向向前（PRD §13）。
 
-        读 ``argument_tree`` + ``hypotheses`` + ``query_time_range`` + ``session_context``，
-        调 ``agents.retrieval`` 批量检索、统一写回 ``citations`` channel（单写者=retrieval、
-        reducer=_merge_dict）。当前桩不真实检索、返回空 citations（真实后端后续切片接入，
-        ``infra.retrieval`` 接口层不变）。``session_context`` / ``query_time_range`` 被读取
-        但不触发联网——仅穿背景供真实后端就位。检索 fn 异常即「本轮无 citations」——不卡死，
-        记日志、空 citations 向前，下游见无素材、不触达任何段，终稿逐字节等于原文。
+        读 ``argument_tree`` + ``hypotheses`` + ``query_time_range`` + ``session_context`` +
+        ``paragraph_list``，调 ``agents.retrieval`` 批量检索、统一写回 ``citations`` channel
+        （单写者=retrieval、reducer=_merge_dict）。当前桩不真实检索、返回空 citations（真实后端
+        后续切片接入，``infra.retrieval`` 接口层不变）。``session_context`` / ``query_time_range`` /
+        ``paragraph_list`` 被读取但不触发联网——仅穿背景供真实后端就位。检索 fn 异常即「本轮
+        无 citations」——不卡死，记日志、空 citations 向前，下游见无素材、不触达任何段，
+        终稿逐字节等于原文。
         """
 
         argument_tree = state["argument_tree"]
         hypotheses = state.get("hypotheses", {})
         query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
         session_context = state["session_context"]
+        paragraph_list = state.get("paragraph_list", [])
         return _guarded(
             "retrieval",
             lambda: {
@@ -647,6 +654,7 @@ def _retrieval_node(agents: Agents) -> NodeFn:
                     hypotheses,
                     query_time_range,
                     session_context,
+                    paragraph_list,
                 )
             },
             lambda: {"citations": {}},
@@ -737,7 +745,7 @@ def _rewrite_loop_node(agents: Agents) -> NodeFn:
 
 
 def _hitl1_route(state: PipelineState) -> str | list[str] | None:
-    """hitl1 条件路由（ADR-0018 受控打回边 ``hitl1 → parse+partition``）。
+    """hitl1 条件路由（ADR-0017 受控打回边 ``hitl1 → parse+partition``）。
 
     读 ``hitl1_route`` channel：``"replay"`` → 返回 ``"parse+partition"``（重跑上游、
     有界）；其余（``"continue"`` / 缺省）→ 返回 ``None`` 走默认下游（依赖 hitl1 的节点们）。
@@ -773,7 +781,7 @@ class AgentEntry:
     Agent 与 ``partition`` 为 ``None``）；:attr:`deps` 为上游 stage 名（``()`` 接 START）；
     :attr:`build` 据 :class:`Agents` 产出 :data:`runtime.orchestrator.NodeFn`（含
     :func:`_guarded` 兜底）；:attr:`route` / :attr:`max_replays` 见 :class:`runtime.orchestrator.StageSpec`
-    （条件路由 seam + 循环预算，ADR-0018；多数 stage 为 ``None`` / ``0``）。
+    （条件路由 seam + 循环预算，ADR-0017；多数 stage 为 ``None`` / ``0``）。
 
     展示元数据（PRD §10.1 / §7.3 · T-02）：:attr:`label` / :attr:`node_type` /
     :attr:`color` / :attr:`desc` / :attr:`visible` / :attr:`interrupt` 供

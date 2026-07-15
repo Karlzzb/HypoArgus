@@ -101,12 +101,12 @@ def run_real_pipeline(
     CLI 交互式。测试 / 程序化调用可注入 fake 替身。
 
     ``session_context`` 缺省时由入口构造（``current_time=datetime.now()``，真实运行时刻由入口
-    注入、非节点内取时，ADR-0021；``user_prompt`` 取 ``--prompt``，``session_id``/``user_id``
+    注入、非节点内取时，ADR-0017；``user_prompt`` 取 ``--prompt``，``session_id``/``user_id``
     取环境或空），与 ``original_doc`` 同入 START、全链只读。
 
     ``session_config`` 缺省时由 :func:`_build_session_config` 装配 Langfuse callback（配置齐全）
     或空 dict（未配置，零侵入）；调用方可显式注入 fake callback / 覆盖 metadata。Langfuse handler
-    经 ``RunnableConfig.callbacks`` 线程贯穿整条 Agent 链路（ADR-0016）。
+    经 ``RunnableConfig.callbacks`` 线程贯穿整条 Agent 链路（ADR-0017）。
     """
 
     chat = chat_model or build_qwen_chat_model()

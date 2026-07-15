@@ -1,4 +1,4 @@
-"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0019、Slice 5）。
+"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0017、Slice 5）。
 
 ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + verdict 模型，
 ``agent.py`` 放裁决编排纯函数。本 ``__init__`` re-export 两者的公开符号，保持

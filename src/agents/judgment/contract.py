@@ -1,11 +1,11 @@
-"""裁决 Agent 契约：judgment seam + LLM Protocol + 离线 Fake 桩（PRD §5、ADR-0019、Slice 5）。
+"""裁决 Agent 契约：judgment seam + LLM Protocol + 离线 Fake 桩（PRD §5、ADR-0017、Slice 5）。
 
 ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + verdict 模型，``agent.py``
 放裁决编排纯函数。``JudgmentLlmClient`` 为注入 seam：真实适配器用
 ``with_structured_output(_JudgmentEnvelope)``（dev-guide §6.3）；本切片提供
 ``FakeJudgmentLlmClient`` 供离线单测——provider-free、确定、可断言。
 
-Slice 5 五合一（ADR-0019）：检索（retrieval 节点产 citations）之后的五节点（verification
+Slice 5 五合一（ADR-0017）：检索（retrieval 节点产 citations）之后的五节点（verification
 ReAct 取证 / hypothesis 取证 / merge / impact / consistency）并入单一 ``judgment`` 节点。
 本 seam 吃 ``citations`` 判 per-argument / per-hypothesis 终态，再由 ``agent.py`` 按序调用
 **不动**的 ``merge`` / ``impact`` / ``consistency`` 纯函数、整树写回 ``argument_tree``

@@ -1,6 +1,6 @@
 # TASK-SA-1 — 拓宽 `RetrievalFn` seam 至 5 输入（+`paragraph_list`）
 
-> 状态：未开始
+> 状态：已完成
 > 阻塞：无（可立即开工；与 Slice 0 互不依赖、可并行）
 > 母 PRD：`docs/prd-search-agent-integration.md`（§Q2(α)、§User Story 6/20）
 > 目标会话：任意新 session 读取本文件并执行。
@@ -76,11 +76,11 @@ conda run -n HypoArgus pytest -q
 
 | 日期 | 会话/执行者 | 状态变更 | 备注 |
 |---|---|---|---|
-| _ | _ | → 进行中 | _ |
+| 2026-07-15 | Claude（TDD / dev/manifest-assembly） | 未开始 → 进行中 → 已完成 | Protocol/桩/节点 4→5 形参（`paragraph_list` 末位，PRD §Q2 锁定）；e2e recording_retrieval 5 形参 + 断言穿参；fallback throwing_retrieval 5 形参；契约 doc + STATE §3.1 4→5 输入；ruff/mypy/pytest 全绿。 |
 
 ## 完成检查
 
-- [ ] 验收标准全勾选。
-- [ ] 质量门全绿。
-- [ ] 契约文档与 STATE 速查已 4→5 输入。
-- [ ] 更新 `INDEX.md` 状态为 `已完成`。
+- [x] 验收标准全勾选。
+- [x] 质量门全绿。
+- [x] 契约文档与 STATE 速查已 4→5 输入。
+- [x] 更新 `INDEX.md` 状态为 `已完成`。

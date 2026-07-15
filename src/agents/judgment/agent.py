@@ -1,4 +1,4 @@
-"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0019、Slice 5）。
+"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0017、Slice 5）。
 
 检索（retrieval 节点产 citations）之后的五节点（verification ReAct 取证 / hypothesis 取证 /
 merge / impact / consistency）并入单一 ``judgment`` 节点。本模块吃 ``citations`` 判

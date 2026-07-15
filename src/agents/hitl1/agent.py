@@ -1,4 +1,4 @@
-"""HITL-1 ``confirm`` / ``confirm_partition`` 纯函数（PRD §10 节点 1、ADR-0018）。
+"""HITL-1 ``confirm`` / ``confirm_partition`` 纯函数（PRD §10 节点 1、ADR-0017）。
 
 - ``confirm``：应用 SKIP/ACCEPT/EDIT 决策，返回确认后的树（既有结构确认语义）。
 - ``confirm_partition``：partition 确认闸门 + 有界打回。读 ``retry_count`` + 闸门决策,
@@ -282,7 +282,7 @@ def confirm_partition(
     gate: Hitl1Gate,
     max_retries: int = DEFAULT_MAX_PARTITION_RETRIES,
 ) -> Hitl1Outcome:
-    """partition 确认闸门 + 有界打回（ADR-0018）。
+    """partition 确认闸门 + 有界打回（ADR-0017）。
 
     人确认段落切分是否合理；闸门决策分两类语义：
 
@@ -290,7 +290,7 @@ def confirm_partition(
       ``argument_tree_ids`` 同步），返回 ``route=CONTINUE``、计数不变（打回计数只随 REPLAY
       递增）；``Hitl1Outcome.paragraph_list`` 携同步后的段落聚合根。
     - **打回重跑**（REPLAY）：重跑 ``parse+partition``（按 user prompt，当前伪代码桩，
-      ADR-0020）。
+      ADR-0017）。
       - 预算内（``retry_count < max_retries``）：``route=REPLAY``、``retry_count+1``。
       - 超限（``retry_count >= max_retries``）：受控分支——``route=CONTINUE`` +
         ``exhausted=True``（向前推进 + 贴 ``partition_retry_exhausted``，**不**经异常降级）。

@@ -108,7 +108,7 @@ class ParseResult(BaseModel):
     大输入下被系统性少填（P-01）。真实 adapter 分两阶段产（树一次产 proposals、摘要按
     ``summary_chunk_size`` 分块逐块产，见 ``infra/llm_adapters.py`` ``QwenParseLlmClient``），
     Fake 一次返回；解析器随后把 list 折成 ``paragraph_id → 摘要`` dict 供 hypothesis_propose /
-    rewrite_loop 读取（避免逐点喂入时上下文爆炸，ADR-0021）。
+    rewrite_loop 读取（避免逐点喂入时上下文爆炸，ADR-0017）。
     """
 
     proposals: list[ParsedNodeProposal] = Field(default_factory=list)

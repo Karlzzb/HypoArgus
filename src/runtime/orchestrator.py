@@ -4,7 +4,7 @@
 prompt 散文（见 ``docs/langgraph-dev-guide.md``）。数据在子环节间经 state channel
 路由、无跨模块直接调用；流水线严格单向——唯 ``hitl1`` 经条件边有**有界打回**
 （``hitl1 → parse+partition``，max retries 默认 3，超限向前 + 贴 ``partition_retry_exhausted``，
-ADR-0018），其余 stage 绝不打回。
+ADR-0017），其余 stage 绝不打回。
 
 ``parse+partition →〖HITL-1〗→ hypothesis_propose → retrieval → judgment
 → rewrite_loop →〖HITL-2〗→ END``（HITL-1 打回边：``hitl1 --REPLAY--> parse+partition``）
@@ -196,7 +196,7 @@ class StageSpec:
     :attr:`deps` 为上游 stage 名（``()`` 表示接 ``START``）。未被任何 stage 依赖者接
     ``END``。默认 :func:`default_pipeline` 复刻固定拓扑；传入另一种序列即另一种拓扑。
 
-    :attr:`route` 为条件路由 seam（ADR-0018 受控打回）：不为 ``None`` 的 stage 由条件边
+    :attr:`route` 为条件路由 seam（ADR-0017 受控打回）：不为 ``None`` 的 stage 由条件边
     据当前 state 路由——返回 ``None`` 走默认下游（依赖该 stage 的节点们）、返回节点名 /
     节点名列表则路由到之（``hitl1`` 打回时返回 ``"parse+partition"``）。有 ``route`` 的
     stage 不再布静态出边（条件边独占其出向），但其入向边仍由依赖者的 ``deps`` 表达。
@@ -253,7 +253,7 @@ class Orchestrator:
 
     @staticmethod
     def _compute_recursion_limit(spec: tuple[StageSpec, ...]) -> int:
-        """据拓扑推导 recursion_limit（ADR-0018 有界打回不触发 GraphRecursionError）。
+        """据拓扑推导 recursion_limit（ADR-0017 有界打回不触发 GraphRecursionError）。
 
         无循环（``max_replays`` 全 0）时返回 langgraph 默认 25——行为与重构前一致。
         有循环时按 ``4 * Σ max_replays`` 留预算：每次打回 = 上游 1 + 本节点 1 ≈ 2 次节点
@@ -287,7 +287,7 @@ class Orchestrator:
         """据 :data:`StageSpec` 序列布线：每个 stage 接其 deps，无下游者接 END。
 
         有 ``route`` 的 stage（如 ``hitl1``）由条件边独占出向——其依赖者不再布静态出边
-        到之、改由条件边 router 在 ``None`` 路径返回这些下游（ADR-0018 受控打回边
+        到之、改由条件边 router 在 ``None`` 路径返回这些下游（ADR-0017 受控打回边
         ``hitl1 → parse+partition`` 亦由该条件边表达）。
         """
 
@@ -336,9 +336,9 @@ class Orchestrator:
     ) -> bytes:
         """驱动整条流水线：原始文本 → 终稿 bytes。
 
-        ``session_context`` 为贯穿全链的运行上下文（ADR-0021，与 ``original_doc`` 同入 START、
+        ``session_context`` 为贯穿全链的运行上下文（ADR-0017，与 ``original_doc`` 同入 START、
         全链只读）；缺省注入确定性桩 :data:`domain.DEFAULT_SESSION_CONTEXT`（保可测可复现）。
-        ``session_config`` 透传 langgraph ``RunnableConfig``（ADR-0016）——``metadata`` /
+        ``session_config`` 透传 langgraph ``RunnableConfig``（ADR-0017）——``metadata`` /
         ``tags`` / ``callbacks`` 线程贯穿整条 Agent 链路，业务节点零侵入。当前为 #4
         checkpointer 预备（``session_id`` 键），本切片内存态、不消费。
         """
@@ -362,7 +362,7 @@ class Orchestrator:
         与测试断言「节点置错误状态、流水线仍推进至终稿」。全程无波动时 ``errors`` 为空。
 
         ``session_context`` 缺省注入 :data:`domain.DEFAULT_SESSION_CONTEXT`（确定性桩），
-        与 ``original_doc`` 同入 START，贯穿全链只读（ADR-0021）。
+        与 ``original_doc`` 同入 START，贯穿全链只读（ADR-0017）。
         """
 
         if not isinstance(original_doc, (bytes, bytearray)):
@@ -371,7 +371,7 @@ class Orchestrator:
             )
         ctx = session_context if session_context is not None else DEFAULT_SESSION_CONTEXT
         config: dict[str, Any] = dict(session_config or {})
-        # recursion 预算随拓扑 max_replays 缩放（ADR-0018 有界打回不触发 GraphRecursionError）；
+        # recursion 预算随拓扑 max_replays 缩放（ADR-0017 有界打回不触发 GraphRecursionError）；
         # 调用方经 session_config["recursion_limit"] 显式覆盖时不改。
         config.setdefault("recursion_limit", self._recursion_limit)
         if self.checkpointer is not None and ctx.session_id:

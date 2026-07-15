@@ -117,10 +117,11 @@ def merge_paragraph_list(
     """``paragraph_list`` channel 的 reducer：按 ``paragraph_id`` upsert，保持首见顺序。
 
     形如 :func:`merge_argument_tree`（按 ``argument_id`` upsert）：同 ``paragraph_id`` 覆盖、
-    新 id 追加。单写者 = parse+partition；即便单写者无冲突亦沿用同形以策安全——hitl1 打回
-    重跑 parse 时整列表重写，reducer 保证不重复、不丢序、按段覆盖更新。段落↔节点关系为
-    正向、第一类、存储于段落侧（PRD §Solution）；本 reducer 只维护段落集合的合并语义，
-    ``argument_tree_ids`` 与 ``argument_tree`` 的一致性由 parse 落地与不变式自检保证。
+    新 id 追加。写者=parse+partition（创建 / 打回重跑整列表）+ hitl1（EDIT 同步
+    ``argument_tree_ids`` 写回、SKIP/ACCEPT/REPLAY 原样深拷）；upsert reducer 保证多写者
+    不重复、不丢序、按段覆盖更新。段落↔节点关系为正向、第一类、存储于段落侧（PRD §Solution）；
+    本 reducer 只维护段落集合的合并语义，``argument_tree_ids`` 与 ``argument_tree`` 的一致性
+    由 parse 落地与不变式自检保证。
     """
 
     merged = list(left or [])

@@ -66,7 +66,7 @@
   供下游检索限定在正确时间窗、供 LLM 决策有时间上下文。见 ADR-0021。
 - **段落摘要 (paragraph_summary)**：每段的摘要文本，由 `parse+partition` 两阶段顺产（树调用产 proposals + 摘要分块调用产 `list[ParagraphSummary]`）。
   现承载于段落聚合根 `ParagraphRecord.summary`（摘要单一定义点；原 `paragraph_summaries` state channel 已退役，见 ADR-0025）。
-  供 hypothesis_propose / rewrite_loop / judgment 读取，避免一次性 / 逐点喂入时上下文爆炸；**不并入 `OriginalParagraphs`**（保其字节级无损只读表身份）。见 ADR-0021 / ADR-0025 / STATE.md §1。
+  供 hypothesis_propose / rewrite_loop 读取（judgment 取段 `original_content`、不读摘要），避免一次性 / 逐点喂入时上下文爆炸；**不并入 `OriginalParagraphs`**（保其字节级无损只读表身份）。见 ADR-0021 / ADR-0025 / STATE.md §1。
 - **judgment 节点**：检索之后的单一判断节点，五合一（verification 取证 + hypothesis 取证 + merge 裁决 + impact 传导 + consistency 批注）。
   控制流合并为 1，但 merge / impact / consistency 的**纯函数逻辑保留、不交 LLM 裁决**；取证由新 LLM seam 吃 `citations` 判终态，不再 ReAct 逐段逐点检索。
   重构 ADR-0002（乐观并行）/ ADR-0006（12 格矩阵合流）的双线路并行设计。见 ADR-0019。

@@ -29,7 +29,7 @@ ADR-0005 把原文分两层存储：layer-1 只读字节表（`OriginalParagraph
 2. **`Argument` 去掉 `paragraph_id` 与 `content`**，退化为纯推理结构
    （仅 `argument_id` / `argument_type` / `parent_id` / `children_ids` / `argument_weight` / `status` / `issue_tags` / `candidate_hypotheses` / `merge_decision` / `adopted_hypothesis_id`）。
 3. **`paragraph_summaries` state channel 退役**，重构为 `paragraph_list: list[ParagraphRecord]`（`PipelineState` channel），
-   配按 `paragraph_id` upsert 的 reducer `merge_paragraph_list`（形如 `merge_argument_tree`，单写者 = parse+partition，hitl1 打回重跑时整列表重写、reducer 保证不重复不丢序）。
+   配按 `paragraph_id` upsert 的 reducer `merge_paragraph_list`（形如 `merge_argument_tree`；写者=parse+partition（创建 / 打回重跑整列表）+ hitl1（EDIT 同步 `argument_tree_ids` 写回、其余路径原样深拷），upsert reducer 保证多写者不重复不丢序）。
    摘要的单一定义点收口于 `paragraph_list.summary`（折叠自 LLM seam 输出 `ParseResult.paragraph_summaries`，该 seam 输出字段保留不动）。
 4. **`argument_tree` channel 与 `merge_argument_tree` reducer 不变**——Argument 仍有 `argument_id`，树侧形状、整树写回语义、reducer 全不动。
 5. **`OriginalParagraphs`（layer-1 不可变字节表）不变**——字节级还原、未触达段逐字节忠实、partition 分区自检的真相源仍是它；`paragraph_list.original_content` 是其解码文本的同源等价（每段一份）。

@@ -10,10 +10,19 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=1.2",
-    "pydantic>=2.0",
-    "langchain-core>=0.3",
-    "langchain-openai>=0.2",
-    "langfuse>=3.0",
+    "pydantic>=2.7",
+    "langchain-core>=1.3",
+    "langchain>=1.3",
+    "langchain-openai>=1.3",
+    "langchain-anthropic>=1.4",
+    "langfuse>=4.14",
+    "httpx>=0.27",
+    "jinja2",
+    "requests",
+    "ddgs",
+    "python-dotenv",
+    "sentence-transformers>=3,<4",
+    "pypdf>=4",
     "pyyaml>=6.0",
     # T-04 HTTP 控制面（ADR-0024）：async-native web 框架 + Postgres checkpointer + side-meta 驱动。
     "langgraph-checkpoint-postgres>=2.0",
@@ -26,17 +35,25 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "langgraph>=1.2",
-    "pydantic>=2.0",
-    "langchain-core>=0.3",
-    "langchain-openai>=0.2",
-    "langfuse>=3.0",
+    "pydantic>=2.7",
+    "langchain-core>=1.3",
+    "langchain>=1.3",
+    "langchain-openai>=1.3",
+    "langchain-anthropic>=1.4",
+    "langfuse>=4.14",
+    "httpx>=0.27",
+    "jinja2",
+    "requests",
+    "ddgs",
+    "python-dotenv",
+    "sentence-transformers>=3,<4",
+    "pypdf>=4",
     "pyyaml>=6.0",
     "langgraph-checkpoint-postgres>=2.0",
     "psycopg[binary]>=3.1",
     "psycopg-pool>=3.1",
     "fastapi>=0.110",
     "uvicorn>=0.29",
-    "httpx>=0.27",
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
@@ -51,11 +68,15 @@ include-package-data = true
 py-modules = ["domain", "original_paragraphs", "partition", "status_machine", "tree_invariants"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+# `src/` 发现主仓顶层裸包；`src/infra/search_agent_vendor/` 让 vendored 子智能体
+# 以 `search_agent` 顶层包被发现（V12 内部全用相对导入，故只需 `search_agent` 顶层）。
+where = ["src", "src/infra/search_agent_vendor"]
 
 [tool.setuptools.package-data]
 # schema.sql 随 api_layer 包分发，供 PostgresSessionCache.setup() 经 importlib.resources 读。
 api_layer = ["*.sql"]
+# vendored SearchAgent V12 数据文件（judge prompt / JSON schema / 示例）随包分发。
+"search_agent.evidence_retrieval" = ["prompts/*.txt", "json_schemas/*.json", "examples/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,6 +89,8 @@ markers = [
 [tool.ruff]
 line-length = 99
 target-version = "py311"
+# vendored SearchAgent V12 源码作 third-party carve-out，不进 ruff。
+exclude = ["src/infra/search_agent_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -79,3 +102,5 @@ strict = true
 warn_unused_ignores = true
 # 扁平 src 布局：mypy 从 src/ 解析顶层裸名（domain/agents/infra/runtime）。
 mypy_path = "src"
+# vendored SearchAgent V12 源码作 third-party carve-out，不进 strict 门。
+exclude = ["src/infra/search_agent_vendor/"]

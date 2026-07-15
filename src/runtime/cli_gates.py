@@ -41,9 +41,9 @@ from agents.hitl2 import (
     ParagraphRewriteReview,
     RejectRewriteOp,
 )
-from domain import Argument, ArgumentType
+from domain import Argument, ArgumentType, ParagraphRecord
 
-__all__ = ["CliHitl1Gate", "CliHitl2Gate"]
+__all__ = ["CliHitl1Gate", "CliHitl2Gate", "owner_paragraph_id"]
 
 
 _INPUT_FN = Callable[[str], str]
@@ -56,6 +56,23 @@ def _is_interactive(flag: bool | None) -> bool:
     if flag is not None:
         return flag
     return sys.stdin.isatty()
+
+
+def owner_paragraph_id(
+    paragraph_list: list[ParagraphRecord], argument_id: str
+) -> str | None:
+    """经 ``argument_tree_ids`` 反查节点所属段（T-03：取代读 ``Argument.paragraph_id``）。
+
+    供 HITL-1 终端渲染（同步 ``_print_tree`` 与异步 ``_render_hitl1_question``）反查
+    节点所属段——段落↔节点的正向一对多关系第一类存储于段落侧，渲染不再扫树按
+    ``Argument.paragraph_id`` 分组。未归属于任何段（结构不变式不应出现）返回 ``None``，
+    调用方渲染为占位符。
+    """
+
+    for record in paragraph_list:
+        if argument_id in record.argument_tree_ids:
+            return record.paragraph_id
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -77,11 +94,14 @@ class CliHitl1Gate:
         self._input = input_fn
         self._out = out_fn
 
-    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
-        """构造问题载荷（interrupt payload = 树快照）；纯数据、不渲染、不阻塞。"""
+    def formulate_question(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Question:
+        """构造问题载荷（interrupt payload = 树 + 段落聚合根快照）；纯数据、不渲染、不阻塞。"""
 
         return Hitl1Question(
-            argument_tree=[n.model_copy(deep=True) for n in argument_tree]
+            argument_tree=[n.model_copy(deep=True) for n in argument_tree],
+            paragraph_list=[r.model_copy(deep=True) for r in paragraph_list],
         )
 
     def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
@@ -89,8 +109,10 @@ class CliHitl1Gate:
 
         return Hitl1Decision(action=reply.action)
 
-    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
-        self._print_tree(argument_tree)
+    def review(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Decision:
+        self._print_tree(argument_tree, paragraph_list)
         if not _is_interactive(self._interactive):
             self._out("[非交互] HITL-1 保守 SKIP（不改结构、原文不动）。")
             return Hitl1Decision(action=Hitl1Action.SKIP)
@@ -106,15 +128,18 @@ class CliHitl1Gate:
                 )
             self._out("未知选项，请输入 s/a/e。")
 
-    def _print_tree(self, argument_tree: list[Argument]) -> None:
+    def _print_tree(
+        self, argument_tree: list[Argument], paragraph_list: list[ParagraphRecord]
+    ) -> None:
         self._out("=== HITL-1 结构确认：解析树 ===")
         if not argument_tree:
             self._out("（空树）")
             return
         for n in argument_tree:
+            para = owner_paragraph_id(paragraph_list, n.argument_id)
             self._out(
                 f"{n.argument_id}\ttype={n.argument_type.value}\tweight={n.argument_weight}"
-                f"\tpara={n.paragraph_id}\tparent={n.parent_id}\tstatus={n.status.value}"
+                f"\tpara={para or '?'}\tparent={n.parent_id}\tstatus={n.status.value}"
             )
         self._out(
             "编辑命令：reparent <id> <parent_id|root> | set_type <id> <type>"

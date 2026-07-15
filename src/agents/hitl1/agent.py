@@ -287,7 +287,7 @@ def confirm(
     if paragraph_list is None:
         paragraph_list = _derive_paragraph_list(argument_tree)
     validate_paragraph_consistency(argument_tree, paragraph_list)
-    decision = gate.review(argument_tree)  # 2. 闸门看原始树。
+    decision = gate.review(argument_tree, paragraph_list=paragraph_list)  # 2. 闸门看原始树。
     tree, _pl = _apply_decision(argument_tree, paragraph_list, decision)  # 3. 应用决策。
     return tree
 
@@ -323,7 +323,7 @@ def confirm_partition(
     if paragraph_list is None:
         paragraph_list = _derive_paragraph_list(argument_tree)
     validate_paragraph_consistency(argument_tree, paragraph_list)
-    decision = gate.review(argument_tree)  # 闸门看原始树。
+    decision = gate.review(argument_tree, paragraph_list=paragraph_list)  # 闸门看原始树。
 
     if decision.action is Hitl1Action.REPLAY:
         if retry_count >= max_retries:

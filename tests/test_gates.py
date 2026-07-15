@@ -21,7 +21,7 @@ from agents.hitl2 import (
     Hitl2Review,
     ParagraphRewriteReview,
 )
-from domain import Argument, ArgumentType
+from domain import Argument, ArgumentType, ParagraphRecord
 from runtime.gates import InterruptHitl1Gate, InterruptHitl2Gate
 
 
@@ -40,6 +40,18 @@ def _tree() -> list[Argument]:
             content="论据。",
             parent_id="n0001",
         ),
+    ]
+
+
+def _paragraph_list_for(tree: list[Argument]) -> list[ParagraphRecord]:
+    """从树派生 paragraph_list（按 ``paragraph_id`` 分组），供 gate seam 测试。"""
+
+    by_para: dict[str, list[str]] = {}
+    for a in tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    return [
+        ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
+        for pid, ids in by_para.items()
     ]
 
 
@@ -66,11 +78,17 @@ def _review(has_pending: bool) -> Hitl2Review:
 def test_hitl1_formulate_question_returns_tree_snapshot_decoupled() -> None:
     gate = InterruptHitl1Gate()
     tree = _tree()
-    question = gate.formulate_question(tree)
+    paragraph_list = _paragraph_list_for(tree)
+    question = gate.formulate_question(tree, paragraph_list=paragraph_list)
     assert isinstance(question, Hitl1Question)
     assert [n.model_dump() for n in question.argument_tree] == [
         n.model_dump() for n in tree
     ]
+    # paragraph_list 随载荷快照、与原表解耦（T-03：渲染反查所据）。
+    assert [r.model_dump() for r in question.paragraph_list] == [
+        r.model_dump() for r in paragraph_list
+    ]
+    assert question.paragraph_list is not paragraph_list
     # 快照与原树解耦（不别名）。
     assert question.argument_tree is not tree
     tree.append(

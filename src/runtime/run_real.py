@@ -47,7 +47,7 @@ from infra.llm_adapters import (
 from infra.llm_provider import build_qwen_chat_model
 from infra.observability import build_langfuse_callback
 from runtime.checkpoint import build_async_checkpointer
-from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate
+from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate, owner_paragraph_id
 from runtime.gates import InterruptHitl1Gate, InterruptHitl2Gate
 from runtime.orchestrator import Orchestrator, RunResult
 
@@ -176,9 +176,10 @@ def _render_hitl1_question(question: Hitl1Question, out: _OUT_FN) -> None:
         out("（空树）")
         return
     for n in question.argument_tree:
+        para = owner_paragraph_id(question.paragraph_list, n.argument_id)
         out(
             f"{n.argument_id}\ttype={n.argument_type.value}\tweight={n.argument_weight}"
-            f"\tpara={n.paragraph_id}\tparent={n.parent_id}\tstatus={n.status.value}"
+            f"\tpara={para or '?'}\tparent={n.parent_id}\tstatus={n.status.value}"
         )
     out("[s]kip / [a]ccept / [r]eplay（按 prompt 重跑 parse+partition，有界）")
 

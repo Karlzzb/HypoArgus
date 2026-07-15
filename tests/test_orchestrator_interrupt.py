@@ -178,3 +178,55 @@ async def test_interrupt_state_carries_original_paragraphs_through_checkpoint(
         assert op.paragraph_ids() == expected.paragraph_ids()
         for pid in expected.paragraph_ids():
             assert op.get(pid) == expected.get(pid)
+
+
+async def test_interrupt_payload_carries_paragraph_list_through_checkpoint(
+    pg_checkpointer: Any,
+) -> None:
+    """hitl1 interrupt 载荷（``Hitl1Question``）经 PG checkpoint 往返仍携带 ``paragraph_list``
+    （强类型 ``ParagraphRecord`` 列表）——T-03 resume 渲染反查所据不破。
+
+    parse 产出 ``paragraph_list``（``FakeLlmClient`` 空 proposals → 全段 background 影子），
+    经 ``_hitl1_node → confirm_partition → gate.review → formulate_question`` 入 interrupt 载荷、
+    落 checkpoint；跨 saver 读回仍为强类型、段集合等价。
+    """
+
+    from agents.hitl1 import Hitl1Question
+    from domain import ParagraphRecord
+    from runtime.run_real import _interrupt_payload
+
+    agents = _interrupt_agents()
+    sid = "sess-pl-carry"
+    ctx = _ctx(sid)
+    orch1 = Orchestrator(agents=agents, checkpointer=pg_checkpointer)
+    cfg: dict[str, Any] = {
+        "configurable": {"thread_id": sid},
+        "recursion_limit": orch1._recursion_limit,
+    }
+    await orch1.graph.ainvoke(
+        {"original_doc": _DOC, "session_context": ctx}, config=cfg
+    )
+    st1 = await orch1.graph.aget_state(cfg)
+    assert st1.next and "hitl1" in st1.next
+    payload1 = _interrupt_payload(st1)
+    assert isinstance(payload1, Hitl1Question)
+    # parse 产出 paragraph_list、经 formulate_question 入载荷。
+    assert payload1.paragraph_list
+    assert all(isinstance(r, ParagraphRecord) for r in payload1.paragraph_list)
+    pids_in_payload = {r.paragraph_id for r in payload1.paragraph_list}
+
+    # 跨 saver（新 PG 连接）读回：paragraph_list 仍强类型、段集合等价。
+    async with build_async_checkpointer() as saver2:
+        orch2 = Orchestrator(agents=agents, checkpointer=saver2)
+        st2 = await orch2.graph.aget_state(
+            {
+                "configurable": {"thread_id": sid},
+                "recursion_limit": orch2._recursion_limit,
+            }
+        )
+        payload2 = _interrupt_payload(st2)
+        assert isinstance(payload2, Hitl1Question)
+        assert all(isinstance(r, ParagraphRecord) for r in payload2.paragraph_list)
+        assert (
+            {r.paragraph_id for r in payload2.paragraph_list} == pids_in_payload
+        )

@@ -240,7 +240,7 @@ class _ReplayThenSkipGate:
     def __init__(self) -> None:
         self._calls = 0
 
-    def review(self, argument_tree) -> Hitl1Decision:
+    def review(self, argument_tree, *, paragraph_list) -> Hitl1Decision:
         self._calls += 1
         if self._calls == 1:
             return Hitl1Decision(action=Hitl1Action.REPLAY)
@@ -250,7 +250,7 @@ class _ReplayThenSkipGate:
 class _AlwaysReplayGate:
     """恒打回：每次 review 都返回 REPLAY（驱动打回超限分支）。"""
 
-    def review(self, argument_tree) -> Hitl1Decision:
+    def review(self, argument_tree, *, paragraph_list) -> Hitl1Decision:
         return Hitl1Decision(action=Hitl1Action.REPLAY)
 
 

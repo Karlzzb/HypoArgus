@@ -38,7 +38,7 @@ from agents.hitl2 import (
     Hitl2Reply,
     Hitl2Review,
 )
-from domain import Argument
+from domain import Argument, ParagraphRecord
 
 __all__ = ["InterruptHitl1Gate", "InterruptHitl2Gate"]
 
@@ -52,25 +52,30 @@ class InterruptHitl1Gate:
     纯函数 :func:`confirm_partition` 不改、仍调 ``gate.review()``。
     """
 
-    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
+    def formulate_question(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Question:
         return Hitl1Question(
-            argument_tree=[n.model_copy(deep=True) for n in argument_tree]
+            argument_tree=[n.model_copy(deep=True) for n in argument_tree],
+            paragraph_list=[r.model_copy(deep=True) for r in paragraph_list],
         )
 
     def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
         # 一期 action-only：reply 的 text 不影响决策，ops 恒空（结构化 ops 推后）。
         return Hitl1Decision(action=reply.action)
 
-    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
+    def review(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Decision:
         """组合拆分 seam：``formulate_question → interrupt → parse_reply``。
 
-        首次执行：``interrupt`` 暂停、载荷 ``Hitl1Question`` 落 checkpoint、本方法抛
-        ``GraphInterrupt``（由图捕获为暂停）。resume：``interrupt`` 返回驱动者下发的
-        ``Hitl1Reply``、``parse_reply`` 产 action-only 决策、交 :func:`confirm_partition`
-        应用。
+        首次执行：``interrupt`` 暂停、载荷 ``Hitl1Question``（含 ``paragraph_list`` 快照）
+        落 checkpoint、本方法抛 ``GraphInterrupt``（由图捕获为暂停）。resume：``interrupt``
+        返回驱动者下发的 ``Hitl1Reply``、``parse_reply`` 产 action-only 决策、交
+        :func:`confirm_partition` 应用。
         """
 
-        question = self.formulate_question(argument_tree)
+        question = self.formulate_question(argument_tree, paragraph_list=paragraph_list)
         reply: Hitl1Reply = interrupt(question)
         return self.parse_reply(reply)
 

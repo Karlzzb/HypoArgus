@@ -12,7 +12,7 @@
 |---|---|---|---|
 | T-01 | 领域模型 + paragraph_list channel + parse 产出（双写） | — | 已完成 |
 | T-02 | LLM seam + consistency 迁移读取 paragraph_list；HITL-1 op 同步 + 一致性自检 | T-01 | 已完成 |
-| T-03 | CLI 渲染反查 + checkpoint 往返 paragraph_list | T-02 | 未开始 |
+| T-03 | CLI 渲染反查 + checkpoint 往返 paragraph_list | T-02 | 已完成 |
 | T-04 | 翻转：移除 Argument.paragraph_id/content，退役 paragraph_summaries，真实 LLM 测试适配 | T-02, T-03 | 未开始 |
 | T-05 | 文档（STATE.md / CONTEXT.md）+ 新 ADR 取代 ADR-0005 决策 2 | T-04 | 未开始 |
 
@@ -102,7 +102,7 @@ HITL-1 三 op 在改节点集合时**同步维护 `argument_tree_ids`**：`merge
 
 ## T-03：CLI 渲染反查 + checkpoint 往返 paragraph_list
 
-- **状态**：未开始
+- **状态**：已完成
 - **依赖**：T-02（渲染需经 `paragraph_list` 反查 `argument_id → paragraph`；checkpoint 需 `paragraph_list` 落地稳定）
 - **覆盖用户故事**：18、19
 
@@ -114,11 +114,16 @@ HITL-1 / HITL-2 终端渲染改为经 `paragraph_list` 反查 `argument_id → p
 
 ### Acceptance criteria
 
-- [ ] `_print_tree`（`src/runtime/cli_gates.py`）与 `_render_hitl1_question`（`src/runtime/run_real.py`）不再读 `Argument.paragraph_id`，改经 `paragraph_list` 反查或直接渲染 `argument_id` + 段落上下文。
-- [ ] HITL-2 终端渲染（`_render_hitl2_question`）已段落级、不动；核实仍正确。
-- [ ] `HypoArgusSerializer` 往返 `paragraph_list`（编/解码），新增值类型补入 `_MSGPACK_TYPE_MODULES` allowlist。
-- [ ] checkpoint round-trip 测试覆盖 `paragraph_list`，resume 路径不破。
-- [ ] 质量门全绿。
+- [x] `_print_tree`（`src/runtime/cli_gates.py`）与 `_render_hitl1_question`（`src/runtime/run_real.py`）不再读 `Argument.paragraph_id`，改经 `paragraph_list` 反查或直接渲染 `argument_id` + 段落上下文。
+  - 经 `owner_paragraph_id(paragraph_list, argument_id)` 反查所属段（`cli_gates.py` 新增模块级 helper，`run_real.py` 复用）；`Hitl1Question` 载荷新增 `paragraph_list` 快照，`formulate_question`/`review` 收 `*, paragraph_list`（keyword-only、必填），`confirm`/`confirm_partition` 显式传入。回归锁：`tests/test_cli_render.py` 构造 `Argument.paragraph_id` 与 `paragraph_list` 归属矛盾的样本，断言渲染取 `paragraph_list` 的归属。
+- [x] HITL-2 终端渲染（`_render_hitl2_question`）已段落级、不动；核实仍正确。
+  - `tests/test_cli_render.py::test_render_hitl2_question_is_paragraph_level_unchanged` 锁其逐段原文 × 提议呈现。
+- [x] `HypoArgusSerializer` 往返 `paragraph_list`（编/解码），新增值类型补入 `_MSGPACK_TYPE_MODULES` allowlist。
+  - `ParagraphRecord` 定义于 `domain`、已属 `_MSGPACK_TYPE_MODULES`（与 `Argument` 同模块），`_allowed_msgpack_types` 自动发现——**无需新增 allowlist 条目**（注释规则：「若其定义模块不在下表，须补入」；`domain` 已在表内）。`tests/test_checkpoint.py::test_serializer_round_trips_paragraph_list_silently` 锁此回归：静默还原强类型 `ParagraphRecord` 列表、不触发「unregistered type」告警。
+- [x] checkpoint round-trip 测试覆盖 `paragraph_list`，resume 路径不破。
+  - 纯序列化往返（`test_serializer_round_trips_paragraph_list_silently` + `test_serializer_round_trips_hitl1_question_payload_with_paragraph_list`）+ 真实 Postgres 往返（`test_orchestrator_interrupt.py::test_interrupt_payload_carries_paragraph_list_through_checkpoint`：`Hitl1Question` 载荷跨 saver 读回仍携带强类型 `paragraph_list`）；既有 resume 集成测试全绿。
+- [x] 质量门全绿。
+  - `ruff check src tests` ✓；`mypy --strict src` ✓（54 源文件无 issue）；`pytest -q -m "not real_llm"` ✓（633 passed, 3 skipped, 11 deselected）。真实 LLM 单流程（一段文章改写，DashScope）已跑通。
 
 ### Blocked by
 

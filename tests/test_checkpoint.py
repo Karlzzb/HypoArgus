@@ -26,6 +26,7 @@ from domain import (
     ArgumentType,
     Hypothesis,
     HypothesisRelation,
+    ParagraphRecord,
     SessionContext,
     TimeRange,
 )
@@ -212,6 +213,96 @@ def test_serializer_round_trips_registered_types_silently(
             back = serde.loads_typed((typ, blob))
             assert type(back) is type(obj), (type(back), type(obj))
 
+    noise = [
+        r.message
+        for r in caplog.records
+        if "unregistered type" in r.message or "Blocked deserialization" in r.message
+    ]
+    assert not noise, noise
+
+
+def test_serializer_round_trips_paragraph_list_silently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``paragraph_list`` channel（``list[ParagraphRecord]``）经 dumps/loads 静默还原为
+    强类型 ``ParagraphRecord`` 列表，不触发 LangGraph「unregistered type」告警。
+
+    ``ParagraphRecord`` 属 ``domain`` 模块、已登记进 ``_MSGPACK_TYPE_MODULES``（与
+    ``Argument`` 同模块，:func:`_allowed_msgpack_types` 自动发现）——故 T-03 无需新增
+    allowlist 条目；本测试锁此回归（若 ``ParagraphRecord`` 漂移到未登记模块，此测试会打
+    「Blocked deserialization」告警并退化为裸 dict）。
+    """
+
+    serde = HypoArgusSerializer()
+    paragraph_list = [
+        ParagraphRecord(
+            paragraph_id="p0001",
+            summary="主论点段",
+            original_content="主论点。",
+            argument_tree_ids=["n0001"],
+        ),
+        ParagraphRecord(
+            paragraph_id="p0002",
+            summary="论据段",
+            original_content="论据。",
+            argument_tree_ids=["n0002", "n0002-s1"],
+        ),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger=_JSONPLUS_LOGGER):
+        typ, blob = serde.dumps_typed(paragraph_list)
+        back = serde.loads_typed((typ, blob))
+
+    assert typ == "msgpack"  # 委托 JsonPlusSerializer 的 msgpack 通道
+    assert isinstance(back, list)
+    assert len(back) == len(paragraph_list)
+    assert all(isinstance(r, ParagraphRecord) for r in back)
+    assert [r.model_dump() for r in back] == [r.model_dump() for r in paragraph_list]
+    noise = [
+        r.message
+        for r in caplog.records
+        if "unregistered type" in r.message or "Blocked deserialization" in r.message
+    ]
+    assert not noise, noise
+
+
+def test_serializer_round_trips_hitl1_question_payload_with_paragraph_list(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``Hitl1Question`` interrupt 载荷（嵌套 ``paragraph_list``）经 dumps/loads 往返，
+    ``paragraph_list`` 仍为强类型 ``ParagraphRecord`` 列表——resume 渲染反查所据不破。
+    """
+
+    from agents.hitl1 import Hitl1Question
+
+    serde = HypoArgusSerializer()
+    question = Hitl1Question(
+        argument_tree=[
+            Argument(
+                argument_id="n0001",
+                argument_type=ArgumentType.MAIN_CLAIM,
+                paragraph_id="p0001",
+                content="主论点。",
+            )
+        ],
+        paragraph_list=[
+            ParagraphRecord(
+                paragraph_id="p0001",
+                original_content="主论点。",
+                argument_tree_ids=["n0001"],
+            )
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger=_JSONPLUS_LOGGER):
+        typ, blob = serde.dumps_typed(question)
+        back = serde.loads_typed((typ, blob))
+
+    assert isinstance(back, Hitl1Question)
+    assert all(isinstance(r, ParagraphRecord) for r in back.paragraph_list)
+    assert [r.model_dump() for r in back.paragraph_list] == [
+        r.model_dump() for r in question.paragraph_list
+    ]
     noise = [
         r.message
         for r in caplog.records

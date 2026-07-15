@@ -91,7 +91,7 @@ def test_confirm_validates_input_tree():
     reviewed = []
 
     class _Spy:
-        def review(self, argument_tree):
+        def review(self, argument_tree, *, paragraph_list):
             reviewed.append(True)
             return Hitl1Decision(action=Hitl1Action.SKIP)
 
@@ -550,7 +550,7 @@ def test_confirm_partition_validates_input_tree_before_review():
     reviewed = []
 
     class _Spy:
-        def review(self, argument_tree):
+        def review(self, argument_tree, *, paragraph_list):
             reviewed.append(True)
             return Hitl1Decision(action=Hitl1Action.SKIP)
 
@@ -585,7 +585,7 @@ def test_confirm_partition_replay_once_then_continue_simulates_loop():
     ]
 
     class _SequentialGate:
-        def review(self, argument_tree):
+        def review(self, argument_tree, *, paragraph_list):
             return decisions.pop(0)
 
     gate: Hitl1Gate = _SequentialGate()  # type: ignore[assignment]
@@ -620,11 +620,18 @@ def test_formulate_question_returns_tree_snapshot_as_interrupt_payload():
 
     argument_tree = _abc_tree()
     gate = FakeHitl1Gate(Hitl1Decision(action=Hitl1Action.SKIP))
-    question = gate.formulate_question(argument_tree)
+    question = gate.formulate_question(
+        argument_tree, paragraph_list=_paragraph_list(argument_tree)
+    )
     assert isinstance(question, Hitl1Question)
     assert [n.model_dump() for n in question.argument_tree] == [
         n.model_dump() for n in argument_tree
     ]
+    # paragraph_list 随载荷快照、与原表解耦（T-03：渲染反查所据）。
+    assert [r.model_dump() for r in question.paragraph_list] == [
+        r.model_dump() for r in _paragraph_list(argument_tree)
+    ]
+    assert question.paragraph_list is not _paragraph_list(argument_tree)
     # 快照与原树解耦（不别名）——后续改原树不污染已构造的问题。
     assert question.argument_tree is not argument_tree
     argument_tree.append(_argument("z"))
@@ -670,7 +677,9 @@ def test_seam_does_not_alter_sync_review_full_fidelity():
         ops=[ReparentOp(argument_id="c", new_parent_id="b")],
     )
     gate = FakeHitl1Gate(decision)
-    reviewed = gate.review(_abc_tree())
+    reviewed = gate.review(
+        _abc_tree(), paragraph_list=_paragraph_list(_abc_tree())
+    )
     assert reviewed.action is Hitl1Action.EDIT
     assert reviewed.ops == decision.ops  # ops 全保真（不被 action-only 语义削空）
 

@@ -174,12 +174,17 @@ class Hitl1Outcome:
 class Hitl1Question(BaseModel):
     """``formulate_question`` 产出 = interrupt payload：partition 确认闸门交给人的问题视图。
 
-    承载当前论证树（人确认段落切分是否合理）。ADR-0022：interrupt payload =
+    承载当前论证树 + 段落聚合根（人确认段落切分是否合理）。ADR-0022：interrupt payload =
     ``formulate_question`` 产出——服务侧经 ``interrupt`` 把此载荷交给前端、CLI 侧经终端
-    渲染。本载荷为纯数据快照，与调用方树解耦。
+    渲染。本载荷为纯数据快照，与调用方树 / paragraph_list 解耦。
+
+    T-03：``paragraph_list`` 随快照入载荷，使终端渲染经 ``argument_tree_ids`` 反查节点
+    所属段、不再读 ``Argument.paragraph_id``；其经 checkpointer 往返亦覆盖 ``paragraph_list``
+    的持久化（``ParagraphRecord`` 属 ``domain``、已登记 allowlist）。
     """
 
     argument_tree: list[Argument]
+    paragraph_list: list[ParagraphRecord] = Field(default_factory=list)
 
 
 class Hitl1Reply(BaseModel):
@@ -213,16 +218,24 @@ class Hitl1Gate(Protocol):
     的是**原始**树，而非中间编辑态——多步编辑在闸门一次返回、由 ``confirm`` 顺序应用。
     """
 
-    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
-        """据当前视图构造问题（interrupt payload = 快照载荷）。"""
+    def formulate_question(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Question:
+        """据当前视图构造问题（interrupt payload = 树 + 段落聚合根快照）。"""
         ...
 
     def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
         """把人工回复解析成 action-only :class:`Hitl1Decision`（空 ops）。"""
         ...
 
-    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
-        """同步便捷包装（仅同步 gate 覆写；异步 gate 经 ``formulate_question`` + ``parse_reply``）。"""
+    def review(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Decision:
+        """同步便捷包装（仅同步 gate 覆写；异步 gate 经 ``formulate_question`` + ``parse_reply``）。
+
+        T-03：收 ``paragraph_list`` 供同步 gate 渲染反查节点所属段（取代读
+        ``Argument.paragraph_id``）。
+        """
         raise NotImplementedError(
             "同步 review 未实现：异步 gate 经 formulate_question + parse_reply 驱动（interrupt）"
         )
@@ -239,14 +252,19 @@ class FakeHitl1Gate:
     def __init__(self, decision: Hitl1Decision) -> None:
         self._decision = decision
 
-    def formulate_question(self, argument_tree: list[Argument]) -> Hitl1Question:
+    def formulate_question(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Question:
         return Hitl1Question(
-            argument_tree=[n.model_copy(deep=True) for n in argument_tree]
+            argument_tree=[n.model_copy(deep=True) for n in argument_tree],
+            paragraph_list=[r.model_copy(deep=True) for r in paragraph_list],
         )
 
     def parse_reply(self, reply: Hitl1Reply) -> Hitl1Decision:
         # 一期 action-only：reply 的 text 不影响决策，ops 恒空（结构化 ops 推后）。
         return Hitl1Decision(action=reply.action)
 
-    def review(self, argument_tree: list[Argument]) -> Hitl1Decision:
+    def review(
+        self, argument_tree: list[Argument], *, paragraph_list: list[ParagraphRecord]
+    ) -> Hitl1Decision:
         return self._decision.model_copy(deep=True)

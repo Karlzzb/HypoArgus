@@ -29,7 +29,7 @@ from agents.hitl2 import (
     Hitl2Review,
 )
 from agents.rewrite_loop import FakeRewriteLlmClient, RewriteLoopOutcome
-from domain import Argument, ArgumentType
+from domain import Argument, ArgumentType, ParagraphRecord
 from infra.llm_provider import build_qwen_chat_model
 from runtime.cli_gates import CliHitl1Gate, CliHitl2Gate
 from runtime.orchestrator import RunResult
@@ -70,6 +70,18 @@ def _sample_tree() -> list[Argument]:
     ]
 
 
+def _sample_paragraph_list(tree: list[Argument]) -> list[ParagraphRecord]:
+    """从树派生 paragraph_list（按 ``paragraph_id`` 分组），供 CLI 闸门渲染反查。"""
+
+    by_para: dict[str, list[str]] = {}
+    for a in tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    return [
+        ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
+        for pid, ids in by_para.items()
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # provider 工厂
 # --------------------------------------------------------------------------- #
@@ -99,14 +111,16 @@ def test_cli_hitl1_gate_skip_via_scripted_input():
     gate = CliHitl1Gate(
         interactive=True, input_fn=_scripted_input(["s"]), out_fn=lambda *_a, **_k: None
     )
-    assert gate.review(_sample_tree()).action == Hitl1Action.SKIP
+    tree = _sample_tree()
+    assert gate.review(tree, paragraph_list=_sample_paragraph_list(tree)).action == Hitl1Action.SKIP
 
 
 def test_cli_hitl1_gate_accept_via_scripted_input():
     gate = CliHitl1Gate(
         interactive=True, input_fn=_scripted_input(["a"]), out_fn=lambda *_a, **_k: None
     )
-    assert gate.review(_sample_tree()).action == Hitl1Action.ACCEPT
+    tree = _sample_tree()
+    assert gate.review(tree, paragraph_list=_sample_paragraph_list(tree)).action == Hitl1Action.ACCEPT
 
 
 def test_cli_hitl1_gate_edit_empty_ops_via_scripted_input():
@@ -115,14 +129,16 @@ def test_cli_hitl1_gate_edit_empty_ops_via_scripted_input():
         input_fn=_scripted_input(["e", "done"]),
         out_fn=lambda *_a, **_k: None,
     )
-    decision = gate.review(_sample_tree())
+    tree = _sample_tree()
+    decision = gate.review(tree, paragraph_list=_sample_paragraph_list(tree))
     assert decision.action == Hitl1Action.EDIT
     assert decision.ops == []
 
 
 def test_cli_hitl1_gate_noninteractive_skips():
     gate = CliHitl1Gate(interactive=False, out_fn=lambda *_a, **_k: None)
-    assert gate.review(_sample_tree()).action == Hitl1Action.SKIP
+    tree = _sample_tree()
+    assert gate.review(tree, paragraph_list=_sample_paragraph_list(tree)).action == Hitl1Action.SKIP
 
 
 def test_cli_hitl2_gate_pass_when_no_pending():
@@ -155,9 +171,13 @@ def test_cli_hitl1_gate_formulate_question_returns_pure_snapshot_no_input_consum
 
     gate = CliHitl1Gate(interactive=True, input_fn=_input, out_fn=lambda *_a, **_k: None)
     tree = _sample_tree()
-    question = gate.formulate_question(tree)
+    paragraph_list = _sample_paragraph_list(tree)
+    question = gate.formulate_question(tree, paragraph_list=paragraph_list)
     assert isinstance(question, Hitl1Question)
     assert [n.model_dump() for n in question.argument_tree] == [n.model_dump() for n in tree]
+    assert [r.model_dump() for r in question.paragraph_list] == [
+        r.model_dump() for r in paragraph_list
+    ]
     assert calls == []  # 纯构造、不阻塞取 input
 
 

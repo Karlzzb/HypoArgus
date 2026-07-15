@@ -6,16 +6,16 @@
 
 ## 1. 节点身份
 
-- **图/阶段名**：`retrieval`（MANIFEST @ `src/agents/assembly.py:856-867`）
+- **图/阶段名**：`retrieval`（MANIFEST @ `src/agents/assembly.py:877-888`）
 - **节点入口闭包**：`_retrieval_node(agents)` → `retrieval_node(state)`
-  - 源码：`src/agents/assembly.py:630-663`
-- **注入的可调用**：`agents.retrieval`（Protocol `RetrievalFn` @ `assembly.py:165-186`）
-- **当前实现**：桩 `_stub_retrieval` @ `assembly.py:320-336`，返回空 citations；
-  **真实检索后端 = `None`，显式 Out of Scope**（MANIFEST `real=None`，`assembly.py:860`）。
-  `infra.retrieval` 接口层在接入真实后端时**不变**。
+  - 源码：`src/agents/assembly.py:633-666`
+- **注入的可调用**：`agents.retrieval`（Protocol `RetrievalFn` @ `assembly.py:168-189`）
+- **当前实现**：桩 `_stub_retrieval` @ `assembly.py:323`（返回空 citations，tracer-bullet 默认路径）；
+  **真实检索后端已落地**（ADR-0026）：MANIFEST retrieval 条目 `real=_real_retrieval_factory` @ `assembly.py:881`（与 judgment 同形），注入 `RealDeps.retrieval_runtime`（`assembly.py:774`）时返回绑定 vendored SearchAgent V12 runtime 的 `RetrievalFn`（`agents/retrieval/agent.py:real_retrieval`），未注入时返回 `None` 保留桩。
+  `infra.retrieval` 接口层（`RetrievalLayer`/`redact_query`）不变——真实后端不走 `RetrievalLayer`（route-through 已否），但 `redact_query` 被适配器复用作 PII 脱敏。
 
-> 桩读取 `session_context` / `query_time_range` / `paragraph_list` 但不触发联网——仅"穿背景"供真实后端就位。
-> 检索 fn 异常即"本轮无 citations"：记日志、空 citations 向前，下游见无素材、终稿逐字节等于原文（PRD §13 单向向前）。
+> 桩与真实适配器都读 `session_context` / `query_time_range` / `paragraph_list`：桩不触发联网（仅穿背景、产空 citations）；真实适配器据此构造 V12 payload 并经 daemon worker loop 联网。
+> 检索 fn 异常即"本轮无 citations"：记日志、空 citations 向前，下游见无素材、终稿逐字节等于原文（PRD §13 单向向前）——真实后端异常同样降级、不杀全树。
 
 ## 2. 输入（从 state 读取）
 
@@ -71,9 +71,10 @@
   judgment `JudgmentFn` 形参 `citations: dict[str, list[Source]]`（`assembly.py:143`）；
   rewrite_loop `RewriteLoopFn` 形参同型（`assembly.py:205`）。
 
-## 6. 接入真实后端的契约边界
+## 6. 真实后端已落地的契约边界
 
-- `RetrievalLayer.retrieve` 真实后端位于 `src/infra/retrieval.py`；
-  接入时 **state 侧契约（上述输入 5 字段、输出 `citations` 单写者、`Source` schema、`_merge_dict` 按 key 替换语义）应保持不变**。
-- 当前桩 `real=None`，故真实后端尚未联网；
-  外部子代理开发人员据此 5 输入 / 1 输出 + `Source` schema 规划接入。
+- 真实检索后端已接入（ADR-0026）：vendored SearchAgent V12（`src/infra/search_agent_vendor/`）经 `agents/retrieval/agent.py:real_retrieval` 适配器实现 `RetrievalFn`，注入路径为 `RealDeps.retrieval_runtime` → MANIFEST `real=_real_retrieval_factory`。
+- 接入期间 **state 侧契约保持不变**——上述输入 5 字段、输出 `citations` 单写者、`Source` schema、`_merge_dict` 按 key 替换语义均未动（硬约束）。
+- 真实后端不走 `infra/retrieval.py` 的 `RetrievalLayer`（route-through 已否）；`RetrievalLayer`/Mock 仅作接口层契约在 `tests/test_retrieval.py` 独立测，`redact_query` 被适配器复用作出网前 PII 脱敏。
+- `Source` 字段从 `CitationRecord` 映射（`snippet←content`、全 ACCEPTED+DEGRADED 映射、key=`item_id`：forward→`argument_id` / reverse→`hypothesis_id`）；映射细节见 ADR-0026 §Q6。
+- 默认装配未注入 `retrieval_runtime` 时退回桩（产空 `citations`、终稿逐字节等于原文）；真实联网全链走 `real_llm` 标记慢集成测试（`tests/test_real_retrieval_e2e.py`，默认 deselected）。

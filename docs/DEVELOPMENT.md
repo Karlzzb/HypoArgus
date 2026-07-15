@@ -180,7 +180,8 @@ END
 
 | 模块 | 职责 |
 |---|---|
-| `infra/retrieval.py` | `RetrievalLayer` Protocol + Mock + 合规校验（白名单 / 权限 / 模板在接口层强制）。retrieval 节点消费（真实后端 Out of Scope，当前桩产空 citations）。 |
+| `infra/retrieval.py` | `RetrievalLayer` Protocol + Mock + 合规校验（白名单 / 权限 / 模板在接口层强制）+ 纯函数 `redact_query`（PII 脱敏 seam）。retrieval 接口层契约（`RetrievalLayer`/Mock 在 `tests/test_retrieval.py` 独立测）；真实后端不走 `RetrievalLayer`（route-through 已否、ADR-0026），`redact_query` 被 `agents/retrieval/` 适配器复用作出网前 PII 脱敏。 |
+| `infra/search_agent_vendor/` | vendored SearchAgent V12 子智能体源码（真实检索后端：Volcano 全网检索 + Bisheng KB + 结构化检索 + 证据裁决子图）。作 vendored third-party **carve-out** 排除出 `mypy --strict` / `ruff`（`pyproject.toml` exclude + mypy override `search_agent.*`）；wheel 为正典源。见 ADR-0026。 |
 | `infra/llm_provider.py` | `build_qwen_chat_model()`：`ChatOpenAI` 指向 DashScope 端点；API key 只读 `DASHSCOPE_API_KEY`。 |
 | `infra/llm_adapters.py` | `QwenParseLlmClient` / `QwenHypothesisLlmClient` / `QwenJudgmentLlmClient` / `QwenRewriteLlmClient`：经 `with_structured_output` 绑各 seam 契约（扁平 schema、无判别联合）。 |
 
@@ -197,6 +198,7 @@ END
 | `agents/parser/{contract,agent}.py` | `parse(original_paragraphs, llm) -> ParseOutput` | `LlmClient` / `FakeLlmClient` | 全段（唯一读段落文本的环节） |
 | `agents/hitl1/{contract,agent}.py` | `confirm_partition(argument_tree, retry_count, *, gate, max_retries) -> Hitl1Outcome`（partition 闸门 + 有界打回·ADR-0017） | `Hitl1Gate` / `FakeHitl1Gate` | partition 确认（确认继续 / 打回重跑） |
 | `agents/hypothesis/{contract,agent}.py` | `propose_hypotheses(argument_tree, paragraph_list, llm) -> dict[str, list[Hypothesis]]`（仅 propose、产 pending） | `HypothesisLlmClient` / `FakeHypothesisLlmClient` | evidence / sub_claim（不读检索，ADR-0002） |
+| `agents/retrieval/{contract,agent}.py` | `retrieval(argument_tree, hypotheses, query_time_range, session_context, paragraph_list) -> dict[str, list[Source]]`（5 输入·ADR-0026；`RetrievalFn` Protocol 在 `assembly.py`，真实 adapter 在 `agent.py`） | `RetrievalRuntime` / `FakeSearchAgentRuntime`（real adapter `agents/retrieval/agent.py`，vendored runtime `infra/search_agent_vendor/`） | 全段（产 `citations` 供 judgment；未触达段产空、终稿逐字节等于原文） |
 | `agents/judgment/{contract,agent}.py` | `judge_and_adjudicate(argument_tree, hypotheses, citations, sc, qtr, llm) -> JudgmentOutcome`（五合一：取证 + merge/impact/consistency 串联·ADR-0017） | `JudgmentLlmClient` / `FakeJudgmentLlmClient` | main_claim / sub_claim / evidence |
 | `agents/rewrite_loop/{contract,agent}.py` | `propose_rewrites(argument_tree, citations, paragraph_list, sc, qtr, llm) -> RewriteLoopOutcome`（逐段提议重写·ADR-0017·Slice 6） | `RewriteLlmClient` / `FakeRewriteLlmClient` | 被触达段（supported 假说 / 命中 citations） |
 | `agents/hitl2/{contract,agent}.py` | `confirm(original_paragraphs, proposed_rewrites, gate) -> Hitl2Confirmation` / `build_review(...)` / `assemble_final_document(...)` / `resolve_rewrites(...)` | `Hitl2Gate` / `FakeHitl2Gate` / `ConservativeHitl2Gate` | 被触达段（终稿文本确认硬闸门，ADR-0010/0017） |
@@ -204,7 +206,8 @@ END
 | `agents/impact.py` | `impact(argument_tree) -> list[Argument]` | 无（串行·不产文本·剩余支撑率纯函数·judgment 串联调用） | 上层论点 invalid/weakening |
 | `agents/consistency.py` | `consistency(argument_tree) -> list[Argument]` | 无（单次扫描·只贴 `issue_tags`·judgment 串联调用） | 段落级 / 全局一致性 |
 
-> **重构方向节点增删**（ADR-0017）：Slice 1–6 全部落地（parse+partition 合并、hitl1 重定义、hypothesis_propose、retrieval 桩、judgment 五合一 + 删除 verification ReAct 模块与独占 infra、rewrite_loop 新增、hitl2 重定位为终稿闸门、writeback 裁撤）。
+> **重构方向节点增删**（ADR-0017 / ADR-0026）：Slice 1–6 全部落地（parse+partition 合并、hitl1 重定义、hypothesis_propose、retrieval 桩→真实后端、judgment 五合一 + 删除 verification ReAct 模块与独占 infra、rewrite_loop 新增、hitl2 重定位为终稿闸门、writeback 裁撤）。
+> ADR-0026 把 retrieval 从 inline 桩（`assembly.py` 的 `_stub_retrieval`）升级为 seam 子包 `agents/retrieval/{contract,agent}.py` + vendored 真实后端 `infra/search_agent_vendor/`（B1 落地路径）。
 > 装配仍由 `MANIFEST` 驱动（§4），新增 / 合并节点各加 / 改一条 `AgentEntry`，`default_pipeline()` 自动派生新拓扑，不改 `runtime/orchestrator.py` 图装配。
 
 ### 装配与调度（`src/agents/assembly.py` + `src/runtime/`）
@@ -226,7 +229,7 @@ END
 | LLM 重写提议 | Protocol | `FakeRewriteLlmClient` ↔ `QwenRewriteLlmClient` | `agents/rewrite_loop/contract.py`（真 adapter `infra/llm_adapters.py`） |
 | HITL-1 闸门 | Protocol | `FakeHitl1Gate` ↔ `CliHitl1Gate` | `agents/hitl1/contract.py`（真 adapter `runtime/cli_gates.py`） |
 | HITL-2 闸门 | Protocol | `FakeHitl2Gate` / `ConservativeHitl2Gate` ↔ `CliHitl2Gate` | `agents/hitl2/contract.py`（真 adapter `runtime/cli_gates.py`） |
-| 检索层 | Protocol | `create_mock_retrieval_layer` ↔ 真实后端 | `infra/retrieval.py` |
+| 检索层 | Protocol（`RetrievalFn`） | `_stub_retrieval` ↔ `real_retrieval`（vendored SearchAgent V12） | `assembly.py`（`RetrievalFn` Protocol + `_stub_retrieval`）；real adapter `agents/retrieval/agent.py`；vendored runtime `infra/search_agent_vendor/`（ADR-0026） |
 | agent 实现 | dataclass 字段 | stub ↔ real（`MANIFEST` 驱动 `dataclasses.replace` 逐条换） | `agents/assembly.py: Agents` |
 | **拓扑** | `StageSpec` 序列 | `default_pipeline()`（遍历 `MANIFEST` 派生）↔ 自定义 spec（省略 stage） | `runtime/orchestrator.py: default_pipeline` |
 
@@ -238,7 +241,7 @@ END
 它同时驱动两件事——typed `Agents` dataclass 构造与 `default_pipeline()` 拓扑（`StageSpec(name, build, deps)` per entry）。
 
 - `create_stub_agents()`：遍历 `MANIFEST`，按 `field` 把 `stub` 装入 `Agents`。返回全套桩——tracer bullet 端到端回路（无采纳改动 → 终稿逐字节等于原文）。
-- `create_real_agents(...)`：在桩基础上遍历 `MANIFEST`，对有 `real` 工厂的条目调 `real(RealDeps)`，返回非 `None` 者替换对应 `field`（`dataclasses.replace`）。纯函数 agent 与 retrieval 的 `real=None`，不替换（桩 = 真实 / 真实后端 Out of Scope）。
+- `create_real_agents(...)`：在桩基础上遍历 `MANIFEST`，对有 `real` 工厂的条目调 `real(RealDeps)`，返回非 `None` 者替换对应 `field`（`dataclasses.replace`）。纯函数 agent（merge / impact / consistency）无 `real`、不替换（桩 = 真实）；retrieval 的 `real` 工厂（`_real_retrieval_factory`）在未注入 `retrieval_runtime` 时返回 `None` 保留桩、注入时返回绑定 vendored V12 runtime 的 `RetrievalFn`（ADR-0026，与 judgment 同形）。
 
 条件替换矩阵（`real` 工厂返回 `None` 即保留桩）：
 
@@ -250,6 +253,7 @@ END
 | `judgment_llm`（可选） | 裁决桩 → 真实裁判（吃 citations 判终态 + 串联 merge/impact/consistency） |
 | `rewrite_llm`（可选） | 重写桩 → 真实逐段提议重写（产 `proposed_rewrites`） |
 | `hitl2_gate`（可选，缺省 `ConservativeHitl2Gate`） | HITL-2 桩 → 真实 confirm（终稿文本确认） |
+| `retrieval_runtime`（可选） | retrieval 桩 → 真实检索（vendored SearchAgent V12、`with_llm=False`、产非空 `citations` 供 judgment 重判；未注入则保留桩、产空 `citations`、终稿逐字节等于原文；ADR-0026，与 judgment 同形） |
 
 merge / impact / consistency 均为确定性纯函数、无 LLM / 检索依赖——桩路径与真实装配共用同一实现（由 judgment 串联调用），故字节级承诺在任一替换组合下都成立。
 `real` 工厂用 `functools.partial` 绑定依赖（恢复 IDE 跳转与签名可见性，比 lambda 闭包可读）。
@@ -298,9 +302,9 @@ HITL-2 采纳（`_apply_adopt`）与 orchestrator 兜底（`mark_argument_error`
 | `infra/llm_provider.py` | `build_qwen_chat_model()`：把 `ChatOpenAI` 指向 DashScope OpenAI-compatible 端点（`base_url` + `qwen-max`）。API key **只**读环境变量 `DASHSCOPE_API_KEY`，绝不硬编码。 |
 | `infra/llm_adapters.py` | `QwenParseLlmClient` / `QwenHypothesisLlmClient` / `QwenJudgmentLlmClient` / `QwenRewriteLlmClient`：经 `with_structured_output(<schema>)` 满足各 seam 契约（dev-guide §6.3）。四条 seam 的 contract schema 均为扁平 BaseModel（`ParseResult` / `_ProposalsEnvelope` / `JudgmentResult` / `_RewriteEnvelope`、无判别联合 `oneOf`）；hypothesis / judgment / rewrite 直接绑 contract schema，**parse 拆两阶段**——绑内部信封 `_ParseTreeEnvelope`（proposals-only）+ `_SummariesEnvelope`（按 8 段分块的 `ParagraphSummary`），再折成 `ParseResult`（P-01：单绑定下大论文摘要被系统性少填）；结构化链**懒构建**，构造期不触碰 provider 特性。 |
 | `runtime/cli_gates.py` | `CliHitl1Gate` / `CliHitl2Gate`：交互式同步闸门（终端 `input()` 收决策）；非 tty 退化为保守决策（HITL-1 `SKIP`、HITL-2 有待决则全驳回、原文逐字节保留），守住「绝不替人拍板自动采纳」。 |
-| `runtime/run_real.py` | `run_real_pipeline(original_doc)` 组装上述全部 + `Orchestrator`；`python -m runtime.run_real [input] [-o output]`。retrieval 节点仍为桩（产空 citations），故 judgment 经 FakeJudgmentLlmClient 默认空裁决 → 全 KEEP → rewrite_loop 无触达段 → 终稿逐字节等于原文。 |
+| `runtime/run_real.py` | `run_real_pipeline(original_doc)` 组装上述全部 + `Orchestrator`；`python -m runtime.run_real [input] [-o output]`。retrieval 节点默认未注入 `retrieval_runtime` → 产空 `citations` → judgment 经 FakeJudgmentLlmClient 默认空裁决 → 全 KEEP → rewrite_loop 无触达段 → 终稿逐字节等于原文；注入 `retrieval_runtime=lazy_search_agent_runtime()` 后产真实非空 `citations`、judgment 据之判终态。 |
 
-检索当前用 `create_mock_retrieval_layer()`（合规、确定、假素材）——真实检索后端待接（白名单/权限/模板在 `infra/retrieval.py` 接口层强制）；接入后 citations 非空、judgment 据之判终态，拓扑不动。
+检索真实后端已落地（ADR-0026）：vendored SearchAgent V12（`infra/search_agent_vendor/`）经 `agents/retrieval/agent.py` 的 `real_retrieval` 适配器接入 retrieval seam，`with_llm=False` 跑、verdict 丢弃、judgment 重判；loop-affine httpx client 由适配器自持的 daemon worker event loop + 进程级单例 runtime + `run_coroutine_threadsafe` 桥接（零框架改动）。`infra/retrieval.py` 的 `redact_query` 在出网前对 `target_text`/`paragraph_text` 做 PII 脱敏（domain whitelist 作废、作为已记录 PRD §6 偏差）。真实联网全链走 `real_llm` 标记慢集成测试（`tests/test_real_retrieval_e2e.py`，默认 deselected）。
 
 API key 配置：复制 `.env.example` 为 `.env`（已被 `.gitignore` 忽略、不会提交）并填入 `DASHSCOPE_API_KEY`；`build_qwen_chat_model()` 启动时自动从 cwd 下 `.env` 加载（无依赖极简加载器，亦可改用环境变量）。`.env` 可选 `DASHSCOPE_MODEL` 覆盖默认 `qwen-max`。
 

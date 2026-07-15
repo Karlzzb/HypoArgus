@@ -42,6 +42,10 @@
 - **裁决 Agent (judgment)**：检索之后的单一判断节点，五合一——吃 `citations` 判 per-argument / per-hypothesis 终态、再按序串联 merge / impact / consistency 纯函数（ADR-0017）。
 - **重写循环 Agent (rewrite_loop)**：judgment 之后逐段提议重写文本；对被触达段产 `proposed_rewrites`、未触达段省略（ADR-0017）。
 - **终稿确认 Agent (hitl2)**：逐段确认 / 编辑 / 驳回 `proposed_rewrites` 后拼装终稿（ADR-0017 重定位）。原独立「修订回写 Agent」已裁撤，终稿在 hitl2 落地。
+- **检索子智能体 (SearchAgent)**：真实检索后端，vendored SearchAgent V12（`src/infra/search_agent_vendor/`），挂 retrieval 节点的 `real` 工厂（与 judgment 同形管理、`RealDeps.retrieval_runtime` 注入）。
+  `with_llm=False` 模式运行（装确定性 `DeterministicEvidenceJudge`、不调 LLM、零成本），其 `TaskDecision.verdict` 被**丢弃**、judgment 节点照旧吃 `citations` 经 `QwenJudgmentLlmClient` 重判终态——judgment 仍是唯一裁决者、无双倍 LLM 成本。
+  开放式全网事实验证（Volcano 全网检索 + Bisheng KB + 结构化），**domain whitelist 作废**（作为已记录的 PRD §6 偏差）；PII 脱敏（`redact_query`）+ 可溯源审计（`Source.origin`/`locator`）两道存活关注由 seam 适配器（`src/agents/retrieval/`）重承载，结构化靠 V12 scenario-only、KB 靠 Bisheng 服务端鉴权。
+  loop-affine httpx client 经适配器自持的 daemon worker event loop + 进程级单例 runtime + `run_coroutine_threadsafe` 桥接同步 `NodeFn`（零框架改动）。见 ADR-0026。
 
 ## 关键算子 / 机制
 

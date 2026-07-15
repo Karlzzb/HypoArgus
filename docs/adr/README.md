@@ -37,6 +37,10 @@
 - [0017 — 流水线重构（Slice 1–6）](0017-pipeline-refactor-slices-1-6.md) — **整合自原 0017/0018/0019/0020/0021 + 原 0016 存活残余**。
   §1 rewrite_loop 放弃字节一致 / 裁撤 writeback；§2 hitl1 partition 闸门 + 有界打回；§3 五合一 judgment（删 ReAct infra）；§4 partition prompt 驱动；§5 贯穿 state 落 PipelineState；§6 RunnableConfig 承载 langgraph 原生机制。
 
+### 检索后端 / 子智能体迁入
+
+- [0026 — 迁入 SearchAgent V12 作为真实检索后端](0026-real-retrieval-backend-via-searchagent-v12.md) — 挂 retrieval seam、vendor + carve-out、daemon worker loop + `run_coroutine_threadsafe` 桥接、`with_llm=False` 丢 verdict、domain whitelist 作废（已记录 PRD §6 偏差）。配套 `docs/prd-search-agent-integration.md`。
+
 ### 运行时控制面 / 可视化
 
 - [0022 — interrupt + PostgresSaver 异步 HITL](0022-async-hitl-via-interrupt-postgres-saver.md) — `thread_id=session_id`；执行锁用 `session_locks` 表行。
@@ -53,7 +57,3 @@
 - **原 0018 / 0019 / 0020 / 0021** — 分别并入 [0017 §2 / §3 / §4 / §5](0017-pipeline-refactor-slices-1-6.md)。
 
 > 注：第三方 vendored 代码 `src/infra/search_agent_vendor/` 内出现的 `ADR-0004` 字样指向该 vendored 项目自身的 ADR，与本仓 `docs/adr/` 无关，清理未触碰。
-
-## 待写（Forward reference）
-
-- **ADR-0026**（real-retrieval-backend-via-searchagent-v12）— search-agent-integration 迁移（Slice 4）的架构决议，编号续 0025，尚未落笔；见 `docs/tasks/search-agent-integration/task-04-adr-and-docs.md`。

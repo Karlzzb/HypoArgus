@@ -21,13 +21,14 @@
 
 定义于 `src/runtime/orchestrator.py`，是一个 `TypedDict(total=False)`。
 顶层字段是 **StateGraph channel**——带 reducer，子智能体不直接共享可变对象，而是写 channel、reducer 合流。
-reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / `_append_errors`）。
+reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph_list` / `_merge_dict` / `_append_errors`）。
 
 | 字段 | 类型 | reducer | 来源（创建者） | 谁读 | 证据 |
 |---|---|---|---|---|---|
 | `original_doc` | `bytes` | — | `【用户】` 入口注入 | partition | `runtime/orchestrator.py` invoke；`runtime/run_real.py` |
 | `original_paragraphs` | `OriginalParagraphs` | — | `【代码】` partition 构造 | parse / rewrite_loop / hitl2（皆只读旁路） | `agents/assembly.py` parse+partition 闭包；`original_paragraphs.py` |
 | `argument_tree` | `list[Argument]` | `merge_argument_tree`（按 `argument_id` upsert 整树） | `【代码】` partition 初始化 `[]`；`【LLM】` parse 建初始树；`【LLM】` judgment 整树写回（单写者：吃 `citations` 判终态 + 按序调 merge/impact/consistency 纯函数） | parse→hitl1→hypothesis_propose→retrieval→judgment→rewrite_loop→hitl2 全程 | 写点见 §3 各子智能体；reducer `runtime/orchestrator.py` `merge_argument_tree` |
+| `paragraph_list` | `list[ParagraphRecord]` | `merge_paragraph_list`（按 `paragraph_id` upsert、保持首见段序） | `【代码】` parse+partition 产（按 `OriginalParagraphs.paragraph_ids()` 规范段序、每段一条；`original_content` 取自该段 bytes 解码、`summary` 折叠自 `ParseResult.paragraph_summaries`、`argument_tree_ids` 覆盖该段全部节点含 background 影子） | hypothesis_propose / judgment / rewrite_loop / consistency / CLI 渲染 / checkpoint（皆经 `argument_id → ParagraphRecord` 反查取该段原文 + 摘要） | ADR-0025；写 `agents/parser/agent.py`；reducer `runtime/orchestrator.py` `merge_paragraph_list` |
 | `hypotheses` | `dict[str, list[Hypothesis]]` | `_merge_dict` | `【LLM】` hypothesis_propose（partial，候选假设列表，`status=pending`）；`【LLM】` judgment 取证后整写回（`pending`→终态 `supported/doubtful/refuted`） | judgment | 写 `agents/assembly.py` hypothesis_propose 闭包；judgment 闭包读后写回 |
 | `proposed_rewrites` | `dict[str, str]`（`paragraph_id → 提议重写文本`，仅被触达段） | `_merge_dict`（单写者无冲突） | `【LLM】` rewrite_loop（逐段提议重写） | hitl2（确认 / 编辑 / 驳回后拼 `final_document`） | ADR-0017；写 `agents/assembly.py` rewrite_loop 闭包；读 `agents/hitl2/agent.py` `build_review` |
 | `final_document` | `bytes` | — | `【代码】` hitl2 拼装产出 | `run_with_report` 出口 | `agents/assembly.py` hitl2 闭包（兜底回退原文拼接）；`runtime/orchestrator.py` 出口 |
@@ -38,6 +39,7 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 - **整树 channel**（`argument_tree`）：多写者、带 `merge_argument_tree` reducer，按 `argument_id` 同 id 覆盖、新 id 追加。
   Slice 5 五合一后 judgment 为检索之后的**唯一**整树写者（吃 `hypotheses` / `citations` partial 判终态、再按序调 merge/impact/consistency 纯函数后整树写回），故裁撤 `argument_credibility` partial channel（ADR-0019）。
   Slice 6（ADR-0017）后 hitl2 不再写 `argument_tree`（按段落 / 文本工作、与 argument 状态解耦），`argument_tree` 在 judgment 之后冻结——rewrite_loop 只读用于触达判定、hitl2 只读用于取原文。
+- **段落聚合根 channel**（`paragraph_list`，ADR-0025）：单写者=parse+partition、带 `merge_paragraph_list` reducer（按 `paragraph_id` upsert、保持首见段序；hitl1 打回重跑时整列表重写、reducer 保证不重复不丢序）；多读者（hypothesis_propose / judgment / rewrite_loop / consistency / CLI / checkpoint，经 `argument_id → ParagraphRecord` 反查取该段 `original_content` + `summary`）。承载段落↔节点正向一对多关系（`argument_tree_ids`），原句每段一份（取代 ADR-0005 决策 2 的节点级存原句）。
 - **partial channel**（`hypotheses` / `citations` / `proposed_rewrites`）：单写者 + 单读者。
   hypothesis_propose 产候选假设列表（`list[Hypothesis]`、`status=pending`）、retrieval 产 citations（`list[Source]`）、rewrite_loop 产 `proposed_rewrites`（`paragraph_id → 提议重写文本`，仅被触达段），judgment 读前两者判终态后整树写回 `argument_tree`、hitl2 读 `proposed_rewrites` 拼装 `final_document`。**partial 不塞整节点**——名字即内容：`hypotheses` 的 value 就是假设列表本身、`citations` 的 value 就是 `Source` 列表本身、`proposed_rewrites` 的 value 就是提议文本本身。
 - **直通 channel**（`original_doc` / `original_paragraphs` / `final_document` / `errors`）：单写者单读者，无 reducer 冲突。
@@ -49,13 +51,14 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 定义于 `src/original_paragraphs.py`，构造后冻结（`MappingProxyType` + tuple，无写方法）。
 对外只暴露只读 API：`paragraph_ids()` / `get(pid)` / `has(pid)`。
 `paragraph_id` 形如 `p0001`（零填充 4 位）；文本为 `bytes`。
-**唯一写者是 partition**；parse / rewrite_loop / hitl2 只读旁路，**任何 prompt 都不整篇加载它**——argument 只携带自身那一段原文 + `paragraph_id` 指针（ADR-0005）。
+**唯一写者是 partition**；parse / hitl2 只读旁路（rewrite_loop 经 `paragraph_list.original_content` 取原文、不直读字节表），**任何 prompt 都不整篇加载它**——段落原文每段一份存于 `paragraph_list.original_content`（ADR-0025），`Argument` 不再存原句 / `paragraph_id` 字段。
 
 ### 1.2 重构方向新增字段（ADR-0017~0021·已落地）
 
 下表为流水线重构（ADR-0017~0021）所接受的契约。Slice 1–6 已全部落地
-（`session_context` / `query_time_range` / `paragraph_summaries` / `citations` / `partition_retry_count` /
-`hitl1_route` 均已并入 `PipelineState`；`proposed_rewrites` Slice 6 落地后已并入 §1 主表，本小节不再重复其定义）。
+（`session_context` / `query_time_range` / `citations` / `partition_retry_count` /
+`hitl1_route` 均已并入 `PipelineState`；`proposed_rewrites` Slice 6 落地后已并入 §1 主表，
+`paragraph_list` ADR-0025 落地后已并入 §1 主表，本小节不再重复其定义）。
 本小节为过渡期描述点，遵循「单一定义点、避免漂移」维护约定（已并入 §1 主表者此处不再赘述）。
 术语见 `CONTEXT.md`「重构方向术语」；ADR 偏离见 `docs/adr/0017`~`0021`。
 
@@ -63,7 +66,6 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 |---|---|---|---|---|---|
 | `session_context` | `SessionContext`（`session_id` / `user_id` / `current_time: datetime` / `user_prompt`） | —（单写者，无冲突） | `【用户】` 入口注入（`runtime/run_real.py`，与 `original_doc` 同入 START） | retrieval / judgment / hypothesis_propose / rewrite_loop（全链只读，进 LLM 背景） | ADR-0021；Slice 1 |
 | `query_time_range` | `TimeRange`（`start: date \| None` / `end: date \| None` / `rationale: str`） | —（单写者） | `【代码】` `parse+partition` 注入桩值（`TimeRange(start=2025, end=2026, rationale="默认值·真实识别待后续")`，不真实调 LLM） | retrieval / judgment / rewrite_loop | ADR-0021；Slice 1（桩），真实识别 Out of Scope |
-| `paragraph_summaries` | `dict[str, str]`（`paragraph_id → 摘要`） | `_merge_dict`（单写者无冲突） | `【LLM】` `parse+partition` 两阶段调用顺产（树一次 + 摘要按 8 分块，见 §4） | hypothesis_propose / rewrite_loop | ADR-0021；Slice 1。**不并入 `OriginalParagraphs`**（保字节级无损只读表身份，ADR-0005/0009） |
 | `citations` | `dict[str, list[Source]]`（key 为 `argument_id` 如 `n0001`/`bg-...` 或 `hypothesis_id` 如 `h-...`，两套 id 不冲突） | `_merge_dict`（单写者无冲突） | `【代码】` retrieval（当前伪代码桩，产空 / 占位，不联网） | judgment / rewrite_loop | ADR-0019；Slice 4（桩），真实后端 Out of Scope |
 | `partition_retry_count` | `int` | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（打回 +1；超限不 +1） | hitl1 自身（循环续传计数） | ADR-0018；Slice 2 |
 | `hitl1_route` | `str`（`"continue"` / `"replay"`） | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（据 `confirm_partition` 产 `Hitl1Outcome.route`） | hitl1 条件边 `_hitl1_route`（ADR-0018 受控打回边） | ADR-0018；Slice 2 |
@@ -73,7 +75,8 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 **channel 类别**（沿用 §1 三类划分）：
 
 - `session_context` / `query_time_range`：直通 channel（单写者单读者，无 reducer 冲突）。
-- `paragraph_summaries` / `citations` / `proposed_rewrites`：单写者 + 单读者，reducer=`_merge_dict`（单写者无冲突，沿用既有 partial 风格）。
+- `citations` / `proposed_rewrites`：单写者 + 单读者，reducer=`_merge_dict`（单写者无冲突，沿用既有 partial 风格）。
+  （`paragraph_summaries` channel 已退役——摘要折叠进 `paragraph_list.summary`，见 §1 主表 / ADR-0025；`proposed_rewrites` 同并入 §1 主表。）
 - `partition_retry_count` / `hitl1_route`：控制流直通 channel（单写者=hitl1、覆盖式；前者循环续传计数、后者驱动条件边路由）。**不进任何 LLM 输入**——为图层级打回控制态，非业务字段。
 - `session_context` 以单一嵌套对象流转，**不污染顶层 channel**（不拆 `session_id` / `user_id` / ... 为顶层字段，ADR-0021）。
 
@@ -85,6 +88,7 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 `Argument` 定义于 `src/domain.py`，是 `argument_tree` channel 的元素。
 **字段级来源**是子智能体开发者沟通的核心——同一 argument 的不同字段由不同子智能体在不同 stage 写入，互不覆盖。
 （`hypotheses` / `citations` partial channel 不以 `Argument` 为 value——见 §1，它们的 value 是 `list[Hypothesis]` / `list[Source]`。）
+段落原文与段落↔节点归属**不在 `Argument` 上**——`Argument` 是纯推理结构（无 `paragraph_id` / `content`），原句每段一份存于段落聚合根 `ParagraphRecord`（见 §2.3 / ADR-0025）。
 
 | 字段 | 类型 | 来源（写入者） | 进 LLM? | 证据 |
 |---|---|---|---|---|
@@ -92,8 +96,6 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 | `argument_type` | `ArgumentType` | `【LLM】` parse 提议；`【HITL】` hitl1 可 `SetTypeOp` | 是（parse 全量提议；judgment/hypothesis 只读 `argument_type.value` 进 prompt） | `agents/parser/contract.py`；`infra/llm_adapters.py` |
 | `parent_id` | `str \| None` | `【代码】` parse 据 LLM `parent_index` 解析（越界/自指→根）；`【HITL】` hitl1 `ReparentOp` | 否 | `agents/parser/agent.py` |
 | `children_ids` | `list[str]` | `【代码】` parse 回填 + 断环 `_break_cycles` | 否 | `agents/parser/agent.py` |
-| `paragraph_id` | `str` | `【代码】` parse 从只读表对齐拷入 | 是（parse 进 prompt 的 `[paragraph_id] 文本`） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
-| `content` | `str` | `【代码】` parse 逐字节从 `original_paragraphs` 拷回（**LLM 无权改写**） | 是（judgment/hypothesis/rewrite 进 prompt 的核心输入） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
 | `argument_weight` | `int 0-100` | `【LLM】` parse 提议 → `【代码】` clamp 至 [0,100]（影子恒 0）；HITL-1 合并时按规则调 | 否 | `agents/parser/agent.py` |
 | `status` | `ArgumentStatus` | `【LLM】` judgment 取证终判（`credible/doubtful/error`）；`【代码】` impact 判 `invalid` | 否（不进任何 LLM） | judgment `agents/judgment/agent.py`；impact `agents/impact.py`。**注**：Slice 6 后 `adopted`/`corrected` 在新流程（rewrite_loop + hitl2 终稿闸门）不再被写——hitl2 按段 / 文本工作、与 argument 状态解耦；`adopted`/`corrected`/`adopted_hypothesis_id` 等 domain 字段保留不删（minimizing domain churn） |
 | `issue_tags` | `list[str]` | `【代码】` merge 追加 `conflict`；`【代码】` consistency 扫贴；`【代码】` impact 追加 `weakening`（三者经 judgment 串联调用） | 否 | `agents/merge.py`；`agents/consistency.py`；`agents/impact.py`。**注**：原 writeback 失败贴 `writeback_error` 已随 writeback 裁撤移除（Slice 6） |
@@ -118,6 +120,21 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 `HypothesisStatus`（`domain.py`）：`pending → (supported | doubtful | refuted)`，与原文侧 `credible/doubtful/error` 对称。
 `MergeAction`（`domain.py`）：`keep/replace/rewrite/supplement/conflict/freeze`（ADR-0006 12 格矩阵）。
 
+### 2.3 `ParagraphRecord`（`paragraph_list` channel 的元素，`domain.py`）
+
+`ParagraphRecord` 定义于 `src/domain.py`，是 `paragraph_list` channel 的元素——段落聚合根，正向拥有与论证节点的一对多关系（ADR-0025）。
+按 `OriginalParagraphs.paragraph_ids()` 规范段序、每段一条（含被降级为 background 影子节点的段），与字节表完全对齐。
+
+| 字段 | 类型 | 来源（写入者） | 进 LLM? | 证据 |
+|---|---|---|---|---|
+| `paragraph_id` | `str` | `【代码】` parse 从 `OriginalParagraphs.paragraph_ids()` 对齐 | 否 | `agents/parser/agent.py` |
+| `summary` | `str` | `【LLM】` parse 摘要阶段（`ParseResult.paragraph_summaries` 折叠）——摘要单一定义点（退役的 `paragraph_summaries` channel 并入此处） | 是（hypothesis / rewrite 进 prompt 的段落摘要） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
+| `original_content` | `str` | `【代码】` parse 取该段 `OriginalParagraphs.get(pid)` 解码文本（`surrogateescape`，每段唯一一份；**LLM 无权改写**） | 是（hypothesis / judgment / rewrite 进 prompt 的核心原文输入，取代原 `Argument.content`） | `agents/parser/agent.py`；`infra/llm_adapters.py` |
+| `argument_tree_ids` | `list[str]` | `【代码】` parse 按段覆盖该段全部节点（核心 + background 影子）；HITL-1 `merge` / `split` / `mark_no_op` 同步维护 | 否 | `agents/parser/agent.py`；`agents/hitl1/agent.py` |
+
+> **一致性自检（硬停）**：`argument_tree` 中每个 `argument_id` 恰出现于一个段落的 `argument_tree_ids`、且 `argument_tree_ids` 中每个 id 都存在于 `argument_tree`，不符即硬停（遵循「正确性硬停、不兜底」惯例，ADR-0025）。
+> 「同段才能合并」断言由 `argument_tree_ids` 归属判定（取代原 `Argument.paragraph_id` 比较）。
+
 ## 3. 子智能体局部契约（按 stage）
 
 子智能体分布在 `src/agents/<name>/`（parser / hitl1 / hypothesis / judgment / rewrite_loop / hitl2）与 `src/agents/<name>.py`（merge / impact / consistency——均为纯函数、由 judgment 节点按序串联调用）。
@@ -128,24 +145,24 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 
 | stage | 输入（主 state 字段） | 输出（写回主 state） | LLM? | 纯函数签名 / 证据 |
 |---|---|---|---|---|
-| parse+partition | `original_doc` | `original_paragraphs` / `argument_tree` / `query_time_range` / `paragraph_summaries` | **是**（parse） | `parse(original_paragraphs, llm) -> ParseOutput` `agents/parser/agent.py` |
-| hitl1 | `argument_tree` / `partition_retry_count` | `argument_tree` / `hitl1_route` / `partition_retry_count` | 否（HITL 桩） | `confirm_partition(argument_tree, retry_count, gate) -> Hitl1Outcome` `agents/hitl1/agent.py` |
-| hypothesis_propose | `argument_tree` / `paragraph_summaries` | `hypotheses` | **是** | `propose_hypotheses(argument_tree, paragraph_summaries, llm) -> dict[str, list[Hypothesis]]` `agents/hypothesis/agent.py` |
+| parse+partition | `original_doc` | `original_paragraphs` / `argument_tree` / `query_time_range` / `paragraph_list` | **是**（parse） | `parse(original_paragraphs, llm) -> ParseOutput` `agents/parser/agent.py` |
+| hitl1 | `argument_tree` / `paragraph_list` / `partition_retry_count` | `argument_tree` / `paragraph_list` / `hitl1_route` / `partition_retry_count` | 否（HITL 桩） | `confirm_partition(argument_tree, paragraph_list, retry_count, gate) -> Hitl1Outcome` `agents/hitl1/agent.py` |
+| hypothesis_propose | `argument_tree` / `paragraph_list` | `hypotheses` | **是** | `propose_hypotheses(argument_tree, paragraph_list, llm) -> dict[str, list[Hypothesis]]` `agents/hypothesis/agent.py` |
 | retrieval | `argument_tree` / `hypotheses` / `query_time_range` / `session_context` | `citations` | 否（伪代码桩，真实后端 Out of Scope） | `retrieval(argument_tree, hypotheses, qtr, sc) -> dict[str, list[Source]]` `agents/assembly.py` 桩 |
-| judgment | `argument_tree` / `hypotheses` / `citations` / `session_context` / `query_time_range` | `argument_tree`（整树写回） / `hypotheses`（终态化） | **是** | `judge_and_adjudicate(argument_tree, hypotheses, citations, sc, qtr, llm) -> JudgmentOutcome` `agents/judgment/agent.py` |
-| rewrite_loop | `argument_tree` / `citations` / `paragraph_summaries` / `original_paragraphs` / `session_context` / `query_time_range` | `proposed_rewrites`[, `errors`] | **是** | `propose_rewrites(argument_tree, citations, paragraph_summaries, original_paragraphs, sc, qtr, llm) -> RewriteLoopOutcome` `agents/rewrite_loop/agent.py` |
+| judgment | `argument_tree` / `hypotheses` / `citations` / `paragraph_list` / `session_context` / `query_time_range` | `argument_tree`（整树写回） / `hypotheses`（终态化） | **是** | `judge_and_adjudicate(argument_tree, hypotheses, citations, paragraph_list, sc, qtr, llm) -> JudgmentOutcome` `agents/judgment/agent.py` |
+| rewrite_loop | `argument_tree` / `citations` / `paragraph_list` / `session_context` / `query_time_range` | `proposed_rewrites`[, `errors`] | **是** | `propose_rewrites(argument_tree, citations, paragraph_list, sc, qtr, llm) -> RewriteLoopOutcome` `agents/rewrite_loop/agent.py` |
 | hitl2 | `original_paragraphs` / `proposed_rewrites` | `final_document` | 否（HITL 桩） | `confirm(original_paragraphs, proposed_rewrites, gate) -> Hitl2Confirmation` `agents/hitl2/agent.py` |
 
-> **judgment 内部串联**（纯函数、逻辑不动）：`judge_and_adjudicate` 先 `llm.judge(...)` 取 per-argument / per-hypothesis 终态，构造局部 `argument_credibility` + 终态化 `hypotheses`，再按序调 `merge_with_partials` → `impact` → `consistency`，整树写回 `argument_tree`（单写者，故裁撤 `argument_credibility` partial channel）。
+> **judgment 内部串联**（纯函数、逻辑不动）：`judge_and_adjudicate` 先 `llm.judge(...)` 取 per-argument / per-hypothesis 终态（T-02：按段聚合节点 + 段原文一次），构造局部 `argument_credibility` + 终态化 `hypotheses`，再按序调 `merge_with_partials` → `impact` → `consistency`（`consistency` 收 `paragraph_list`、按 `argument_tree_ids` 分组 + `original_content` 去重），整树写回 `argument_tree`（单写者，故裁撤 `argument_credibility` partial channel）。
 > merge/impact/consistency 均为确定性纯函数、无 LLM / 检索依赖，**不在拓扑中独立成 stage**——它们的串联编排收口于 judgment 节点（ADR-0019）。
-> rewrite_loop 只读 `argument_tree` 用于触达判定（段内有 supported 假说 / 命中 citations）+ LLM 输入，**不写 `argument_tree`**（Slice 6：与 argument 状态解耦，失败信号落 `errors` channel + 段回退原文）。hitl2 只读 `original_paragraphs` + `proposed_rewrites`，拼装 `final_document`，亦不写 `argument_tree`。
+> rewrite_loop 只读 `argument_tree`（触达判定）+ `paragraph_list`（按 `argument_tree_ids` 解析段内节点、取该段 `original_content`）用于 LLM 输入，**不写 `argument_tree`**（Slice 6：与 argument 状态解耦，失败信号落 `errors` channel + 段回退原文）。hitl2 只读 `original_paragraphs` + `proposed_rewrites`，拼装 `final_document`，亦不写 `argument_tree`。
 
 ### 3.2 各子智能体可改字段（一句话边界）
 
-- **parse+partition**：partition 按 ATX 标题边界 + 空行切分产 `original_paragraphs`（只读原文表；P-05：零空行文档按标题边界切、不塌成单段，字节级不变）+ 空树（纯代码、字节级自检失败硬停）；parse 只喂 `is_substantive` 段（去纯 `---` 主题分隔线，P-02）建初始树，铸 `argument_id` / `parent_id` / `children_ids`（n-id 按幸存提议连续赋值、空位 parent 落根，P-04）/ `paragraph_id` / `content`(拷回) / `argument_weight`(clamp) / `status=unverified`。无提议段落（含被 `is_substantive` 排除的 `---` 段）降级为 `background` 影子节点。
-- **hitl1**：人审结构编辑。可改 `argument_id` / `parent_id` / `children_ids` / `argument_type` / `argument_weight`；不改 `content`。
-- **hypothesis_propose**：只产候选假设 `list[Hypothesis]`（`status=pending`）；覆盖范围 `evidence/sub_claim`。propose 不取证、不读检索（ADR-0002 解法 A）。
-- **judgment**：吃 `citations` 判 per-argument / per-hypothesis 终态。落 `status`（原文侧 `credible/doubtful/error`）+ `Hypothesis.status`（`pending`→终态）；经 merge/impact/consistency 串联写 `merge_decision` / `issue_tags` / 裁剪 `candidate_hypotheses` / 翻上层 `invalid`；覆盖范围 `main_claim/sub_claim/evidence`。不改 `content`、不置 `adopted`。
+- **parse+partition**：partition 按 ATX 标题边界 + 空行切分产 `original_paragraphs`（只读原文表；P-05：零空行文档按标题边界切、不塌成单段，字节级不变）+ 空树（纯代码、字节级自检失败硬停）；parse 只喂 `is_substantive` 段（去纯 `---` 主题分隔线，P-02）建初始树，铸 `argument_id` / `parent_id` / `children_ids`（n-id 按幸存提议连续赋值、空位 parent 落根，P-04）/ `argument_weight`(clamp) / `status=unverified`；同点产 `paragraph_list`（每段一条，`original_content` 取自该段 bytes 解码、`summary` 折叠自 `ParseResult.paragraph_summaries`、`argument_tree_ids` 覆盖该段全部节点）。无提议段落（含被 `is_substantive` 排除的 `---` 段）降级为 `background` 影子节点。
+- **hitl1**：人审结构编辑。可改 `argument_id` / `parent_id` / `children_ids` / `argument_type` / `argument_weight`；`merge` / `split` / `mark_no_op` 同步维护所属段 `argument_tree_ids`（ADR-0025），`reparent` / `set_type` 不动成员关系。「同段才能合并」由 `argument_tree_ids` 归属判定。
+- **hypothesis_propose**：只产候选假设 `list[Hypothesis]`（`status=pending`）；覆盖范围 `evidence/sub_claim`。propose 不取证、不读检索（ADR-0002 解法 A）。逐 argument 经 `argument_tree_ids` 反查该段 `original_content` + `summary` 喂 `propose`（不读 `Argument` 原文字段）。
+- **judgment**：吃 `citations` 判 per-argument / per-hypothesis 终态。落 `status`（原文侧 `credible/doubtful/error`）+ `Hypothesis.status`（`pending`→终态）；经 merge/impact/consistency 串联写 `merge_decision` / `issue_tags` / 裁剪 `candidate_hypotheses` / 翻上层 `invalid`；覆盖范围 `main_claim/sub_claim/evidence`。不置 `adopted`。
 - **rewrite_loop**：对被触达段（段内有 supported 假说 / 命中 citations）调 LLM 产提议重写文本，写 `proposed_rewrites`；未触达段省略；LLM 抛错段省略 + 记 `errors`、不杀全树。**不碰 `argument_tree`**（只读用于触达判定 + LLM 输入）。
 - **hitl2**：逐段确认 / 编辑 / 驳回 `proposed_rewrites`，拼装 `final_document`（确认→提议文本、编辑→编辑文本、驳回 / 未触达→逐字节原文）。硬闸门，`Hitl2GateError` 原样上抛不兜底；**不写 `argument_tree`**（按段 / 文本工作，与 argument 状态解耦）。
 
@@ -155,16 +172,16 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `_merge_dict` / 
 merge / impact / consistency / hitl1 / hitl2 / retrieval 均**无 LLM**（纯函数 + 同步人工桩 + 伪代码检索桩）。
 
 > **输入压缩铁律**：四条 LLM seam **只把「原文文本 + 检索 snippet + 运行背景」喂给 LLM**，绝不回灌 `status` / `argument_weight` / `parent_id` / `children_ids` / `issue_tags` / `merge_decision` 等内部状态字段。
-> parse 按段喂、不整篇 dump；hypothesis 只注 `argument_type + content` + `paragraph_summary`；judgment 注 `argument_type + content` + 假说 `text` + citation 片段 + `session_context` / `query_time_range` 背景；rewrite 注 `paragraph_summary` + 段内 `argument.content` / `argument_type` + 段内假说 `text` / `relation` + citation 片段 + 运行背景。
+> parse 按段喂、不整篇 dump；hypothesis 注 `argument_type` + 该段 `original_content` + `summary`；judgment 注 `argument_type` + 段 `original_content`（按段聚合节点、每段原文一次）+ 假说 `text` + citation 片段 + `session_context` / `query_time_range` 背景；rewrite 注 `summary` + 段 `original_content` + 段内 `argument.argument_type` + 段内假说 `text` / `relation` + citation 片段 + 运行背景。
 > 四条 seam 的 contract schema 均为扁平 BaseModel（`ParseResult` / `_ProposalsEnvelope` / `JudgmentResult` / `_RewriteEnvelope`、无判别联合 `oneOf`）。
 > 其中 hypothesis / judgment / rewrite 三 seam 直接用 contract schema 经 `with_structured_output` 绑定；**parse 拆两阶段**——真实 adapter 绑两个内部信封 `_ParseTreeEnvelope`（proposals-only）+ `_SummariesEnvelope`（按 8 段分块的 `ParagraphSummary`），再在 adapter 内折成 `ParseResult`（P-01：单 `ParseResult` 绑定下大论文摘要被系统性少填，故树/摘要拆关注点、分块产出）。
 
 | # | stage | Protocol 方法（contract 定义） | 进 LLM 的 state 字段 | 输入形式 | structured output 模型 | 写回字段 | 证据 |
 |---|---|---|---|---|---|---|---|
-| 1 | parse | `LlmClient.parse(paragraphs: list[ParagraphView]) -> ParseResult`（`agents/parser/contract.py`） | `original_paragraphs` 的段落原文（经 `is_substantive` 去纯 `---` 主题分隔线，不喂 LLM、归只读 background 影子） | **两阶段**：① 树——每段 `[paragraph_id] 文本`，多段 `\n\n` 拼，内嵌 `WEIGHT_RUBRIC` 明文 rubric；② 摘要——按 `summary_chunk_size=8` 分块、逐块产 `ParagraphSummary`（LLM 漏填/返空者由该段自身文本兜底，P-06） | 真实 adapter 绑 `_ParseTreeEnvelope`（`proposals: list[ParsedNodeProposal]`，字段 `paragraph_id/argument_type/parent_index/argument_weight`，**不含 content**）+ `_SummariesEnvelope`（chunk of `ParagraphSummary`），折成 `ParseResult`（另含 `paragraph_summaries: list[ParagraphSummary]` + `query_time_range` 桩）；Fake 直接返 `ParseResult` | `argument_tree` + `paragraph_summaries` + `query_time_range`（agent 据 proposals 铸 `Argument`、逐字节拷回 `content`；`list[ParagraphSummary]` 折成 `dict[str,str]`） | `infra/llm_adapters.py` `QwenParseLlmClient`；调用 `agents/parser/agent.py` |
-| 2 | hypothesis / propose | `HypothesisLlmClient.propose(argument, paragraph_summary) -> list[HypothesisProposal]`（`agents/hypothesis/contract.py`） | `argument.argument_type` + `argument.content` + `paragraph_summary` | prompt 拼接：注入 `argument_type` + `content` + 段落摘要，要求 0..N 条可证伪假设，每条恰一种 relation | `_ProposalsEnvelope`（包 `list[HypothesisProposal]`：`text/relation/confidence`） | `hypotheses`（agent 铸 `Hypothesis`，写候选假设列表，`status=pending`） | `infra/llm_adapters.py` `QwenHypothesisLlmClient`；调用 `agents/hypothesis/agent.py` |
-| 3 | judgment | `JudgmentLlmClient.judge(argument_tree, hypotheses, citations, session_context, query_time_range) -> JudgmentResult`（`agents/judgment/contract.py`） | `argument.argument_type` + `argument.content`（覆盖范围内）+ 假说 `text` + `citations` 片段 + `session_context` / `query_time_range` 背景 | prompt 拼接：节点 `[id \| type] content` 列表 + 假说列表 + citation 片段 + 运行背景；LLM 一次产 per-argument / per-hypothesis 终态裁决 | `JudgmentResult`（扁平信封：`argument_verdicts` + `hypothesis_verdicts` 两 list，各 `{id, verdict}`） | `argument_tree`（agent 据返回铸 `ArgumentStatus` / `Hypothesis.status`，再调 merge/impact/consistency 整树写回） | `infra/llm_adapters.py` `QwenJudgmentLlmClient`；调用 `agents/judgment/agent.py` |
-| 4 | rewrite_loop | `RewriteLlmClient.propose_rewrite(paragraph_id, paragraph_summary, arguments, citations, session_context, query_time_range) -> str \| None`（`agents/rewrite_loop/contract.py`） | `paragraph_summary` + 段内 `argument.argument_type` / `content` + 段内假说 `text` / `relation` + `citations` 片段 + `session_context` / `query_time_range` 背景 | prompt 拼接：段落摘要 + 段内节点列表 + 段内假说 + citation 片段 + 运行背景；LLM 产一版重写文本（空串=不提议） | `_RewriteEnvelope`（`rewritten_text: str`，空串=选择不提议） | `proposed_rewrites`（agent 据 `paragraph_id` 入表，仅触达段） | `infra/llm_adapters.py` `QwenRewriteLlmClient`；调用 `agents/rewrite_loop/agent.py` |
+| 1 | parse | `LlmClient.parse(paragraphs: list[ParagraphView]) -> ParseResult`（`agents/parser/contract.py`） | `original_paragraphs` 的段落原文（经 `is_substantive` 去纯 `---` 主题分隔线，不喂 LLM、归只读 background 影子） | **两阶段**：① 树——每段 `[paragraph_id] 文本`，多段 `\n\n` 拼，内嵌 `WEIGHT_RUBRIC` 明文 rubric；② 摘要——按 `summary_chunk_size=8` 分块、逐块产 `ParagraphSummary`（LLM 漏填/返空者由该段自身文本兜底，P-06） | 真实 adapter 绑 `_ParseTreeEnvelope`（`proposals: list[ParsedNodeProposal]`，字段 `paragraph_id/argument_type/parent_index/argument_weight`，**不含 content**）+ `_SummariesEnvelope`（chunk of `ParagraphSummary`），折成 `ParseResult`（另含 `paragraph_summaries: list[ParagraphSummary]` + `query_time_range` 桩）；Fake 直接返 `ParseResult` | `argument_tree` + `paragraph_list` + `query_time_range`（agent 据 proposals 铸纯推理 `Argument`；产 `paragraph_list`——`original_content` 取自 `OriginalParagraphs` 解码、`summary` 折叠自 `ParseResult.paragraph_summaries`、`argument_tree_ids` 按段覆盖；`ParseResult.paragraph_summaries` seam 输出保留不动） | `infra/llm_adapters.py` `QwenParseLlmClient`；调用 `agents/parser/agent.py` |
+| 2 | hypothesis / propose | `HypothesisLlmClient.propose(argument, paragraph_summary, original_content) -> list[HypothesisProposal]`（`agents/hypothesis/contract.py`） | `argument.argument_type` + 该段 `original_content` + `summary`（经 `paragraph_list` 反查） | prompt 拼接：注入 `argument_type` + 段原文 + 段落摘要，要求 0..N 条可证伪假设，每条恰一种 relation | `_ProposalsEnvelope`（包 `list[HypothesisProposal]`：`text/relation/confidence`） | `hypotheses`（agent 铸 `Hypothesis`，写候选假设列表，`status=pending`） | `infra/llm_adapters.py` `QwenHypothesisLlmClient`；调用 `agents/hypothesis/agent.py` |
+| 3 | judgment | `JudgmentLlmClient.judge(argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range) -> JudgmentResult`（`agents/judgment/contract.py`） | `argument.argument_type` + 段 `original_content`（覆盖范围内、按段聚合每段一次）+ 假说 `text` + `citations` 片段 + `session_context` / `query_time_range` 背景 | prompt 拼接：按段聚合节点 `[id \| type]` + 段原文一次 + 假说列表 + citation 片段 + 运行背景；LLM 一次产 per-argument / per-hypothesis 终态裁决 | `JudgmentResult`（扁平信封：`argument_verdicts` + `hypothesis_verdicts` 两 list，各 `{id, verdict}`） | `argument_tree`（agent 据返回铸 `ArgumentStatus` / `Hypothesis.status`，再调 merge/impact/consistency 整树写回） | `infra/llm_adapters.py` `QwenJudgmentLlmClient`；调用 `agents/judgment/agent.py` |
+| 4 | rewrite_loop | `RewriteLlmClient.propose_rewrite(paragraph_id, paragraph_summary, original_content, arguments, citations, session_context, query_time_range) -> str \| None`（`agents/rewrite_loop/contract.py`） | `summary` + 段 `original_content` + 段内 `argument.argument_type` + 段内假说 `text` / `relation` + `citations` 片段 + `session_context` / `query_time_range` 背景 | prompt 拼接：段落摘要 + 段原文 + 段内节点列表 + 段内假说 + citation 片段 + 运行背景；LLM 产一版重写文本（空串=不提议） | `_RewriteEnvelope`（`rewritten_text: str`，空串=选择不提议） | `proposed_rewrites`（agent 据 `paragraph_id` 入表，仅触达段） | `infra/llm_adapters.py` `QwenRewriteLlmClient`；调用 `agents/rewrite_loop/agent.py` |
 
 ## 5. 维护与扩展约定
 

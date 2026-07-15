@@ -15,6 +15,8 @@
 - **text_span**：节点在原文中的起止偏移量，**仅作段内辅助定位**，回写逻辑不依赖它。
 - **基数约束**：一个段落可含多个节点；一个节点不可跨段落。
 - **只读原文段落表 (Original Paragraphs)**：`{ paragraph_id → 原始 bytes }` 的不可变副本。字节级还原、HITL-2 对比左栏、回写拷贝的共同真相源，**永不整篇进 Agent 上下文**。见 ADR-0005。
+- **段落聚合根 (ParagraphRecord / `paragraph_list`)**：每段一条的聚合记录，正向拥有与论证节点的一对多关系（`argument_tree_ids`）。
+  `Argument` 是纯推理结构（不再持 `paragraph_id` / `content`）；段落原文每段一份存于 `ParagraphRecord.original_content`（取代原节点级存原句），摘要存于 `ParagraphRecord.summary`。见 ADR-0025。
 - **节点权重 (`argument_weight`)**：0-100 整数，解析器建树时按明文 rubric 赋值——带数据/引源的论据高分、泛泛断言低分，影子节点恒 0。
   供影响传导计算上层论点的剩余支撑率（`surviving_weight / total_weight`），是 `invalid` / `weakening` 判定的依据。见 ADR-0013。
 
@@ -35,7 +37,7 @@
 ## 智能体角色
 
 - **全局调度 Agent**：中枢编排、状态管理、HITL 调度、单向流控制。
-- **论证结构解析 Agent**：唯一语义解析入口，产出论证树 + `paragraph_summaries` + `query_time_range` 桩。
+- **论证结构解析 Agent**：唯一语义解析入口，产出论证树 + `paragraph_list` + `query_time_range` 桩。
 - **假设生成 Agent**：在原文边界内为节点**仅 propose** 产 pending 候选修订假说（取证移至 judgment）。
 - **裁决 Agent (judgment)**：检索之后的单一判断节点，五合一——吃 `citations` 判 per-argument / per-hypothesis 终态、再按序串联 merge / impact / consistency 纯函数（ADR-0019）。
 - **重写循环 Agent (rewrite_loop)**：judgment 之后逐段提议重写文本；对被触达段产 `proposed_rewrites`、未触达段省略（ADR-0017）。
@@ -62,8 +64,9 @@
 - **查询时间范围 (query_time_range)**：本文所需的数据查询时间范围（`start` / `end` / `rationale`）。
   单写者=`parse+partition`（当前伪代码桩，默认 2025–2026，真实 LLM 时间识别待后续切片）；读者=retrieval / rewrite / judgment。
   供下游检索限定在正确时间窗、供 LLM 决策有时间上下文。见 ADR-0021。
-- **段落摘要 (paragraph_summary)**：每段的摘要文本（`paragraph_id → 摘要`），由 `parse+partition` 两阶段顺产（树调用产 proposals + 摘要分块调用产 `list[ParagraphSummary]`，折成 dict）。
-  供 hypothesis_propose / rewrite_loop 读取，避免一次性 / 逐点喂入时上下文爆炸；**不并入 `OriginalParagraphs`**（保其字节级无损只读表身份）。见 ADR-0021 / STATE.md §1。
+- **段落摘要 (paragraph_summary)**：每段的摘要文本，由 `parse+partition` 两阶段顺产（树调用产 proposals + 摘要分块调用产 `list[ParagraphSummary]`）。
+  现承载于段落聚合根 `ParagraphRecord.summary`（摘要单一定义点；原 `paragraph_summaries` state channel 已退役，见 ADR-0025）。
+  供 hypothesis_propose / rewrite_loop / judgment 读取，避免一次性 / 逐点喂入时上下文爆炸；**不并入 `OriginalParagraphs`**（保其字节级无损只读表身份）。见 ADR-0021 / ADR-0025 / STATE.md §1。
 - **judgment 节点**：检索之后的单一判断节点，五合一（verification 取证 + hypothesis 取证 + merge 裁决 + impact 传导 + consistency 批注）。
   控制流合并为 1，但 merge / impact / consistency 的**纯函数逻辑保留、不交 LLM 裁决**；取证由新 LLM seam 吃 `citations` 判终态，不再 ReAct 逐段逐点检索。
   重构 ADR-0002（乐观并行）/ ADR-0006（12 格矩阵合流）的双线路并行设计。见 ADR-0019。

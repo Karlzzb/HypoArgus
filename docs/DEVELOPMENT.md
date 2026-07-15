@@ -23,7 +23,7 @@ START → parse+partition → hitl1 → hypothesis_propose → retrieval
 
 ```
 START → parse+partition
-          产 argument_tree + paragraph_summaries + query_time_range
+          产 argument_tree + paragraph_list + query_time_range
         → hitl1                  （partition 确认闸门；可打回重跑 parse+partition，有界·ADR-0018）
         → hypothesis_propose     （逐 argument 产候选假说，status=pending）
         → retrieval              （批量检索，统一返回 citations·当前桩）
@@ -39,9 +39,9 @@ END
 
 | 操作 | 节点 | 说明 |
 |---|---|---|
-| 合并 | `partition` + `parse` → `parse+partition` | 单一 `AgentEntry`，`deps=()` 接 START；partition 切分 + 字节自检、parse 建树 / content 拷回主逻辑不动，新增两阶段 LLM 调用多吐 `query_time_range` / `paragraph_summaries`（P-01：树 + 摘要分块拆关注点）。ADR-0020 |
+| 合并 | `partition` + `parse` → `parse+partition` | 单一 `AgentEntry`，`deps=()` 接 START；partition 切分 + 字节自检、parse 建树主逻辑不动（`Argument` 不再存 `content` / `paragraph_id`，原句收到 `paragraph_list`），新增两阶段 LLM 调用多吐 `query_time_range` / `paragraph_list`（摘要折叠进 `paragraph_list.summary`，P-01：树 + 摘要分块拆关注点）。ADR-0020 / ADR-0025 |
 | 重定义 | `hitl1` | partition 确认闸门 + 有界打回（ADR-0018）；动作集对齐「确认继续 / 打回重跑」 |
-| 新增 | `hypothesis_propose` | 逐 argument 调 `propose`（不取证），产 pending 假说；读 `paragraph_summaries`（非整段 content）。ADR-0019 |
+| 新增 | `hypothesis_propose` | 逐 argument 调 `propose`（不取证），产 pending 假说；读 `paragraph_list`（取该段 `original_content` + `summary`）。ADR-0019 |
 | 新增 | `retrieval` | 批量检索，统一返回 `citations`；当前伪代码桩（空 citations，不联网）。ADR-0019 |
 | 五合一 | `verification` + `hypothesis`（取证）+ `merge` + `impact` + `consistency` → `judgment` | 控制流合并为 1，merge/impact/consistency 纯函数逻辑不动、由 judgment 按序串联调用。ADR-0019 |
 | 新增 | `rewrite_loop` | 逐段 LLM 提议重写；产 `proposed_rewrites`。ADR-0017·Slice 6 |
@@ -60,7 +60,7 @@ START
 │    parse：LlmClient.parse(original_paragraphs)（唯一读段落文本的环节）        │
 │    失败降级 → argument_tree=[]（空树向前）+ 桩 query_time_range + 空 summaries│
 │    writes: original_paragraphs, argument_tree, query_time_range,            │
-│            paragraph_summaries                                               │
+│            paragraph_list                                                    │
 └────────────────────────────────────────────────────────────────────────────┘
   │
   ▼
@@ -113,8 +113,8 @@ START
   ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ ⑥ rewrite_loop       【单次·逐段调 LLM·有 _guarded·ADR-0017·Slice 6】       │
-│    reads: argument_tree + citations + paragraph_summaries +                 │
-│           original_paragraphs + session_context + qtr                        │
+│    reads: argument_tree + citations + paragraph_list +                      │
+│           session_context + qtr                                              │
 │    触达判定（逐段）：段内有 supported 假说 / 命中 citations → 触达              │
 │    for 触达段: text = llm.propose_rewrite(...)                               │
 │      非空 → 入 proposed_rewrites；None/空 → 省略；抛错 → 省略 + 记 errors     │
@@ -170,7 +170,7 @@ END
 
 | 模块 | 职责 |
 |---|---|
-| `domain.py` | `Argument` / `ArgumentType` / `ArgumentStatus` / `Hypothesis` / `HypothesisStatus` / `MergeAction` / `MergeDecision`。节点形状为决策、非最终代码；字段由各 agent 分阶段补全。 |
+| `domain.py` | `Argument` / `ArgumentType` / `ArgumentStatus` / `Hypothesis` / `HypothesisStatus` / `MergeAction` / `MergeDecision` / `ParagraphRecord`。节点 / 段落聚合根形状为决策、非最终代码；字段由各 agent 分阶段补全。 |
 | `original_paragraphs.py` | `OriginalParagraphs`：只读、确定性、字节级无损的原文段落表（ADR-0005/0009）。 |
 | `partition.py` | 纯代码段落切分（零 LLM，ADR-0009）+ 分区不变式自检。 |
 | `tree_invariants.py` | 论证树结构不变式（`validate_tree` / `rebuild_children`，ADR-0001）。 |
@@ -196,9 +196,9 @@ END
 |---|---|---|---|
 | `agents/parser/{contract,agent}.py` | `parse(original_paragraphs, llm) -> ParseOutput` | `LlmClient` / `FakeLlmClient` | 全段（唯一读段落文本的环节） |
 | `agents/hitl1/{contract,agent}.py` | `confirm_partition(argument_tree, retry_count, *, gate, max_retries) -> Hitl1Outcome`（partition 闸门 + 有界打回·ADR-0018） | `Hitl1Gate` / `FakeHitl1Gate` | partition 确认（确认继续 / 打回重跑） |
-| `agents/hypothesis/{contract,agent}.py` | `propose_hypotheses(argument_tree, paragraph_summaries, llm) -> dict[str, list[Hypothesis]]`（仅 propose、产 pending） | `HypothesisLlmClient` / `FakeHypothesisLlmClient` | evidence / sub_claim（不读检索，ADR-0002） |
+| `agents/hypothesis/{contract,agent}.py` | `propose_hypotheses(argument_tree, paragraph_list, llm) -> dict[str, list[Hypothesis]]`（仅 propose、产 pending） | `HypothesisLlmClient` / `FakeHypothesisLlmClient` | evidence / sub_claim（不读检索，ADR-0002） |
 | `agents/judgment/{contract,agent}.py` | `judge_and_adjudicate(argument_tree, hypotheses, citations, sc, qtr, llm) -> JudgmentOutcome`（五合一：取证 + merge/impact/consistency 串联·ADR-0019） | `JudgmentLlmClient` / `FakeJudgmentLlmClient` | main_claim / sub_claim / evidence |
-| `agents/rewrite_loop/{contract,agent}.py` | `propose_rewrites(argument_tree, citations, paragraph_summaries, original_paragraphs, sc, qtr, llm) -> RewriteLoopOutcome`（逐段提议重写·ADR-0017·Slice 6） | `RewriteLlmClient` / `FakeRewriteLlmClient` | 被触达段（supported 假说 / 命中 citations） |
+| `agents/rewrite_loop/{contract,agent}.py` | `propose_rewrites(argument_tree, citations, paragraph_list, sc, qtr, llm) -> RewriteLoopOutcome`（逐段提议重写·ADR-0017·Slice 6） | `RewriteLlmClient` / `FakeRewriteLlmClient` | 被触达段（supported 假说 / 命中 citations） |
 | `agents/hitl2/{contract,agent}.py` | `confirm(original_paragraphs, proposed_rewrites, gate) -> Hitl2Confirmation` / `build_review(...)` / `assemble_final_document(...)` / `resolve_rewrites(...)` | `Hitl2Gate` / `FakeHitl2Gate` / `ConservativeHitl2Gate` | 被触达段（终稿文本确认硬闸门，ADR-0010/0017） |
 | `agents/merge.py` | `merge` / `merge_with_partials` / `apply_partial_updates` | 无（确定性 12 格矩阵纯函数·judgment 串联调用） | 全节点标注 |
 | `agents/impact.py` | `impact(argument_tree) -> list[Argument]` | 无（串行·不产文本·剩余支撑率纯函数·judgment 串联调用） | 上层论点 invalid/weakening |
@@ -346,7 +346,7 @@ lint / 类型 / 测试失败一律修，即使非本次改动引入（见 `CLAUD
 ## 10. 关键约束速查
 
 - **一段一节点**：`paragraph_id` 单数，不跨段（ADR-0001）。
-- **content 永不被 LLM 改写**：节点文本只来自只读表逐字节拷回（`agents/parser/agent.py` 先例，by construction）。Slice 6 的 rewrite_loop 对**被触达段**产**提议重写文本**（写入 `proposed_rewrites`、不回写 `argument.content`），最终是否落地由 hitl2 人确认——这是 ADR-0017 对「终稿逐字节一致 / content 不被 LLM 改写」承诺的受控放宽（仅被触达段、需人拍板；未触达段仍逐字节忠实）。
+- **段落原文永不被 LLM 改写**：段落原文 `original_content`（存于 `ParagraphRecord`，ADR-0025）只来自只读字节表解码、`Argument` 不再存原句字段（by construction）。Slice 6 的 rewrite_loop 对**被触达段**产**提议重写文本**（写入 `proposed_rewrites`、不回写 `ParagraphRecord.original_content`），最终是否落地由 hitl2 人确认——这是 ADR-0017 对「终稿逐字节一致 / 段落原文不被 LLM 改写」承诺的受控放宽（仅被触达段、需人拍板；未触达段仍逐字节忠实）。
 - **绝不替人拍板**：judgment（含 merge/impact/consistency）不置 `adopted`、不改 `content`。Slice 6 后 `adopted`/`corrected`/`adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）；终稿文本确认只经 hitl2 逐段确认 / 编辑 / 驳回 `proposed_rewrites`。
 - **HITL-2 不可跳过**：硬闸门，无待决→一键通过、有待决→绝不可 PASS（ADR-0010）。
 - **单向流控**：异常即记日志、就地降级、继续向前；无复杂分布式重试（PRD §13）。唯 `hitl1` 有**有界打回**（条件边回 `parse+partition`，max retries 默认 3；超限改向前 + 贴 `partition_retry_exhausted`，受控分支、非异常降级，ADR-0018）——其余 stage 绝不打回。

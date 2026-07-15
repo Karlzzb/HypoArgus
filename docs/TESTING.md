@@ -146,17 +146,17 @@ pytest -m "not real_llm" -q        # 离线门；真实 LLM 套件（real_llm �
 ```python
 from agents.judgment import judge_and_adjudicate, FakeJudgmentLlmClient
 from agents.judgment import ArgumentVerdictEntry, JudgmentArgumentVerdict
-from domain import Argument, ArgumentType, ArgumentStatus
+from domain import Argument, ArgumentType, ArgumentStatus, ParagraphRecord
 
-argument_tree = [Argument(argument_id="n0", argument_type=ArgumentType.MAIN_CLAIM,
-                          paragraph_id="p0001", content="x")]
+argument_tree = [Argument(argument_id="n0", argument_type=ArgumentType.MAIN_CLAIM)]
+paragraph_list = [ParagraphRecord(paragraph_id="p0001", argument_tree_ids=["n0"])]
 llm = FakeJudgmentLlmClient(
-    judge_factory=lambda tree, hyps, cites, sc, qtr: JudgmentResult(
+    judge_factory=lambda tree, hyps, cites, plist, sc, qtr: JudgmentResult(
         argument_verdicts=[ArgumentVerdictEntry(argument_id="n0",
                                                 verdict=JudgmentArgumentVerdict.CREDIBLE)]
     )
 )
-outcome = judge_and_adjudicate(argument_tree, {}, {}, sc, qtr, llm)
+outcome = judge_and_adjudicate(argument_tree, {}, {}, paragraph_list, sc, qtr, llm)
 assert outcome.argument_tree[0].status is ArgumentStatus.CREDIBLE
 ```
 

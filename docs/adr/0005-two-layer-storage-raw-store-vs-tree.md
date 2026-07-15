@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-07-10）
+已接受（2026-07-10）。**决策 2 被 ADR-0025 取代**（「节点存原句」→「段落存原句」：原句改由段落聚合根 `ParagraphRecord.original_content` 单份持有，`Argument` 移除 `paragraph_id` / `content`）；决策 1（layer-1 只读字节表）不动。
 
 ## 背景
 

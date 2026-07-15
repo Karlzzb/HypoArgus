@@ -75,6 +75,9 @@ if TYPE_CHECKING:
     # 仅类型：build 闭包返回 ``NodeFn``、``state: PipelineState`` 注解在
     # ``from __future__ import annotations`` 下为字符串、运行时不求值。运行时无
     # agents→runtime 依赖（依赖方向保持 runtime→agents），故用 TYPE_CHECKING 破环。
+    # RetrievalRuntime 仅类型——真实检索后端注入 seam（Slice 2）；避免桩路径 eager import
+    # vendored search_agent 栈（``create_real_agents(retrieval_runtime=...)`` 时才 lazy import）。
+    from agents.retrieval import RetrievalRuntime
     from runtime.orchestrator import NodeFn, PipelineState
 
 __all__ = [
@@ -768,6 +771,24 @@ class RealDeps:
     hypothesis_llm: HypothesisLlmClient | None = None
     rewrite_llm: RewriteLlmClient | None = None
     hitl2_gate: Hitl2Gate | None = None
+    retrieval_runtime: RetrievalRuntime | None = None
+
+
+def _real_retrieval_factory(deps: RealDeps) -> Any:
+    """manifest retrieval ``real`` 工厂（PRD §Solution / §定位线索 · Slice 2，与 judgment 同形）。
+
+    ``retrieval_runtime`` 给出时返回绑定 runtime 的 :class:`RetrievalFn`（
+    ``partial(real_retrieval, runtime=...)``，镜像 judgment ``partial(judge_and_adjudicate,
+    llm=d.judgment_llm)``）替换桩；为 ``None`` 时返 ``None`` 保留桩（真实后端未配置 → 空 citations）。
+    延迟 :func:`import agents.retrieval` 以免桩路径 eager 拉起 vendored search_agent 栈
+    （langgraph / langchain）；仅真实装配路径触发。
+    """
+
+    if deps.retrieval_runtime is None:
+        return None
+    from agents.retrieval import build_real_retrieval
+
+    return build_real_retrieval(deps.retrieval_runtime)
 
 
 @dataclass(frozen=True)
@@ -857,13 +878,13 @@ MANIFEST: tuple[AgentEntry, ...] = (
         name="retrieval",
         field="retrieval",
         stub=_stub_retrieval,
-        real=None,  # 真实批量检索后端后续切片接入（PRD §8 / Out of Scope）；当前伪代码桩产空 citations。
+        real=_real_retrieval_factory,  # Slice 2：填 real=None 空位、与 judgment 同形（real= 工厂 + RealDeps.retrieval_runtime 注入）。
         deps=("hypothesis_propose",),
         build=_retrieval_node,
         label="检索",
         node_type="retrieval",
         color="#16A085",
-        desc="批量检索 citations（当前伪代码桩、产空；真实后端后续切片接入）",
+        desc="批量检索 citations（vendored SearchAgent V12 真实后端、with_llm=False、verdict 丢弃、judgment 重判）",
     ),
     AgentEntry(
         name="judgment",
@@ -936,6 +957,7 @@ def create_real_agents(
     hypothesis_llm: HypothesisLlmClient | None = None,
     rewrite_llm: RewriteLlmClient | None = None,
     hitl2_gate: Hitl2Gate | None = None,
+    retrieval_runtime: RetrievalRuntime | None = None,
 ) -> Agents:
     """返回「真实解析 + 真实 HITL-1 +（可选）真实开药 + 真实裁决 +（可选）真实重写提议 +
     真实 HITL-2」的智能体组。
@@ -976,6 +998,7 @@ def create_real_agents(
         hypothesis_llm=hypothesis_llm,
         rewrite_llm=rewrite_llm,
         hitl2_gate=hitl2_gate,
+        retrieval_runtime=retrieval_runtime,
     )
     agents = create_stub_agents()
     patches: dict[str, Any] = {}

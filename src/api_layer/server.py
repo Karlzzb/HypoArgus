@@ -33,6 +33,7 @@ from typing import Any
 import uvicorn
 
 from agents.assembly import MANIFEST, create_real_agents
+from agents.retrieval import lazy_search_agent_runtime
 from api_layer.app import create_app, default_visibility_path
 from api_layer.graph_view import load_visibility
 from api_layer.langfuse_wrap import wrap_langfuse_handler
@@ -62,7 +63,8 @@ _logger = logging.getLogger(__name__)
 
 
 def _real_agents() -> Any:
-    """真实四 LLM seam + ``InterruptHitl*Gate``（与 :func:`runtime.run_real.arun_real_pipeline` 同源）。"""
+    """真实四 LLM seam + ``InterruptHitl*Gate`` + 真实检索后端（与
+    :func:`runtime.run_real.arun_real_pipeline` 同源；retrieval runtime 进程级单例、Slice 2）。"""
 
     chat = build_qwen_chat_model()
     return create_real_agents(
@@ -72,6 +74,7 @@ def _real_agents() -> Any:
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=InterruptHitl2Gate(),
+        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：spine 进程级单例、daemon worker loop 承载、跨所有请求复用。
     )
 
 

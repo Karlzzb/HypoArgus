@@ -21,7 +21,7 @@ Slice 0 与 Slice 1 互不依赖、可并行；Slice 2 同时依赖两者；Slic
 |---|---|---|---|---|
 | 0 | vendor SearchAgent V12 + carve-out + deps + 可导入 | 无 | 已完成 | [task-00-vendor-and-carve-out.md](task-00-vendor-and-carve-out.md) |
 | 1 | 拓宽 `RetrievalFn` seam 至 5 输入（+`paragraph_list`） | 无 | 已完成 | [task-01-widen-retrieval-seam.md](task-01-widen-retrieval-seam.md) |
-| 2 | 真实检索适配器：映射 + daemon worker loop + manifest real 工厂 + 接线 + 离线测试 | 0, 1 | 未开始 | [task-02-real-retrieval-adapter.md](task-02-real-retrieval-adapter.md) |
+| 2 | 真实检索适配器：映射 + daemon worker loop + manifest real 工厂 + 接线 + 离线测试 | 0, 1 | 已完成 | [task-02-real-retrieval-adapter.md](task-02-real-retrieval-adapter.md) |
 | 3 | 真实 V12 全链集成测试（`real_llm` 标记） | 2 | 未开始 | [task-03-real-llm-full-link-tests.md](task-03-real-llm-full-link-tests.md) |
 | 4 | 文档：ADR-0026 + CONTEXT 术语 + DEVELOPMENT B1 | 2 | 未开始 | [task-04-adr-and-docs.md](task-04-adr-and-docs.md) |
 

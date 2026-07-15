@@ -104,3 +104,10 @@ warn_unused_ignores = true
 mypy_path = "src"
 # vendored SearchAgent V12 源码作 third-party carve-out，不进 strict 门。
 exclude = ["src/infra/search_agent_vendor/"]
+
+# vendored search_agent 作 third-party untyped（carve-out）：mypy_path 不含 vendor 根，
+# 故按「无 stub 的第三方库」处理——search_agent.* 符号对严格门为 Any；适配器代码显式
+# model_validate / cast 收口类型。避免解析 50+ vendored 文件、不把其内部标注拖进 strict 门。
+[[tool.mypy.overrides]]
+module = "search_agent.*"
+ignore_missing_imports = true

@@ -1,6 +1,6 @@
 # TASK-SA-2 — 真实检索适配器：映射 + daemon worker loop + manifest real 工厂 + 接线 + 离线测试
 
-> 状态：未开始
+> 状态：已完成
 > 阻塞：Slice 0（vendored 可导入）、Slice 1（`RetrievalFn` 已 5 输入）
 > 母 PRD：`docs/prd-search-agent-integration.md`（§Q1/Q4/Q5/Q6/Q7/Q8/Q9、§Solution、§Testing Decisions）
 > 目标会话：任意新 session 读取本文件并执行。**本切片是整条迁移的核心**。
@@ -120,12 +120,13 @@ conda run -n HypoArgus pytest -q          # 含本切片离线测试；真实联
 
 | 日期 | 会话/执行者 | 状态变更 | 备注 |
 |---|---|---|---|
-| _ | _ | → 进行中 | _ |
+| 2026-07-15 | /tdd session | → 进行中 | 开工：retrieval 子包（contract/agent/__init__）+ 映射/桥接/节点/接线离线测试 |
+| 2026-07-15 | /tdd session | → 已完成 | 适配器落地（`src/agents/retrieval/`）+ manifest `real=` 工厂 + `RealDeps.retrieval_runtime` + run_real/server 接线；离线测试 24 passed/1 skipped（lazy proxy 首调建 runtime 留 Slice 3 real_llm）；质量门全绿（ruff/mypy --strict/targeted pytest）。两处细化：`RealDeps.retrieval_runtime: RetrievalRuntime` Protocol（非具体 `SearchAgentRuntime`、便于伪 runtime 注入）；`document_id` 从 `paragraph_list` 原文拼接派生（5 输入 Protocol 不含 `original_doc`、Slice 1 锁定）。 |
 
 ## 完成检查
 
-- [ ] 验收标准全勾选。
-- [ ] 质量门全绿（离线测试覆盖映射/桥接/节点/tracer-bullet）。
-- [ ] `real=` 工厂 + `RealDeps.retrieval_runtime` 与 judgment 同形；`NodeFn` 同步签名未动。
-- [ ] daemon worker loop 落地、loop-affine 炸点消除。
-- [ ] 更新 `INDEX.md` 状态为 `已完成`（解锁 Slice 3、Slice 4）。
+- [x] 验收标准全勾选。
+- [x] 质量门全绿（离线测试覆盖映射/桥接/节点/tracer-bullet）。
+- [x] `real=` 工厂 + `RealDeps.retrieval_runtime` 与 judgment 同形；`NodeFn` 同步签名未动。
+- [x] daemon worker loop 落地、loop-affine 炸点消除。
+- [x] 更新 `INDEX.md` 状态为 `已完成`（解锁 Slice 3、Slice 4）。

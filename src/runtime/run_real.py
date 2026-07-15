@@ -37,6 +37,7 @@ from langgraph.types import Command
 from agents.assembly import create_real_agents
 from agents.hitl1 import Hitl1Action, Hitl1Question, Hitl1Reply
 from agents.hitl2 import Hitl2Action, Hitl2Question, Hitl2Reply
+from agents.retrieval import lazy_search_agent_runtime
 from domain import SessionContext
 from infra.llm_adapters import (
     QwenHypothesisLlmClient,
@@ -117,6 +118,7 @@ def run_real_pipeline(
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=hitl2_gate or CliHitl2Gate(),  # type: ignore[arg-type]
+        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：真实检索后端（with_llm=False、进程级单例、daemon worker loop 承载）。
     )
     ctx = session_context or SessionContext(
         session_id=os.environ.get("HYPOARGUS_SESSION_ID", ""),
@@ -328,6 +330,7 @@ async def arun_real_pipeline(
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=InterruptHitl2Gate(),
+        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：CLI 一次性路径同样可用真实检索（PRD story 14）。
     )
     ctx = session_context or SessionContext(
         session_id=os.environ.get("HYPOARGUS_SESSION_ID", ""),

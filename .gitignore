@@ -318,4 +318,5 @@ celerybeat.pid
 # ============================================
 # Personal defined
 # ============================================
-.teach-loop/
+.teach-loop
+markdown/

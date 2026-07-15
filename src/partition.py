@@ -11,9 +11,24 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 __all__ = ["Paragraph", "partition", "assert_partition_invariant"]
+
+
+# ATX 标题（CommonMark 块级元素）：1–6 个 ``#`` 后接空格或行尾。``## 标题`` / ``# `` 命中；
+# 表格分隔行 ``| --- |`` / 正文中的 ``#``（如「C#」）不命中（``#`` 非行首、或后接非空白）。
+_ATX_HEADING = re.compile(rb"^#{1,6}(\s|$)")
+
+
+def _is_atx_heading(stripped: bytes) -> bool:
+    """是否 ATX 标题行（CommonMark 块级元素）——标题起始新段（ADR-0009「标题各成一段」）。
+
+    仅判行首 ``#{1,6}`` 后接空白或行尾；不误伤表格分隔行、行中 ``#``。
+    """
+
+    return _ATX_HEADING.match(stripped) is not None
 
 
 @dataclass(frozen=True)
@@ -102,8 +117,11 @@ def partition(text: bytes) -> list[Paragraph]:
             buf.append(line)
             continue
 
-        # 非空内容行：若当前段已有内容且已以空行收尾，说明新块开始——先落盘旧段。
-        if _chunk_has_content(buf) and _chunk_ends_blank(buf):
+        # 非空内容行：若当前段已有内容且（已以空行收尾 OR 本行为 ATX 标题起始）→
+        # 先落盘旧段。空行收尾 = 空行分隔的新块；ATX 标题 = CommonMark 块级边界、
+        # 无空行亦起始新段（ADR-0009「标题各成一段」），治单换行无空行分隔的文档
+        # （否则整篇塌成一段、下游 LLM 单调用喂入巨块而超时）。
+        if _chunk_has_content(buf) and (_chunk_ends_blank(buf) or _is_atx_heading(stripped)):
             chunks.append(b"".join(buf))
             buf = []
         buf.append(line)

@@ -12,10 +12,12 @@ from pydantic import ValidationError
 from agents.parser import (
     FakeLlmClient,
     LlmClient,
+    ParagraphSummary,
     ParagraphView,
     ParsedNodeProposal,
     ParseOutput,
     ParseResult,
+    is_substantive,
     parse,
 )
 from domain import (
@@ -98,15 +100,21 @@ def test_parse_result_defaults_carry_stub_time_range_and_empty_summaries():
     assert result.query_time_range.start.year == 2025
     assert result.query_time_range.end is not None
     assert result.query_time_range.end.year == 2026
-    assert result.paragraph_summaries == {}
+    assert result.paragraph_summaries == []
 
 
 def test_parse_result_accepts_paragraph_summaries_from_llm():
-    """ParseResult 可承载 LLM 顺产的 paragraph_summaries（paragraph_id → 摘要）。"""
+    """ParseResult 可承载 LLM 顺产的 paragraph_summaries（list[ParagraphSummary]）。"""
 
-    result = ParseResult(paragraph_summaries={"p0001": "主论点段", "p0002": "论据段"})
-    assert result.paragraph_summaries["p0001"] == "主论点段"
-    assert result.paragraph_summaries["p0002"] == "论据段"
+    result = ParseResult(
+        paragraph_summaries=[
+            ParagraphSummary(paragraph_id="p0001", summary="主论点段"),
+            ParagraphSummary(paragraph_id="p0002", summary="论据段"),
+        ]
+    )
+    by_id = {ps.paragraph_id: ps.summary for ps in result.paragraph_summaries}
+    assert by_id["p0001"] == "主论点段"
+    assert by_id["p0002"] == "论据段"
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +138,10 @@ def test_parse_returns_parse_output_with_stub_time_range_and_summaries():
                 _proposal("p0001", ArgumentType.MAIN_CLAIM),
                 _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
             ],
-            paragraph_summaries=summaries,
+            paragraph_summaries=[
+                ParagraphSummary(paragraph_id="p0001", summary="主论点段摘要"),
+                ParagraphSummary(paragraph_id="p0002", summary="论据段摘要"),
+            ],
         )
     )
     out = parse(original_paragraphs, llm)
@@ -209,6 +220,37 @@ def test_parse_rejects_invented_paragraph_id():
     ids = {n.paragraph_id for n in arguments}
     assert "invented" not in ids
     assert all(n.paragraph_id == "p0001" for n in arguments)
+
+
+def test_parse_dangling_parent_to_dropped_proposal_becomes_root() -> None:
+    """parent_index 指向被丢弃提议（凭空 paragraph_id）→ 落空为根，不悬空 parent_id。
+
+    回归真实 LLM 数据发现的 bug：旧实现按枚举索引赋 n-id，丢弃凭空提议后留空位，
+    后续提议 parent_index 指向该空位即解析出不存在的 parent_id，validate_tree 崩。
+    n-id 现按幸存顺序连续赋值，指向被丢弃提议的 parent_index 落空为根（与越界同语义）。
+    """
+
+    original_paragraphs = _store("主论点。\n\n论据段。\n")
+    # p0001(idx0) / invented(idx1, 凭空→丢弃) / p0002(idx2, parent_index=1 指向被丢弃的 idx1)。
+    llm = FakeLlmClient(
+        [
+            _proposal("p0001", ArgumentType.MAIN_CLAIM),
+            _proposal("invented", ArgumentType.EVIDENCE),  # 凭空 → 丢弃，n-id 空位
+            _proposal("p0002", ArgumentType.EVIDENCE, parent_index=1),  # 指向被丢弃的 idx1
+        ]
+    )
+    arguments = parse(original_paragraphs, llm).argument_tree  # 不抛即通过
+    validate_tree(arguments)
+    by_id = {n.argument_id: n for n in arguments}
+    # 幸存两核心节点连续 n0000/n0001（无空位），p0002 节点 parent 落空为根。
+    assert {n.argument_id for n in arguments if not n.argument_id.startswith("bg-")} == {
+        "n0000",
+        "n0001",
+    }
+    assert by_id["n0001"].paragraph_id == "p0002"
+    assert by_id["n0001"].parent_id is None  # 指向被丢弃提议 → 根，非悬空
+    # 「invented」凭空段被丢弃、不出现。
+    assert all(n.paragraph_id != "invented" for n in arguments)
 
 
 # --------------------------------------------------------------------------- #
@@ -456,3 +498,51 @@ def test_parse_invalid_proposal_rejected_by_pydantic() -> None:
 
     with pytest.raises(ValidationError):
         ParsedNodeProposal(paragraph_id="p0001", argument_type=ArgumentType.EVIDENCE, argument_weight="bad")  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# is_substantive：纯主题分隔线（---）不喂 LLM、归影子节点
+# --------------------------------------------------------------------------- #
+
+
+def test_is_substantive_classifies_breaks_and_tables() -> None:
+    """``is_substantive`` 排除空白与纯主题分隔线，保留正文 / 标题 / 表格分隔行。
+
+    表格分隔行 ``| --- |`` 含 ``|``、非纯分隔线——应视为实质（保留喂 LLM），
+    避免 PRD 测试误把表格结构当无内容段落丢弃。
+    """
+
+    assert is_substantive(b"") is False
+    assert is_substantive(b"   \n  ") is False
+    assert is_substantive(b"---") is False
+    assert is_substantive(b"***") is False
+    assert is_substantive(b"___") is False
+    assert is_substantive(b"- - -") is False
+    assert is_substantive(b"----") is False
+    assert is_substantive(b"--") is True  # 仅两个，非主题分隔线
+    assert is_substantive(b"| --- | --- |") is True  # 表格分隔行，非纯分隔线
+    assert is_substantive("# 标题\n".encode()) is True
+    assert is_substantive("正文段落。\n".encode()) is True
+
+
+def test_parse_does_not_feed_thematic_break_to_llm() -> None:
+    """纯 ``---`` 分隔线段不喂 LLM、归只读 background 影子节点（不硬造论点）。"""
+
+    # p0002 = ``---``：文档分隔线。解析器不应把它喂给 LLM。
+    original_paragraphs = _store("主论点段。\n\n---\n\n论据段。\n")
+    seen: list[ParagraphView] = []
+
+    def factory(views: list[ParagraphView]) -> ParseResult:
+        seen.extend(views)
+        return ParseResult(proposals=[_proposal(v.paragraph_id, ArgumentType.MAIN_CLAIM) for v in views])
+
+    llm: LlmClient = FakeLlmClient(factory=factory)
+    tree = parse(original_paragraphs, llm).argument_tree
+    fed_ids = [v.paragraph_id for v in seen]
+    assert "p0002" not in fed_ids  # ``---`` 段未被喂 LLM
+    # ``---`` 段作为只读 background 影子节点存在、content 逐字节保留。
+    bg = [n for n in tree if n.paragraph_id == "p0002"]
+    assert len(bg) == 1
+    assert bg[0].argument_type == ArgumentType.BACKGROUND
+    assert bg[0].argument_type.is_shadow
+    assert bg[0].content.strip() == "---"

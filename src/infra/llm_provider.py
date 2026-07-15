@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -56,7 +57,8 @@ def build_qwen_chat_model(
     temperature: float = 0.0,
     base_url: str | None = None,
     api_key: str | None = None,
-    timeout: float | None = 60.0,
+    timeout: float | None = 120.0,
+    max_tokens: int | None = None,
 ) -> BaseChatModel:
     """返回指向 DashScope 的 ``ChatOpenAI`` 实例（OpenAI-compatible 调用面）。
 
@@ -65,7 +67,11 @@ def build_qwen_chat_model(
     :param base_url: 默认 :data:`DASHSCOPE_BASE_URL`；可指向自建网关。
     :param api_key: 默认读环境变量 ``DASHSCOPE_API_KEY``（先从 cwd 下 ``.env`` 加载）；
         缺则抛 :class:`RuntimeError`——绝不把字面 key 写进代码 / 配置 / 日志。
-    :param timeout: 单次请求超时秒；默认 60（体检 ReAct 多步，留余量）。
+    :param timeout: 单次请求超时秒；默认 120。
+        结构化输出（function-calling 多步）在多段文档上合法耗时 10–60s，
+        60s 不留余量且曾导致冷启动 ``APITimeoutError``，故拉长至 120s。
+    :param max_tokens: 输出 token 上限；默认 None 走 provider 默认。
+        显式设置时透传给 ``ChatOpenAI``，用于缓解大文档输出截断。
     """
 
     _load_env_file(Path.cwd() / ".env")
@@ -76,10 +82,13 @@ def build_qwen_chat_model(
             "（绝不硬编码 key）"
         )
     resolved_model = model or os.environ.get("DASHSCOPE_MODEL") or DEFAULT_MODEL
-    return ChatOpenAI(
-        model=resolved_model,
-        base_url=base_url or DASHSCOPE_BASE_URL,
-        api_key=SecretStr(resolved_key),
-        temperature=temperature,
-        timeout=timeout,
-    )
+    kwargs: dict[str, Any] = {
+        "model": resolved_model,
+        "base_url": base_url or DASHSCOPE_BASE_URL,
+        "api_key": SecretStr(resolved_key),
+        "temperature": temperature,
+        "timeout": timeout,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return ChatOpenAI(**kwargs)

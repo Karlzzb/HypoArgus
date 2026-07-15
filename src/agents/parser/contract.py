@@ -7,6 +7,7 @@ ADR-0014：有 seam 的 Agent 拆为子包——``contract.py`` 放 Protocol + F
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Protocol
 
@@ -18,11 +19,32 @@ __all__ = [
     "WEIGHT_RUBRIC",
     "ParagraphView",
     "ParsedNodeProposal",
+    "ParagraphSummary",
     "ParseResult",
     "ParseOutput",
+    "is_substantive",
     "LlmClient",
     "FakeLlmClient",
 ]
+
+
+# 纯主题分隔线（CommonMark thematic break）：一行由 3+ 个 ``-``/``*``/``_`` 组成、可含空格、
+# 无其它字符。``---`` / ``***`` / ``___`` / ``- - -`` 命中；表格分隔行 ``| --- |`` 含 ``|`` 不命中。
+_THEMATIC_BREAK = re.compile(rb"^([-*_])([ \t]*\1){2,}$")
+
+
+def is_substantive(content: bytes) -> bool:
+    """段落是否实质（喂给 LLM）：非空白且非纯主题分隔线（``---``/``***``/``___``）。
+
+    纯 ``---`` 等文档分隔线无论证内容、不可摘要——不喂 LLM、归只读 background 影子节点
+    （content 逐字节保留），避免 LLM 对结构性标点强制摘要而退化。解析器与测试共用此判定，
+    二者对「何谓实质段落」一致。
+    """
+
+    stripped = content.strip()
+    if not stripped:
+        return False
+    return _THEMATIC_BREAK.match(stripped) is None
 
 
 # 明文权重 rubric（ADR-0013）：解析 Agent 建树时按此为每节点赋 argument_weight (0-100)。
@@ -63,18 +85,35 @@ class ParsedNodeProposal(BaseModel):
     argument_weight: int = 0
 
 
+class ParagraphSummary(BaseModel):
+    """LLM 对单个段落产出的内容摘要（list 元素，强制逐段填充）。
+
+    ``paragraph_id`` 与 ``summary`` 均必填——以 ``list[ParagraphSummary]`` 取代开放
+    ``dict[str, str]``，迫使 LLM 为每个输入段各产一条元素（开放 dict 在大输入下被
+    系统性少填，见 P-01）。解析器随后把 list 折成 ``paragraph_id → 摘要`` dict
+    供下游消费（``ParseOutput.paragraph_summaries``）。
+    """
+
+    paragraph_id: str
+    summary: str
+
+
 class ParseResult(BaseModel):
     """LLM 解析输出：一组节点提议 + 时间范围（桩）+ 段落摘要。
 
     ``query_time_range`` 当前为桩（``DEFAULT_QUERY_TIME_RANGE``，默认 2025–2026）——agent 端
     不真实依赖 LLM 识别时间，真实 LLM 时间识别属后续切片（PRD Out of Scope）。
-    ``paragraph_summaries`` 为 ``paragraph_id → 摘要``，由同一次 LLM 调用顺产，供
-    hypothesis_propose / rewrite_loop 读取（避免逐点喂入时上下文爆炸，ADR-0021）。
+    ``paragraph_summaries`` 为 ``list[ParagraphSummary]``（每元素含必填
+    ``paragraph_id`` + ``summary``）——以 per-element 数组强制 LLM 逐段填充，避免开放 dict 在
+    大输入下被系统性少填（P-01）。真实 adapter 分两阶段产（树一次产 proposals、摘要按
+    ``summary_chunk_size`` 分块逐块产，见 ``infra/llm_adapters.py`` ``QwenParseLlmClient``），
+    Fake 一次返回；解析器随后把 list 折成 ``paragraph_id → 摘要`` dict 供 hypothesis_propose /
+    rewrite_loop 读取（避免逐点喂入时上下文爆炸，ADR-0021）。
     """
 
     proposals: list[ParsedNodeProposal] = Field(default_factory=list)
     query_time_range: TimeRange = Field(default_factory=lambda: DEFAULT_QUERY_TIME_RANGE.model_copy(deep=True))
-    paragraph_summaries: dict[str, str] = Field(default_factory=dict)
+    paragraph_summaries: list[ParagraphSummary] = Field(default_factory=list)
 
 
 class ParseOutput(BaseModel):

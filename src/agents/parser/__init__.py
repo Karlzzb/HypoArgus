@@ -11,18 +11,22 @@ from agents.parser.contract import (
     WEIGHT_RUBRIC,
     FakeLlmClient,
     LlmClient,
+    ParagraphSummary,
     ParagraphView,
     ParsedNodeProposal,
     ParseOutput,
     ParseResult,
+    is_substantive,
 )
 
 __all__ = [
     "WEIGHT_RUBRIC",
+    "ParagraphSummary",
     "ParagraphView",
     "ParsedNodeProposal",
     "ParseResult",
     "ParseOutput",
+    "is_substantive",
     "LlmClient",
     "FakeLlmClient",
     "parse",

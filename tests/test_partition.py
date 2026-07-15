@@ -83,3 +83,64 @@ def test_partition_empty():
     paragraphs = partition(b"")
     assert paragraphs == []
     assert b"".join(p.content for p in paragraphs) == b""
+
+
+def test_partition_splits_on_atx_headings_without_blank_lines() -> None:
+    """无空行分隔时，ATX 标题起始新段（ADR-0009「标题各成一段」）；拼接逐字节相等。
+
+    治单换行无空行分隔的真实论文（如 paper_01 整篇无空行）——否则塌成一段、
+    下游 LLM 单调用喂入巨块超时。标题边界 = CommonMark 块级边界。
+    """
+
+    doc = "# 一级标题\n正文一。\n## 二级标题\n正文二。\n## 二级标题二\n正文三。\n".encode()
+    paragraphs = partition(doc)
+    # 每个标题起始新段：3 段。
+    assert len(paragraphs) == 3
+    assert paragraphs[0].content == "# 一级标题\n正文一。\n".encode()
+    assert paragraphs[1].content == "## 二级标题\n正文二。\n".encode()
+    assert paragraphs[2].content == "## 二级标题二\n正文三。\n".encode()
+    # 分区不变式：拼接逐字节等于原文。
+    assert b"".join(p.content for p in paragraphs) == doc
+
+
+def test_partition_atx_heading_does_not_split_tables_or_inline_hash() -> None:
+    """表格分隔行 ``| --- |``、行中 ``#``（如「编号 #1」）非 ATX 标题、不触发切分。"""
+
+    doc = "正文编号 #1 的段。\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n".encode()
+    paragraphs = partition(doc)
+    # 空行分隔为两段：正文 + 表格；「#1」、``| --- |`` 不误判为标题起始新段。
+    assert len(paragraphs) == 2
+    assert paragraphs[0].content == "正文编号 #1 的段。\n\n".encode()
+    assert b"".join(p.content for p in paragraphs) == doc
+
+
+# --------------------------------------------------------------------------- #
+# 真实论文分区测试：markdown/ 下整篇中文论文作为 bytes，喂给确定性分区层。
+# 零模型参与——这些测试只验证纯代码切分在真实论文上的字节级无损性。
+# --------------------------------------------------------------------------- #
+
+
+def test_partition_invariant_real_paper(real_paper: tuple[str, bytes]) -> None:
+    """真实论文：分区不变式逐字节成立（拼接等于原文 + assert_partition_invariant 通过）。"""
+
+    _name, doc = real_paper
+    paragraphs = partition(doc)
+    assert b"".join(p.content for p in paragraphs) == doc
+    assert_partition_invariant(doc, paragraphs)  # 不抛即通过
+
+
+def test_partition_real_paper_yields_paragraphs(real_paper: tuple[str, bytes]) -> None:
+    """真实论文切分至少产出一段（非空文档必有段落）。"""
+
+    _name, doc = real_paper
+    paragraphs = partition(doc)
+    assert len(paragraphs) >= 1
+
+
+def test_partition_real_paper_ids_zero_padded_ordered(real_paper: tuple[str, bytes]) -> None:
+    """真实论文段落 id 为 p0001、p0002 … 零填充且严格递增反映分区顺序。"""
+
+    _name, doc = real_paper
+    paragraphs = partition(doc)
+    expected = [f"p{i:04d}" for i in range(1, len(paragraphs) + 1)]
+    assert [p.paragraph_id for p in paragraphs] == expected

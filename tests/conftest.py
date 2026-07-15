@@ -32,6 +32,23 @@ def sample_doc(request):
 
 
 # --------------------------------------------------------------------------- #
+# 真实论文参数化夹具：markdown/*.md 整文件作为 bytes，喂给分区层真实数据测试。
+# REAL_PAPER_CASES 为空（markdown/ 缺失）时参数化为空——不产出用例，不阻塞离线单测。
+# --------------------------------------------------------------------------- #
+
+from real_papers import REAL_PAPER_CASES  # noqa: E402 — 模块路径在 tests/ 下
+
+
+@pytest.fixture(
+    params=REAL_PAPER_CASES,
+    ids=[name for name, _ in REAL_PAPER_CASES],
+)
+def real_paper(request):
+    name, doc = request.param
+    return name, doc
+
+
+# --------------------------------------------------------------------------- #
 # Postgres checkpointer 集成测试夹具（T-03·ADR-0022）
 #
 # 共享 Postgres（ADR-0022：一期无需 Redis、持久化与跨进程续跑均由 Postgres 承担）。

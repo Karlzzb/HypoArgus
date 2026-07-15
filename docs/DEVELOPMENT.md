@@ -39,7 +39,7 @@ END
 
 | 操作 | 节点 | 说明 |
 |---|---|---|
-| 合并 | `partition` + `parse` → `parse+partition` | 单一 `AgentEntry`，`deps=()` 接 START；partition 切分 + 字节自检、parse 建树 / content 拷回主逻辑不动，新增同一次 LLM 调用多吐 `query_time_range` / `paragraph_summaries`。ADR-0020 |
+| 合并 | `partition` + `parse` → `parse+partition` | 单一 `AgentEntry`，`deps=()` 接 START；partition 切分 + 字节自检、parse 建树 / content 拷回主逻辑不动，新增两阶段 LLM 调用多吐 `query_time_range` / `paragraph_summaries`（P-01：树 + 摘要分块拆关注点）。ADR-0020 |
 | 重定义 | `hitl1` | partition 确认闸门 + 有界打回（ADR-0018）；动作集对齐「确认继续 / 打回重跑」 |
 | 新增 | `hypothesis_propose` | 逐 argument 调 `propose`（不取证），产 pending 假说；读 `paragraph_summaries`（非整段 content）。ADR-0019 |
 | 新增 | `retrieval` | 批量检索，统一返回 `citations`；当前伪代码桩（空 citations，不联网）。ADR-0019 |
@@ -296,7 +296,7 @@ HITL-2 采纳（`_apply_adopt`）与 orchestrator 兜底（`mark_argument_error`
 | 模块 | 角色 |
 |---|---|
 | `infra/llm_provider.py` | `build_qwen_chat_model()`：把 `ChatOpenAI` 指向 DashScope OpenAI-compatible 端点（`base_url` + `qwen-max`）。API key **只**读环境变量 `DASHSCOPE_API_KEY`，绝不硬编码。 |
-| `infra/llm_adapters.py` | `QwenParseLlmClient` / `QwenHypothesisLlmClient` / `QwenJudgmentLlmClient` / `QwenRewriteLlmClient`：经 `with_structured_output(<schema>)` 满足各 seam 契约（dev-guide §6.3）。四条 seam 的 contract schema 均为扁平 BaseModel（`ParseResult` / `_ProposalsEnvelope` / `JudgmentResult` / `_RewriteEnvelope`、无判别联合 `oneOf`），故直接绑 contract schema、无需扁平信封映射；结构化链**懒构建**，构造期不触碰 provider 特性。 |
+| `infra/llm_adapters.py` | `QwenParseLlmClient` / `QwenHypothesisLlmClient` / `QwenJudgmentLlmClient` / `QwenRewriteLlmClient`：经 `with_structured_output(<schema>)` 满足各 seam 契约（dev-guide §6.3）。四条 seam 的 contract schema 均为扁平 BaseModel（`ParseResult` / `_ProposalsEnvelope` / `JudgmentResult` / `_RewriteEnvelope`、无判别联合 `oneOf`）；hypothesis / judgment / rewrite 直接绑 contract schema，**parse 拆两阶段**——绑内部信封 `_ParseTreeEnvelope`（proposals-only）+ `_SummariesEnvelope`（按 8 段分块的 `ParagraphSummary`），再折成 `ParseResult`（P-01：单绑定下大论文摘要被系统性少填）；结构化链**懒构建**，构造期不触碰 provider 特性。 |
 | `runtime/cli_gates.py` | `CliHitl1Gate` / `CliHitl2Gate`：交互式同步闸门（终端 `input()` 收决策）；非 tty 退化为保守决策（HITL-1 `SKIP`、HITL-2 有待决则全驳回、原文逐字节保留），守住「绝不替人拍板自动采纳」。 |
 | `runtime/run_real.py` | `run_real_pipeline(original_doc)` 组装上述全部 + `Orchestrator`；`python -m runtime.run_real [input] [-o output]`。retrieval 节点仍为桩（产空 citations），故 judgment 经 FakeJudgmentLlmClient 默认空裁决 → 全 KEEP → rewrite_loop 无触达段 → 终稿逐字节等于原文。 |
 

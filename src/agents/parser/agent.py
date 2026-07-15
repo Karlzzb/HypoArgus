@@ -24,8 +24,10 @@ from __future__ import annotations
 from agents.parser.contract import (
     LlmClient,
     ParagraphView,
+    ParsedNodeProposal,
     ParseOutput,
     ParseResult,
+    is_substantive,
 )
 from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentStatus, ArgumentType
 from original_paragraphs import OriginalParagraphs
@@ -98,12 +100,15 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     节点初始 ``unverified``；空白段落不喂 LLM、自动归影子。
 
     ``query_time_range`` 当前为桩（``DEFAULT_QUERY_TIME_RANGE``，agent 注入、不真实调 LLM 识别，
-    真实时间识别属后续切片，PRD Out of Scope）；``paragraph_summaries`` 顺产自同一次 LLM 调用。
+    真实时间识别属后续切片，PRD Out of Scope）；``paragraph_summaries`` 顺产自 parse seam
+    （真实 adapter 两阶段：树一次 + 摘要按 8 分块，见 ``infra/llm_adapters.py``）。
     返回 :class:`ParseOutput` 供 ``parse+partition`` build 闭包写回三 channel。
     """
 
     paragraph_ids = list(original_paragraphs.paragraph_ids())
-    substantive = [pid for pid in paragraph_ids if original_paragraphs.get(pid).strip()]
+    substantive = [
+        pid for pid in paragraph_ids if is_substantive(original_paragraphs.get(pid))
+    ]
 
     views = [
         ParagraphView(paragraph_id=pid, text=_decode(original_paragraphs.get(pid)))
@@ -113,20 +118,32 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
 
     # 2. 铸造核心节点。
     arguments: list[Argument] = []
-    proposal_ids: list[str] = []
     covered: set[str] = set()
-    for i, prop in enumerate(result.proposals):
-        # paragraph_id 必须存在于只读表——不凭空造段、不跨段。
-        if prop.paragraph_id not in original_paragraphs:
-            continue
-        # 子节点自指 / 越界索引 → 根。
+    # paragraph_id 必须存在于只读表——先过滤凭空造段提议，保留幸存提议及其原始索引。
+    # n-id 按幸存顺序连续赋值（n0000、n0001、…）；原始索引→幸存序号映射，使
+    # parent_index 指向被丢弃提议时落空为根——而非悬空 parent_id 触发 validate_tree
+    # （真实 LLM 偶尔产凭空 paragraph_id 提议，旧实现按枚举索引赋 n-id 留空位，
+    # 后续提议 parent_index 指向空位即解析出不存在的 parent_id）。
+    surviving: list[tuple[int, ParsedNodeProposal]] = [
+        (i, prop)
+        for i, prop in enumerate(result.proposals)
+        if prop.paragraph_id in original_paragraphs
+    ]
+    orig_to_surviving: dict[int, int] = {
+        orig_i: surv_i for surv_i, (orig_i, _) in enumerate(surviving)
+    }
+    for surv_i, (orig_i, prop) in enumerate(surviving):
+        # parent_index 指向 LLM 输出列表中的位置：自指 / 越界 / 指向被丢弃提议 → 根。
         parent_id: str | None = None
         if prop.parent_index is not None:
             idx = prop.parent_index
-            if 0 <= idx < len(result.proposals) and idx != i:
-                parent_id = _core_argument_id(idx)
-        nid = _core_argument_id(i)
-        proposal_ids.append(nid)
+            if (
+                0 <= idx < len(result.proposals)
+                and idx != orig_i
+                and idx in orig_to_surviving
+            ):
+                parent_id = _core_argument_id(orig_to_surviving[idx])
+        nid = _core_argument_id(surv_i)
         covered.add(prop.paragraph_id)
         arguments.append(
             Argument(
@@ -161,8 +178,11 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
 
     # 5. 结构不变式自检（LLM 不可信 → 代码兜底）。
     validate_tree(arguments)
+    # LLM 面向 list[ParagraphSummary] → 下游面向 dict（ParseOutput 契约不变）。
     return ParseOutput(
         argument_tree=arguments,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
-        paragraph_summaries=result.paragraph_summaries,
+        paragraph_summaries={
+            ps.paragraph_id: ps.summary for ps in result.paragraph_summaries
+        },
     )

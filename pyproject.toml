@@ -61,6 +61,9 @@ api_layer = ["*.sql"]
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
+markers = [
+    "real_llm: tests that call the real DashScope LLM (skipped without DASHSCOPE_API_KEY)",
+]
 
 [tool.ruff]
 line-length = 99

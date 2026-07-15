@@ -52,6 +52,7 @@ from domain import (
     DEFAULT_SESSION_CONTEXT,
     Argument,
     Hypothesis,
+    ParagraphRecord,
     SessionContext,
     TimeRange,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "StageSpec",
     "default_pipeline",
     "merge_argument_tree",
+    "merge_paragraph_list",
 ]
 
 
@@ -108,6 +110,31 @@ def _merge_dict(
     return {**(left or {}), **(right or {})}
 
 
+def merge_paragraph_list(
+    left: list[ParagraphRecord] | None,
+    right: list[ParagraphRecord] | None,
+) -> list[ParagraphRecord]:
+    """``paragraph_list`` channel 的 reducer：按 ``paragraph_id`` upsert，保持首见顺序。
+
+    形如 :func:`merge_argument_tree`（按 ``argument_id`` upsert）：同 ``paragraph_id`` 覆盖、
+    新 id 追加。单写者 = parse+partition；即便单写者无冲突亦沿用同形以策安全——hitl1 打回
+    重跑 parse 时整列表重写，reducer 保证不重复、不丢序、按段覆盖更新。段落↔节点关系为
+    正向、第一类、存储于段落侧（PRD §Solution）；本 reducer 只维护段落集合的合并语义，
+    ``argument_tree_ids`` 与 ``argument_tree`` 的一致性由 parse 落地与不变式自检保证。
+    """
+
+    merged = list(left or [])
+    index = {r.paragraph_id: i for i, r in enumerate(merged)}
+    for record in right or []:
+        pos = index.get(record.paragraph_id)
+        if pos is None:
+            index[record.paragraph_id] = len(merged)
+            merged.append(record)
+        else:
+            merged[pos] = record
+    return merged
+
+
 class PipelineState(TypedDict, total=False):
     """流水线状态。
 
@@ -124,6 +151,7 @@ class PipelineState(TypedDict, total=False):
     session_context: SessionContext
     query_time_range: TimeRange
     paragraph_summaries: Annotated[dict[str, str], _merge_dict]
+    paragraph_list: Annotated[list[ParagraphRecord], merge_paragraph_list]
     argument_tree: Annotated[list[Argument], merge_argument_tree]
     hypotheses: Annotated[dict[str, list[Hypothesis]], _merge_dict]
     citations: Annotated[dict[str, list[Source]], _merge_dict]

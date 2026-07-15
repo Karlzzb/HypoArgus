@@ -176,6 +176,27 @@ class Argument(BaseModel):
     adopted_hypothesis_id: str | None = None
 
 
+class ParagraphRecord(BaseModel):
+    """段落聚合根：一条对应一个段落（按 ``OriginalParagraphs`` 规范段序），正向拥有其
+    论证节点引用、并承载该段原文（每段唯一一份）与摘要。
+
+    段落↔节点的一对多关系为**正向、第一类、存储于段落侧**：``argument_tree_ids`` 列出该段
+    所含全部 ``argument_id``（核心节点 + 无提议段降级的 background 影子节点）。段落原文以
+    ``original_content``（该段 bytes 的 ``surrogateescape`` 解码文本）每段存一份，替代原先
+    每个节点各拷一份的结构性重复（PRD §Solution；ADR-0005 决策 2 由「节点存原句」升为
+    「段落存原句」，见取代该决策的新 ADR）。
+
+    ``argument_tree`` channel 仍为扁平 ``list[Argument]`` 且按 ``argument_id`` upsert 不变；
+    本记录与树侧经 ``argument_id`` 互相引用，不嵌套。``Argument`` 在双写过渡态暂仍携带
+    ``paragraph_id`` / ``content``（T-04 移除）；本记录是其正向、去重的替代承载。
+    """
+
+    paragraph_id: str
+    summary: str = ""
+    original_content: str = ""
+    argument_tree_ids: list[str] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------------- #
 # 贯穿 state 域类型（ADR-0021 / PRD §17·Slice 1）
 #

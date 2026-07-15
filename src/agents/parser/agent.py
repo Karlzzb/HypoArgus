@@ -29,7 +29,13 @@ from agents.parser.contract import (
     ParseResult,
     is_substantive,
 )
-from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentStatus, ArgumentType
+from domain import (
+    DEFAULT_QUERY_TIME_RANGE,
+    Argument,
+    ArgumentStatus,
+    ArgumentType,
+    ParagraphRecord,
+)
 from original_paragraphs import OriginalParagraphs
 from tree_invariants import rebuild_children, validate_tree
 
@@ -179,10 +185,25 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     # 5. 结构不变式自检（LLM 不可信 → 代码兜底）。
     validate_tree(arguments)
     # LLM 面向 list[ParagraphSummary] → 下游面向 dict（ParseOutput 契约不变）。
+    summaries = {ps.paragraph_id: ps.summary for ps in result.paragraph_summaries}
+    # 6. 段落聚合根：按规范段序每段一条，正向拥有该段全部节点 id（核心 + background 影子），
+    #    段落原文每段唯一一份（替代原先每节点各拷一份）。双写过渡：Argument.paragraph_id /
+    #    content 与 paragraph_summaries 暂不移除，此处同时产新（paragraph_list）。
+    nodes_by_paragraph: dict[str, list[str]] = {pid: [] for pid in paragraph_ids}
+    for argument in arguments:
+        nodes_by_paragraph.setdefault(argument.paragraph_id, []).append(argument.argument_id)
+    paragraph_list = [
+        ParagraphRecord(
+            paragraph_id=pid,
+            summary=summaries.get(pid, ""),
+            original_content=_decode(original_paragraphs.get(pid)),
+            argument_tree_ids=nodes_by_paragraph[pid],
+        )
+        for pid in paragraph_ids
+    ]
     return ParseOutput(
         argument_tree=arguments,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
-        paragraph_summaries={
-            ps.paragraph_id: ps.summary for ps in result.paragraph_summaries
-        },
+        paragraph_summaries=summaries,
+        paragraph_list=paragraph_list,
     )

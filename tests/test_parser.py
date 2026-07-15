@@ -25,6 +25,7 @@ from domain import (
     DEFAULT_SESSION_CONTEXT,
     ArgumentStatus,
     ArgumentType,
+    ParagraphRecord,
     SessionContext,
     TimeRange,
 )
@@ -187,6 +188,163 @@ def _proposal(
 
 def _dec(b: bytes) -> str:
     return b.decode("utf-8", errors="surrogateescape")
+
+
+# --------------------------------------------------------------------------- #
+# ParagraphRecord：段落聚合根（PRD §Solution / T-01）
+#
+# 段落做成聚合根，正向拥有其论证节点引用；段落原文每段一份。本切片为双写过渡态：
+# Argument.paragraph_id / content 与 paragraph_summaries channel 暂不移除，parse 同时产新
+# （paragraph_list）与旧两份。
+# --------------------------------------------------------------------------- #
+
+
+def test_paragraph_record_defaults():
+    """ParagraphRecord 仅 paragraph_id 必填；summary / original_content / argument_tree_ids
+    有空默认（每段原文每段一份、节点引用列表可空）。"""
+
+    rec = ParagraphRecord(paragraph_id="p0001")
+    assert rec.paragraph_id == "p0001"
+    assert rec.summary == ""
+    assert rec.original_content == ""
+    assert rec.argument_tree_ids == []
+
+
+def test_paragraph_record_carries_aggregate_fields():
+    """ParagraphRecord 承载 summary + original_content + argument_tree_ids 三字段。"""
+
+    rec = ParagraphRecord(
+        paragraph_id="p0002",
+        summary="论据段摘要",
+        original_content="论据段原文。",
+        argument_tree_ids=["n0001", "bg-p0002"],
+    )
+    assert rec.summary == "论据段摘要"
+    assert rec.original_content == "论据段原文。"
+    assert rec.argument_tree_ids == ["n0001", "bg-p0002"]
+
+
+def test_parse_output_has_paragraph_list_channel_defaulting_empty():
+    """ParseOutput 新增 paragraph_list（list[ParagraphRecord]），默认空。"""
+
+    out = ParseOutput()
+    assert out.paragraph_list == []
+    assert isinstance(out.paragraph_list, list)
+
+
+def test_parse_produces_paragraph_list_covering_all_paragraphs_in_order():
+    """parse 同点产出 paragraph_list：覆盖 OriginalParagraphs 全部段、按规范段序、每段一条。"""
+
+    original_paragraphs = _store("主论点段。\n\n论据段。\n\n第三段。\n")
+    llm = FakeLlmClient(
+        [
+            _proposal("p0001", ArgumentType.MAIN_CLAIM),
+            _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
+        ]
+    )
+    out = parse(original_paragraphs, llm)
+    # 覆盖全部段、按 paragraph_ids() 规范段序。
+    assert [r.paragraph_id for r in out.paragraph_list] == list(
+        original_paragraphs.paragraph_ids()
+    )
+
+
+def test_parse_paragraph_list_original_content_byte_equals_decoded_store():
+    """每条 ParagraphRecord.original_content 逐字节等于该段解码 bytes（每段唯一一份）。"""
+
+    para = "# 标题\n\n正文段落。\n\n---\n"
+    original_paragraphs = _store(para)
+    llm = FakeLlmClient([_proposal("p0001", ArgumentType.MAIN_CLAIM)])
+    out = parse(original_paragraphs, llm)
+    for rec in out.paragraph_list:
+        assert rec.original_content == _dec(original_paragraphs.get(rec.paragraph_id))
+    # 每段原文唯一一份：与节点 content 等价（双写过渡，T-04 后节点不再各拷一份）。
+    by_pid = {r.paragraph_id: r for r in out.paragraph_list}
+    assert by_pid["p0001"].original_content == _dec(original_paragraphs.get("p0001"))
+
+
+def test_parse_paragraph_list_argument_tree_ids_match_tree_per_paragraph():
+    """每段 argument_tree_ids 恰为 argument_tree 中该段全部节点 id（核心 + background 影子）。"""
+
+    # p0001 含三节点、p0002 无提议 → 降级为 background 影子。
+    original_paragraphs = _store("含多节点段。\n\n无提议段。\n")
+    llm = FakeLlmClient(
+        [
+            _proposal("p0001", ArgumentType.SUB_CLAIM),
+            _proposal("p0001", ArgumentType.EVIDENCE, parent_index=0),
+            _proposal("p0001", ArgumentType.EVIDENCE, parent_index=0),
+        ]
+    )
+    out = parse(original_paragraphs, llm)
+    tree_by_para: dict[str, list[str]] = {}
+    for n in out.argument_tree:
+        tree_by_para.setdefault(n.paragraph_id, []).append(n.argument_id)
+    for rec in out.paragraph_list:
+        assert rec.argument_tree_ids == tree_by_para.get(rec.paragraph_id, [])
+    # p0002 的影子节点 id 进入其 argument_tree_ids。
+    p2 = next(r for r in out.paragraph_list if r.paragraph_id == "p0002")
+    assert p2.argument_tree_ids == ["bg-p0002"]
+
+
+def test_parse_paragraph_list_ids_partition_argument_tree():
+    """paragraph_list 全部 argument_tree_ids 的并集恰为 argument_tree 全部节点集（不漂移）。"""
+
+    original_paragraphs = _store("主。\n\n子1。\n\n子2。\n\n无提议。\n")
+    llm = FakeLlmClient(
+        [
+            _proposal("p0001", ArgumentType.MAIN_CLAIM),
+            _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
+            _proposal("p0003", ArgumentType.EVIDENCE, parent_index=0),
+        ]
+    )
+    out = parse(original_paragraphs, llm)
+    listed_ids = {aid for rec in out.paragraph_list for aid in rec.argument_tree_ids}
+    tree_ids = {n.argument_id for n in out.argument_tree}
+    assert listed_ids == tree_ids
+    # 每个 id 恰出现于一个段落（正向一对多，不重复归属）。
+    all_listed = [aid for rec in out.paragraph_list for aid in rec.argument_tree_ids]
+    assert len(all_listed) == len(set(all_listed))
+
+
+def test_parse_paragraph_list_summary_carries_parse_summaries():
+    """每条 ParagraphRecord.summary 取自 parse 摘要阶段；无摘要的段为空串（双写：与
+    paragraph_summaries dict 同源）。"""
+
+    original_paragraphs = _store("主论点段。\n\n论据段。\n")
+    llm = FakeLlmClient(
+        ParseResult(
+            proposals=[
+                _proposal("p0001", ArgumentType.MAIN_CLAIM),
+                _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
+            ],
+            paragraph_summaries=[
+                ParagraphSummary(paragraph_id="p0001", summary="主论点段摘要"),
+                ParagraphSummary(paragraph_id="p0002", summary="论据段摘要"),
+            ],
+        )
+    )
+    out = parse(original_paragraphs, llm)
+    by_pid = {r.paragraph_id: r for r in out.paragraph_list}
+    assert by_pid["p0001"].summary == "主论点段摘要"
+    assert by_pid["p0002"].summary == "论据段摘要"
+    # 与 paragraph_summaries dict 同源（双写过渡，T-04 后 summary 单一定义点为 paragraph_list）。
+    assert out.paragraph_summaries == {r.paragraph_id: r.summary for r in out.paragraph_list}
+
+
+def test_parse_paragraph_list_summary_empty_when_llm_omits():
+    """LLM 未给某段摘要 → 该段 ParagraphRecord.summary 为空串。"""
+
+    original_paragraphs = _store("段1。\n\n段2。\n")
+    llm = FakeLlmClient(
+        [
+            _proposal("p0001", ArgumentType.MAIN_CLAIM),
+            _proposal("p0002", ArgumentType.EVIDENCE, parent_index=0),
+        ]
+    )
+    out = parse(original_paragraphs, llm)
+    by_pid = {r.paragraph_id: r for r in out.paragraph_list}
+    assert by_pid["p0001"].summary == ""
+    assert by_pid["p0002"].summary == ""
 
 
 # --------------------------------------------------------------------------- #

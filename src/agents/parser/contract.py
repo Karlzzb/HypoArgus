@@ -13,7 +13,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentType, TimeRange
+from domain import DEFAULT_QUERY_TIME_RANGE, Argument, ArgumentType, ParagraphRecord, TimeRange
 
 __all__ = [
     "WEIGHT_RUBRIC",
@@ -117,16 +117,23 @@ class ParseResult(BaseModel):
 
 
 class ParseOutput(BaseModel):
-    """``parse+partition`` 节点的产出（agent 铸造，写回 ``PipelineState`` 三 channel）。
+    """``parse+partition`` 节点的产出（agent 铸造，写回 ``PipelineState`` channel）。
 
     - ``argument_tree``：解析器铸造成的初始论证树（逐字节拷回 ``content``、LLM 无权改写）。
     - ``query_time_range``：桩值（agent 注入 ``DEFAULT_QUERY_TIME_RANGE``，不真实调 LLM 识别）。
     - ``paragraph_summaries``：从 LLM ``ParseResult`` 顺产的 ``paragraph_id → 摘要``。
+    - ``paragraph_list``：段落聚合根列表（PRD §Solution / T-01 双写过渡态）——按
+      ``OriginalParagraphs`` 规范段序每段一条 ``ParagraphRecord``，承载 ``summary`` +
+      ``original_content``（每段原文唯一一份）+ ``argument_tree_ids``（该段全部节点 id，
+      正向一对多）。双写过渡：``Argument.paragraph_id`` / ``content`` 与
+      ``paragraph_summaries`` 暂不移除，parse 同时产新旧两份；T-04 翻转后 ``paragraph_list``
+      成为段落侧单一定义点。
     """
 
     argument_tree: list[Argument] = Field(default_factory=list)
     query_time_range: TimeRange = Field(default_factory=lambda: DEFAULT_QUERY_TIME_RANGE.model_copy(deep=True))
     paragraph_summaries: dict[str, str] = Field(default_factory=dict)
+    paragraph_list: list[ParagraphRecord] = Field(default_factory=list)
 
 
 class LlmClient(Protocol):

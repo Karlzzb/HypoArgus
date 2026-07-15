@@ -63,6 +63,7 @@ from domain import (
     ArgumentStatus,
     ArgumentType,
     Hypothesis,
+    ParagraphRecord,
     SessionContext,
     TimeRange,
 )
@@ -237,14 +238,18 @@ class Agents:
 
 
 def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
-    """解析桩：每段一个只读 background 影子节点 + 桩 query_time_range + 空 summaries。
+    """解析桩：每段一个只读 background 影子节点 + 桩 query_time_range + 空 summaries +
+    paragraph_list（每段一条聚合根，含 original_content 与 argument_tree_ids）。
 
     影子节点不参与校验与传导、状态恒 ``unverified``、永不进入 ``adopted``，
     故回写对每段都走逐字节拷回通道——tracer bullet 的字节级承诺由此成立。
     真实解析（#2）将在此识别 main_claim/sub_claim/evidence/qualification 并建父子树、
     并顺产 paragraph_summaries。query_time_range 恒为桩（真实 LLM 时间识别属后续切片）。
+    paragraph_list 与真实 parse 同形：按规范段序每段一条、original_content 取自该段 bytes
+    解码、argument_tree_ids 为该段影子节点 id（PRD §22 / T-01 双写）。
     """
 
+    pids = list(original_paragraphs.paragraph_ids())
     argument_tree = [
         Argument(
             argument_id=f"n-{pid}",
@@ -252,12 +257,22 @@ def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
             paragraph_id=pid,
             content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
         )
-        for pid in original_paragraphs.paragraph_ids()
+        for pid in pids
+    ]
+    paragraph_list = [
+        ParagraphRecord(
+            paragraph_id=pid,
+            summary="",
+            original_content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
+            argument_tree_ids=[f"n-{pid}"],
+        )
+        for pid in pids
     ]
     return ParseOutput(
         argument_tree=argument_tree,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         paragraph_summaries={},
+        paragraph_list=paragraph_list,
     )
 
 
@@ -470,12 +485,13 @@ def _parse_partition_node(agents: Agents) -> NodeFn:
 
 
 def _parse_output_patch(out: ParseOutput) -> dict[str, object]:
-    """把 ParseOutput 摊成写回 PipelineState 的 patch（三 channel）。"""
+    """把 ParseOutput 摊成写回 PipelineState 的 patch（四 channel，含 paragraph_list）。"""
 
     return {
         "argument_tree": out.argument_tree,
         "query_time_range": out.query_time_range,
         "paragraph_summaries": out.paragraph_summaries,
+        "paragraph_list": out.paragraph_list,
     }
 
 

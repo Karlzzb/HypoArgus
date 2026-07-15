@@ -50,7 +50,6 @@ def _evidence(
     status: ArgumentStatus = ArgumentStatus.CREDIBLE,
     weight: int = 50,
     parent_id: str | None = None,
-    content: str = "e",
 ) -> Argument:
     """构造一个 evidence 子节点（默认存活、权重 50）。"""
 
@@ -58,8 +57,6 @@ def _evidence(
         argument_id=argument_id,
         argument_type=ArgumentType.EVIDENCE,
         parent_id=parent_id,
-        paragraph_id="p0001",
-        content=content,
         argument_weight=weight,
         status=status,
     )
@@ -73,7 +70,6 @@ def _claim(
     children_ids: list[str] | None = None,
     weight: int = 60,
     status: ArgumentStatus = ArgumentStatus.CREDIBLE,
-    content: str = "c",
     hypotheses: list[Hypothesis] | None = None,
     issue_tags: list[str] | None = None,
 ) -> Argument:
@@ -84,8 +80,6 @@ def _claim(
         argument_type=argument_type,
         parent_id=parent_id,
         children_ids=list(children_ids or []),
-        paragraph_id="p0001",
-        content=content,
         argument_weight=weight,
         status=status,
         candidate_hypotheses=list(hypotheses or []),
@@ -188,7 +182,6 @@ class TestFormula:
         bg = Argument(
             argument_id="bg",
             argument_type=ArgumentType.BACKGROUND,
-            paragraph_id="p0001",
             argument_weight=0,
             status=ArgumentStatus.CREDIBLE,
         )
@@ -386,7 +379,6 @@ class TestImpactScope:
             argument_id="bg",
             argument_type=ArgumentType.BACKGROUND,
             parent_id="n0",
-            paragraph_id="p0001",
             argument_weight=100,  # 影子权重即便高也不参与
             status=ArgumentStatus.CREDIBLE,
         )
@@ -428,7 +420,6 @@ def _argument_with_decision(
         argument_id=argument_id,
         argument_type=argument_type,
         children_ids=children_ids,
-        paragraph_id="p0001",
         status=status,
         candidate_hypotheses=list(hypotheses),
         merge_decision=decision,
@@ -573,7 +564,6 @@ class TestImpactPurity:
             "n0",
             children_ids=["c1", "c2"],
             status=ArgumentStatus.CREDIBLE,
-            content="原文论点",
         )
         argument_tree = [
             argument,
@@ -588,19 +578,17 @@ class TestImpactPurity:
             assert n == before[n.argument_id], f"输入树被改写：{n.argument_id}"
             assert n.merge_decision is None  # 输入节点本无 merge_decision
 
-    def test_preserves_content_never_adopts_or_corrects(self):
-        """影响传导不改 ``content``、不置 ``adopted``/``corrected``（替人拍板是 HITL-2/回写职责）。"""
+    def test_never_adopts_or_corrects(self):
+        """影响传导不替人拍板（不置 ``adopted``/``corrected``；纯函数不改输入）。"""
 
         argument = _claim(
             "n0",
             children_ids=["c"],
             status=ArgumentStatus.CREDIBLE,
-            content="不可改的原文",
         )
         argument_tree = [argument, _evidence("c", status=ArgumentStatus.ERROR, weight=100, parent_id="n0")]
         out = _by_id(impact(argument_tree))
         assert out["n0"].status is ArgumentStatus.INVALID
-        assert out["n0"].content == "不可改的原文"  # 不产文本
         assert out["n0"].status is not ArgumentStatus.ADOPTED
         assert out["n0"].status is not ArgumentStatus.CORRECTED
 
@@ -617,12 +605,11 @@ class TestImpactPurity:
         """全可信树：影响传导不动任何节点，但仍返回新实例（与合并 #6 同形）。"""
 
         argument_tree = [
-            _claim("n0", children_ids=["c"], status=ArgumentStatus.CREDIBLE, content="C"),
-            _evidence("c", status=ArgumentStatus.CREDIBLE, weight=100, parent_id="n0", content="E"),
+            _claim("n0", children_ids=["c"], status=ArgumentStatus.CREDIBLE),
+            _evidence("c", status=ArgumentStatus.CREDIBLE, weight=100, parent_id="n0"),
         ]
         out = impact(argument_tree)
         assert [n.argument_id for n in out] == [n.argument_id for n in argument_tree]
         assert all(o is not n for o, n in zip(out, argument_tree, strict=True))
-        # 内容与状态完全不变。
-        assert all(o.content == n.content for o, n in zip(out, argument_tree, strict=True))
+        # 状态完全不变（内容字段已移除，逐字节一致由状态等价保证）。
         assert all(o.status == n.status for o, n in zip(out, argument_tree, strict=True))

@@ -26,29 +26,28 @@ from runtime.gates import InterruptHitl1Gate, InterruptHitl2Gate
 
 
 def _tree() -> list[Argument]:
-    return [
-        Argument(
-            argument_id="n0001",
-            argument_type=ArgumentType.MAIN_CLAIM,
-            paragraph_id="p0001",
-            content="主论点。",
-        ),
-        Argument(
-            argument_id="n0002",
-            argument_type=ArgumentType.EVIDENCE,
-            paragraph_id="p0002",
-            content="论据。",
-            parent_id="n0001",
-        ),
-    ]
+    a1 = Argument(
+        argument_id="n0001",
+        argument_type=ArgumentType.MAIN_CLAIM,
+    )
+    object.__setattr__(a1, "_test_paragraph_id", "p0001")
+    object.__setattr__(a1, "_test_content", "主论点。")
+    a2 = Argument(
+        argument_id="n0002",
+        argument_type=ArgumentType.EVIDENCE,
+        parent_id="n0001",
+    )
+    object.__setattr__(a2, "_test_paragraph_id", "p0002")
+    object.__setattr__(a2, "_test_content", "论据。")
+    return [a1, a2]
 
 
 def _paragraph_list_for(tree: list[Argument]) -> list[ParagraphRecord]:
-    """从树派生 paragraph_list（按 ``paragraph_id`` 分组），供 gate seam 测试。"""
+    """从树派生 paragraph_list（按 ``_test_paragraph_id`` 分组），供 gate seam 测试。"""
 
     by_para: dict[str, list[str]] = {}
     for a in tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     return [
         ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
         for pid, ids in by_para.items()
@@ -92,7 +91,7 @@ def test_hitl1_formulate_question_returns_tree_snapshot_decoupled() -> None:
     # 快照与原树解耦（不别名）。
     assert question.argument_tree is not tree
     tree.append(
-        Argument(argument_id="z", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0009", content="x")
+        Argument(argument_id="z", argument_type=ArgumentType.BACKGROUND)
     )
     assert "z" not in {n.argument_id for n in question.argument_tree}
 

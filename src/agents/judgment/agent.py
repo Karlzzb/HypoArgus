@@ -17,8 +17,9 @@ per-argument / per-hypothesis 终态，再按序调用**不动**的 ``merge`` / 
 5. ``consistency`` 一致性校验贴批注（**复用** :func:`agents.consistency.consistency`，纯函数不动）。
 6. 返回 :class:`JudgmentOutcome`（整树 + 终态化假说）。
 
-输入压缩铁律（PRD §7）：喂给 LLM seam 的只含 ``argument.content``（节点自身文本，有界）+
-假说 ``text`` + citation 片段 + ``session_context`` / ``query_time_range`` 背景；**不回灌**
+输入压缩铁律（PRD §7）：喂给 LLM seam 的只含段 ``original_content``（每段一份，取自
+段落聚合根 ``ParagraphRecord``）+ 假说 ``text`` + citation 片段 + ``session_context`` /
+``query_time_range`` 背景；**不回灌**
 ``status`` / ``argument_weight`` / ``parent_id`` / ``children_ids`` / ``issue_tags`` /
 ``merge_decision``——这些由本模块在调用前后管理、不进 prompt。真实 prompt 构造属
 :mod:`infra.llm_adapters` 的 ``QwenJudgmentLlmClient``（Slice 5 cycle 7）；本模块的

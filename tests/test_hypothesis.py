@@ -30,12 +30,10 @@ def _argument(
     paragraph_id: str = "p0001",
     content: str = "原文论据",
 ) -> Argument:
-    return Argument(
-        argument_id=argument_id,
-        argument_type=argument_type,
-        paragraph_id=paragraph_id,
-        content=content,
-    )
+    arg = Argument(argument_id=argument_id, argument_type=argument_type)
+    object.__setattr__(arg, "_test_paragraph_id", paragraph_id)
+    object.__setattr__(arg, "_test_content", content)
+    return arg
 
 
 def _summaries(*pairs: tuple[str, str]) -> dict[str, str]:
@@ -57,12 +55,12 @@ def _paragraph_list(
     summaries = summaries or {}
     by_para: dict[str, list[Argument]] = {}
     for a in argument_tree:
-        by_para.setdefault(a.paragraph_id, []).append(a)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a)
     return [
         ParagraphRecord(
             paragraph_id=pid,
             summary=summaries.get(pid, ""),
-            original_content=by_para[pid][0].content,
+            original_content=getattr(by_para[pid][0], "_test_content", ""),
             argument_tree_ids=[a.argument_id for a in by_para[pid]],
         )
         for pid in by_para
@@ -115,13 +113,22 @@ def test_propose_single_evidence_yields_pending_hypothesis():
 def _full_tree() -> list[Argument]:
     """main_claim / sub_claim / evidence / qualification / background 各一。"""
 
-    return [
-        Argument(argument_id="m", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p1", content="主论点"),
-        Argument(argument_id="s", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p2", content="分论点"),
-        Argument(argument_id="e", argument_type=ArgumentType.EVIDENCE, paragraph_id="p3", content="论据"),
-        Argument(argument_id="q", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p4", content="限定"),
-        Argument(argument_id="b", argument_type=ArgumentType.BACKGROUND, paragraph_id="p5", content="背景"),
+    nodes = [
+        Argument(argument_id="m", argument_type=ArgumentType.MAIN_CLAIM),
+        Argument(argument_id="s", argument_type=ArgumentType.SUB_CLAIM),
+        Argument(argument_id="e", argument_type=ArgumentType.EVIDENCE),
+        Argument(argument_id="q", argument_type=ArgumentType.QUALIFICATION),
+        Argument(argument_id="b", argument_type=ArgumentType.BACKGROUND),
     ]
+    for n, pid, content in zip(
+        nodes,
+        ["p1", "p2", "p3", "p4", "p5"],
+        ["主论点", "分论点", "论据", "限定", "背景"],
+        strict=True,
+    ):
+        object.__setattr__(n, "_test_paragraph_id", pid)
+        object.__setattr__(n, "_test_content", content)
+    return nodes
 
 
 def test_propose_covers_evidence_and_sub_claim_skips_rest():
@@ -224,12 +231,12 @@ def test_propose_does_not_rewrite_content_or_status():
     """开药绝不改原文与体检状态：partial 只存候选假设、不携节点，输入树 content/status 不变。"""
 
     argument_tree = _full_tree()
-    before = {n.argument_id: (n.content, n.status) for n in argument_tree}
+    before = {n.argument_id: (getattr(n, "_test_content", ""), n.status) for n in argument_tree}
     llm = FakeHypothesisLlmClient(propose_factory=_oppose_proposals)
     summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
     propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     for n in argument_tree:
-        assert (n.content, n.status) == before[n.argument_id]
+        assert (getattr(n, "_test_content", ""), n.status) == before[n.argument_id]
 
 
 def test_propose_does_not_mutate_input_tree():
@@ -294,15 +301,19 @@ def test_propose_does_not_read_verification_status():
     """乐观并行（ADR-0002）：生成不读体检结论——节点 status 不影响生成。"""
 
     argument_tree = [
-        Argument(argument_id="ok", argument_type=ArgumentType.EVIDENCE, paragraph_id="p1", content="论据"),
+        Argument(argument_id="ok", argument_type=ArgumentType.EVIDENCE),
         Argument(
             argument_id="bad",
             argument_type=ArgumentType.EVIDENCE,
-            paragraph_id="p2",
-            content="论据2",
             status=ArgumentStatus.ERROR,  # 体检可能已判 error，但开药仍照常生成（不依赖该结论）
         ),
     ]
+    for n, pid, content in zip(
+        argument_tree, ["p1", "p2"], ["论据", "论据2"],
+        strict=True,
+    ):
+        object.__setattr__(n, "_test_paragraph_id", pid)
+        object.__setattr__(n, "_test_content", content)
     seen_arguments: list[str] = []
 
     def propose(argument, paragraph_summary, original_content):
@@ -335,8 +346,10 @@ def test_propose_seam_receives_paragraph_original_content():
     """
 
     argument_tree = [
-        Argument(argument_id="e", argument_type=ArgumentType.EVIDENCE, paragraph_id="p1", content="论据原文ABC"),
+        Argument(argument_id="e", argument_type=ArgumentType.EVIDENCE),
     ]
+    object.__setattr__(argument_tree[0], "_test_paragraph_id", "p1")
+    object.__setattr__(argument_tree[0], "_test_content", "论据原文ABC")
     captured: dict[str, str] = {}
 
     def propose(argument, paragraph_summary, original_content):

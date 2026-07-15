@@ -39,14 +39,15 @@ def _argument(
     argument_type: ArgumentType = ArgumentType.EVIDENCE,
     argument_weight: int = 50,
 ) -> Argument:
-    return Argument(
+    arg = Argument(
         argument_id=argument_id,
         argument_type=argument_type,
         parent_id=parent_id,
         children_ids=list(children_ids or []),
-        paragraph_id=paragraph_id,
         argument_weight=argument_weight,
     )
+    object.__setattr__(arg, "_test_paragraph_id", paragraph_id)
+    return arg
 
 
 def _abc_tree() -> list[Argument]:
@@ -72,7 +73,7 @@ def test_confirm_skip_returns_tree_unchanged():
     """skip → 树原样返回（不改动原文一个字）。"""
 
     argument_tree = _abc_tree()
-    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.SKIP)))
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.SKIP)), paragraph_list=_paragraph_list(argument_tree))
     assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
@@ -80,7 +81,7 @@ def test_confirm_accept_returns_tree_unchanged():
     """accept → 树原样返回。"""
 
     argument_tree = _abc_tree()
-    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.ACCEPT)))
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.ACCEPT)), paragraph_list=_paragraph_list(argument_tree))
     assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
@@ -96,7 +97,7 @@ def test_confirm_validates_input_tree():
             return Hitl1Decision(action=Hitl1Action.SKIP)
 
     with pytest.raises(TreeInvariantError):
-        confirm(bad_tree, _Spy())  # type: ignore[arg-type]
+        confirm(bad_tree, _Spy(), paragraph_list=_paragraph_list(bad_tree))  # type: ignore[arg-type]
     assert reviewed == []  # gate 未被调用
 
 
@@ -104,7 +105,7 @@ def test_confirm_edit_with_empty_ops_unchanged():
     """edit + 空 ops → 树不变（但返回深拷贝，不与输入同对象）。"""
 
     argument_tree = _abc_tree()
-    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.EDIT, ops=[])))
+    out = confirm(argument_tree, _gate(Hitl1Decision(action=Hitl1Action.EDIT, ops=[])), paragraph_list=_paragraph_list(argument_tree))
     assert [n.model_dump() for n in out] == [n.model_dump() for n in argument_tree]
 
 
@@ -121,6 +122,7 @@ def test_confirm_does_not_mutate_caller_tree():
                 ops=[],  # 即使有 ops，调用方也不应被改
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     assert [n.model_dump() for n in argument_tree] == [n.model_dump() for n in snapshot]
 
@@ -143,7 +145,7 @@ def test_confirm_reparent_updates_parent_and_children():
     """reparent C 到 B 下：C.parent=B，B.children 含 C，A.children 释放 C。"""
 
     argument_tree = _abc_tree()
-    out = confirm(argument_tree, _gate(_reparent("c", "b")))
+    out = confirm(argument_tree, _gate(_reparent("c", "b")), paragraph_list=_paragraph_list(argument_tree))
     by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id == "b"
     assert "c" in by_id["b"].children_ids
@@ -154,7 +156,7 @@ def test_confirm_reparent_to_none_makes_root():
     """reparent C 到 None → C 成为根。"""
 
     argument_tree = _abc_tree()
-    out = confirm(argument_tree, _gate(_reparent("c", None)))
+    out = confirm(argument_tree, _gate(_reparent("c", None)), paragraph_list=_paragraph_list(argument_tree))
     by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id is None
     assert "c" not in by_id["a"].children_ids
@@ -166,7 +168,7 @@ def test_confirm_reparent_creating_cycle_raises_and_leaves_caller_untouched():
     argument_tree = _abc_tree()
     snapshot = [n.model_dump() for n in argument_tree]
     with pytest.raises(TreeInvariantError):
-        confirm(argument_tree, _gate(_reparent("a", "c")))
+        confirm(argument_tree, _gate(_reparent("a", "c")), paragraph_list=_paragraph_list(argument_tree))
     assert [n.model_dump() for n in argument_tree] == snapshot
 
 
@@ -175,7 +177,7 @@ def test_confirm_reparent_to_missing_parent_raises():
 
     argument_tree = _abc_tree()
     with pytest.raises(TreeInvariantError):
-        confirm(argument_tree, _gate(_reparent("c", "ghost")))
+        confirm(argument_tree, _gate(_reparent("c", "ghost")), paragraph_list=_paragraph_list(argument_tree))
 
 
 # --------------------------------------------------------------------------- #
@@ -203,6 +205,7 @@ def test_confirm_merge_same_paragraph_unions_children():
                 ops=[MergeOp(argument_ids=["b", "c"])],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     by_id = {n.argument_id: n for n in out}
     assert "c" not in by_id  # 被合并删除
@@ -232,35 +235,40 @@ def test_confirm_merge_cross_paragraph_rejected():
                     ops=[MergeOp(argument_ids=["b", "c"])],
                 )
             ),
+            paragraph_list=_paragraph_list(argument_tree),
         )
     assert [n.model_dump() for n in argument_tree] == snapshot
 
 
 def test_confirm_split_creates_sibling_same_paragraph():
-    """拆分节点 N → 新节点为同段叶兄弟，唯一 id，继承类型/父。"""
+    """拆分节点 N → 新节点为同段叶兄弟，唯一 id，继承类型/父（新拆分节点归属源段，经 paragraph_list 判定）。"""
 
     from agents.hitl1 import SplitOp
 
     argument_tree = _abc_tree()
-    out = confirm(
+    out = confirm_partition(
         argument_tree,
-        _gate(
+        _paragraph_list(argument_tree),
+        retry_count=0,
+        gate=_gate(
             Hitl1Decision(
                 action=Hitl1Action.EDIT,
                 ops=[SplitOp(argument_id="b")],
             )
         ),
     )
-    new_arguments = [n for n in out if n.argument_id not in {"a", "b", "c"}]
+    new_arguments = [n for n in out.argument_tree if n.argument_id not in {"a", "b", "c"}]
     assert len(new_arguments) == 1
     new = new_arguments[0]
-    by_id = {n.argument_id: n for n in out}
-    # 新节点与源节点同段、同类型、同父（叶兄弟），唯一 id
-    assert new.paragraph_id == by_id["b"].paragraph_id
+    by_id = {n.argument_id: n for n in out.argument_tree}
+    # 新节点与源节点同类型、同父（叶兄弟），唯一 id
     assert new.argument_type == by_id["b"].argument_type
     assert new.parent_id == by_id["b"].parent_id  # 同父兄弟
     assert new.children_ids == []  # 叶
     assert new.argument_id in by_id["a"].children_ids  # 父认子
+    # 新拆分节点归属源段（经 paragraph_list 判定）：含新 id 的段亦含源节点 b。
+    src_record = next(r for r in out.paragraph_list if new.argument_id in r.argument_tree_ids)
+    assert "b" in src_record.argument_tree_ids
 
 
 def test_confirm_split_twice_yields_distinct_ids():
@@ -277,6 +285,7 @@ def test_confirm_split_twice_yields_distinct_ids():
                 ops=[SplitOp(argument_id="b"), SplitOp(argument_id="b")],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     new_ids = [n.argument_id for n in out if n.argument_id not in {"a", "b", "c"}]
     assert len(new_ids) == 2
@@ -305,6 +314,7 @@ def test_confirm_set_type_demote_to_shadow_zeros_weight():
                 ops=[SetTypeOp(argument_id="b", new_type=ArgumentType.BACKGROUND)],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     by_id = {n.argument_id: n for n in out}
     assert by_id["b"].argument_type == ArgumentType.BACKGROUND
@@ -329,6 +339,7 @@ def test_confirm_set_type_promote_shadow_to_core_sets_default_weight():
                 ops=[SetTypeOp(argument_id="b", new_type=ArgumentType.SUB_CLAIM)],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     by_id = {n.argument_id: n for n in out}
     assert by_id["b"].argument_type == ArgumentType.SUB_CLAIM
@@ -359,6 +370,7 @@ def test_confirm_mark_no_op_converts_paragraph_to_shadow():
                 ops=[MarkNoOpOp(paragraph_id="p0001")],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     by_id = {n.argument_id: n for n in out}
     # p0001 的节点（a、b）转影子、权重 0
@@ -395,6 +407,7 @@ def test_confirm_fix_boundary_raises_deferred():
                     ops=[FixBoundaryOp(argument_id="b")],
                 )
             ),
+            paragraph_list=_paragraph_list(argument_tree),
         )
     assert [n.model_dump() for n in argument_tree] == snapshot
 
@@ -421,6 +434,7 @@ def test_confirm_edit_sequence_applied_in_order_and_validated():
                 ],
             )
         ),
+        paragraph_list=_paragraph_list(argument_tree),
     )
     by_id = {n.argument_id: n for n in out}
     assert by_id["c"].parent_id == "b"
@@ -449,6 +463,7 @@ def test_confirm_edit_sequence_invalid_step_rejects_wholesale():
                     ],
                 )
             ),
+            paragraph_list=_paragraph_list(argument_tree),
         )
     assert [n.model_dump() for n in argument_tree] == snapshot
 
@@ -468,7 +483,7 @@ def test_confirm_partition_skip_continues_route_unchanged_tree():
 
     argument_tree = _abc_tree()
     out = confirm_partition(
-        argument_tree, retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.SKIP))
+        argument_tree, _paragraph_list(argument_tree), retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.SKIP))
     )
     assert out.route is Hitl1Route.CONTINUE
     assert out.retry_count == 0
@@ -481,7 +496,7 @@ def test_confirm_partition_replay_under_budget_routes_replay_and_increments():
 
     argument_tree = _abc_tree()
     out = confirm_partition(
-        argument_tree, retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY))
+        argument_tree, _paragraph_list(argument_tree), retry_count=0, gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY))
     )
     assert out.route is Hitl1Route.REPLAY
     assert out.retry_count == 1
@@ -495,6 +510,7 @@ def test_confirm_partition_replay_at_limit_exhausts_and_continues():
     argument_tree = _abc_tree()
     out = confirm_partition(
         argument_tree,
+        _paragraph_list(argument_tree),
         retry_count=3,
         gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
         max_retries=3,
@@ -511,6 +527,7 @@ def test_confirm_partition_replay_just_under_limit_still_replays():
     argument_tree = _abc_tree()
     out = confirm_partition(
         argument_tree,
+        _paragraph_list(argument_tree),
         retry_count=2,
         gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
         max_retries=3,
@@ -528,6 +545,7 @@ def test_confirm_partition_edit_applied_and_continues():
     argument_tree = _abc_tree()
     out = confirm_partition(
         argument_tree,
+        _paragraph_list(argument_tree),
         retry_count=1,
         gate=_gate(
             Hitl1Decision(
@@ -555,7 +573,7 @@ def test_confirm_partition_validates_input_tree_before_review():
             return Hitl1Decision(action=Hitl1Action.SKIP)
 
     with pytest.raises(TreeInvariantError):
-        confirm_partition(bad_tree, retry_count=0, gate=_Spy())  # type: ignore[arg-type]
+        confirm_partition(bad_tree, _paragraph_list(bad_tree), retry_count=0, gate=_Spy())  # type: ignore[arg-type]
     assert reviewed == []
 
 
@@ -565,6 +583,7 @@ def test_confirm_partition_replay_max_retries_configurable_default_three():
     argument_tree = _abc_tree()
     out = confirm_partition(
         argument_tree,
+        _paragraph_list(argument_tree),
         retry_count=3,
         gate=_gate(Hitl1Decision(action=Hitl1Action.REPLAY)),
     )
@@ -591,11 +610,11 @@ def test_confirm_partition_replay_once_then_continue_simulates_loop():
     gate: Hitl1Gate = _SequentialGate()  # type: ignore[assignment]
     argument_tree = _abc_tree()
 
-    out1 = confirm_partition(argument_tree, retry_count=0, gate=gate)
+    out1 = confirm_partition(argument_tree, _paragraph_list(argument_tree), retry_count=0, gate=gate)
     assert out1.route is Hitl1Route.REPLAY
     assert out1.retry_count == 1
     # 图层级重跑上游后，第二次 hitl1：计数续传 out1.retry_count。
-    out2 = confirm_partition(argument_tree, retry_count=out1.retry_count, gate=gate)
+    out2 = confirm_partition(argument_tree, _paragraph_list(argument_tree), retry_count=out1.retry_count, gate=gate)
     assert out2.route is Hitl1Route.CONTINUE
     assert out2.retry_count == 1  # 确认继续不递增打回计数
     assert out2.exhausted is False
@@ -699,7 +718,7 @@ def _paragraph_list(argument_tree: list[Argument]) -> list[ParagraphRecord]:
 
     by_para: dict[str, list[str]] = {}
     for a in argument_tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     return [
         ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
         for pid, ids in by_para.items()

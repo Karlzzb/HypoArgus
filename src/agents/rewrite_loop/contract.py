@@ -70,7 +70,7 @@ class RewriteLlmClient(Protocol):
     ``argument_type`` + 假说 ``text`` / ``relation`` + citation 片段 + 背景喂 LLM（输入压缩
     铁律，PRD §7）；**不回灌** ``status`` / ``argument_weight`` / ``parent_id`` /
     ``children_ids`` / ``issue_tags`` / ``merge_decision``——这些不进 prompt。本 seam 不绑任何
-    provider。T-02 双读过渡：``Argument.content`` 字段暂存但本 seam 不再读。
+    provider。T-04：``Argument`` 不存原文字段，段原文取自 ``ParagraphRecord.original_content``。
     """
 
     def propose_rewrite(

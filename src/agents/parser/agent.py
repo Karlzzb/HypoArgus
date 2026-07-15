@@ -6,8 +6,8 @@
 见 ``docs/langgraph-dev-guide.md``）：
 
 - ``paragraph_id`` 必须存在于只读表——不凭空造段、不跨段（ADR-0001）。
-- ``content`` 逐字节从只读表按 ``paragraph_id`` 拷回——LLM 无权改写原文（by construction，
-  节点文本永不来自 LLM 输出）。
+- ``original_content`` 逐字节从只读表按 ``paragraph_id`` 拷回到段落聚合根
+  :class:`ParagraphRecord`——LLM 无权改写原文（by construction，节点文本永不来自 LLM 输出）。
 - ``argument_weight`` ∈ [0,100]（越界 clamp；影子恒 0）。
 - ``parent_index`` 解析为 ``argument_id``：拒绝越界/自指；环则断为根（绝不产出成环树）。
 - 覆盖软启发式：无核心节点提议的段落归为只读 ``background`` 影子节点，
@@ -15,8 +15,8 @@
 - 节点初始 ``unverified``；父子指针回填并通过 :func:`validate_tree` 自检。
 
 > 原文段落按段（``ParagraphView``）喂给 LLM，**不整篇 dump**：每个 view 只含一段
-> 原文加 ``paragraph_id``。解析器是唯一读取段落文本的环节；此后只节点（各携自身一段）
-> 在智能体间流转（ADR-0005）。
+> 原文加 ``paragraph_id``。解析器是唯一读取段落文本的环节；此后段落原文每段一份存于
+> ``ParagraphRecord.original_content``，论证节点（纯推理结构）在智能体间流转（ADR-0005）。
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     流程：
     1. 把**实质段落**（去空白）按段喂给 LLM → 结构化节点提议（``ParseResult``，含
        ``paragraph_summaries``）。
-    2. 为每个提议铸造稳定 ``argument_id``、从只读表逐字节拷回 ``content``、clamp 权重、
+    2. 为每个提议铸造稳定 ``argument_id``、clamp 权重、
        按 ``parent_index`` 解析 ``parent_id``（越界/自指 → 根）。
     3. 断环、回填 ``children_ids``。
     4. 覆盖软启发式：无提议段落一律生成只读 ``background`` 影子节点（绝不硬造论点）。
@@ -106,9 +106,11 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     节点初始 ``unverified``；空白段落不喂 LLM、自动归影子。
 
     ``query_time_range`` 当前为桩（``DEFAULT_QUERY_TIME_RANGE``，agent 注入、不真实调 LLM 识别，
-    真实时间识别属后续切片，PRD Out of Scope）；``paragraph_summaries`` 顺产自 parse seam
-    （真实 adapter 两阶段：树一次 + 摘要按 8 分块，见 ``infra/llm_adapters.py``）。
-    返回 :class:`ParseOutput` 供 ``parse+partition`` build 闭包写回三 channel。
+    真实时间识别属后续切片，PRD Out of Scope）；段落摘要顺产自 parse seam（``ParseResult``
+    的 ``paragraph_summaries``，真实 adapter 两阶段：树一次 + 摘要按 8 分块，见
+    ``infra/llm_adapters.py``），折叠进 ``paragraph_list.summary``（摘要的单一定义点）。
+    返回 :class:`ParseOutput` 供 ``parse+partition`` build 闭包写回三 channel
+    （``argument_tree`` / ``query_time_range`` / ``paragraph_list``）。
     """
 
     paragraph_ids = list(original_paragraphs.paragraph_ids())
@@ -138,6 +140,9 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     orig_to_surviving: dict[int, int] = {
         orig_i: surv_i for surv_i, (orig_i, _) in enumerate(surviving)
     }
+    # 段落→节点 id 正向索引（T-04：Argument 无 paragraph_id，故在此随建树同步累积，
+    # 不再事后扫树按 argument.paragraph_id 反向 join）。
+    nodes_by_paragraph: dict[str, list[str]] = {pid: [] for pid in paragraph_ids}
     for surv_i, (orig_i, prop) in enumerate(surviving):
         # parent_index 指向 LLM 输出列表中的位置：自指 / 越界 / 指向被丢弃提议 → 根。
         parent_id: str | None = None
@@ -151,13 +156,12 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
                 parent_id = _core_argument_id(orig_to_surviving[idx])
         nid = _core_argument_id(surv_i)
         covered.add(prop.paragraph_id)
+        nodes_by_paragraph[prop.paragraph_id].append(nid)
         arguments.append(
             Argument(
                 argument_id=nid,
                 argument_type=prop.argument_type,
                 parent_id=parent_id,
-                paragraph_id=prop.paragraph_id,
-                content=_decode(original_paragraphs.get(prop.paragraph_id)),
                 argument_weight=_clamp_weight(prop.argument_weight, prop.argument_type),
                 status=ArgumentStatus.UNVERIFIED,
             )
@@ -171,27 +175,25 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     for pid in paragraph_ids:
         if pid in covered:
             continue
-        shadow = Argument(
-            argument_id=_shadow_argument_id(pid),
-            argument_type=ArgumentType.BACKGROUND,
-            parent_id=None,
-            paragraph_id=pid,
-            content=_decode(original_paragraphs.get(pid)),
-            argument_weight=0,
-            status=ArgumentStatus.UNVERIFIED,
+        shadow_id = _shadow_argument_id(pid)
+        nodes_by_paragraph[pid].append(shadow_id)
+        arguments.append(
+            Argument(
+                argument_id=shadow_id,
+                argument_type=ArgumentType.BACKGROUND,
+                parent_id=None,
+                argument_weight=0,
+                status=ArgumentStatus.UNVERIFIED,
+            )
         )
-        arguments.append(shadow)
 
     # 5. 结构不变式自检（LLM 不可信 → 代码兜底）。
     validate_tree(arguments)
     # LLM 面向 list[ParagraphSummary] → 下游面向 dict（ParseOutput 契约不变）。
     summaries = {ps.paragraph_id: ps.summary for ps in result.paragraph_summaries}
     # 6. 段落聚合根：按规范段序每段一条，正向拥有该段全部节点 id（核心 + background 影子），
-    #    段落原文每段唯一一份（替代原先每节点各拷一份）。双写过渡：Argument.paragraph_id /
-    #    content 与 paragraph_summaries 暂不移除，此处同时产新（paragraph_list）。
-    nodes_by_paragraph: dict[str, list[str]] = {pid: [] for pid in paragraph_ids}
-    for argument in arguments:
-        nodes_by_paragraph.setdefault(argument.paragraph_id, []).append(argument.argument_id)
+    #    段落原文每段唯一一份（取自只读表解码）。T-04：Argument 不再存 paragraph_id/content，
+    #    段落侧为原文与摘要的单一定义点。
     paragraph_list = [
         ParagraphRecord(
             paragraph_id=pid,
@@ -204,6 +206,5 @@ def parse(original_paragraphs: OriginalParagraphs, llm: LlmClient) -> ParseOutpu
     return ParseOutput(
         argument_tree=arguments,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
-        paragraph_summaries=summaries,
         paragraph_list=paragraph_list,
     )

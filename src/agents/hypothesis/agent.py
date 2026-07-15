@@ -8,9 +8,9 @@
 取证职责移出，推迟到 Slice 5 的 judgment 节点（吃 citations 判终态）。故假说产出即
 ``pending``，由 judgment 落终态（``supported / doubtful / refuted``）。
 
-propose 读 ``paragraph_list``（段落聚合根），逐 argument 经 ``paragraph_id`` 反查该段
-``original_content`` + ``summary`` 调 LLM——T-02：不再读 ``Argument.content``、不再按
-``paragraph_summaries`` dict 取摘要。避免一次性 / 逐点喂入时上下文爆炸（PRD §7 输入压缩铁律）。
+propose 读 ``paragraph_list``（段落聚合根），逐 argument 经 ``argument_tree_ids`` 反查该段
+``original_content`` + ``summary`` 调 LLM——T-04：``Argument`` 不存原文字段，原文 / 摘要
+均取自段落聚合根（避免一次性 / 逐点喂入时上下文爆炸，PRD §7 输入压缩铁律）。
 
 控制流落代码而非 prompt 散文（``docs/langgraph-dev-guide.md`` §0 铁律）：
 
@@ -86,23 +86,25 @@ def propose_hypotheses(
 
     - 覆盖 ``evidence / sub_claim``；``main_claim / qualification / 影子`` 节点不在 dict 中
       （保持空 ``candidate_hypotheses``，下游合并据此识别未开药节点）。
-    - T-02：逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
-      ``summary``（不再读 ``Argument.content`` / ``paragraph_summaries`` dict），调 ``propose``；
+    - 逐 argument 经 ``argument_tree_ids`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
+      ``summary``（原文 / 摘要取自段落聚合根，``Argument`` 不存原文字段），调 ``propose``；
       产出的假设一律 ``status=pending``（取证落终态属 Slice 5 的 judgment）。
-    - ``content`` 与 ``status`` 不动（``status`` 由体检 #4 写回，``candidate_hypotheses``
+    - ``status`` 不动（``status`` 由体检 #4 写回，``candidate_hypotheses``
       由本节点写回，二者在 reducer 处合流，供 #6 矩阵裁决）。
     - partial 只存候选假设列表本身，不再塞整节点——合流由 merge 按 ``argument_id`` 取本
       值写回 ``candidate_hypotheses``，不修改输入树。
     """
 
-    paragraph_by_id: dict[str, ParagraphRecord] = {
-        r.paragraph_id: r for r in paragraph_list
+    paragraph_by_argument_id: dict[str, ParagraphRecord] = {
+        aid: record
+        for record in paragraph_list
+        for aid in record.argument_tree_ids
     }
     updates: dict[str, list[Hypothesis]] = {}
     for argument in argument_tree:
         if not _should_hypothesize(argument):
             continue
-        record = paragraph_by_id.get(argument.paragraph_id)
+        record = paragraph_by_argument_id.get(argument.argument_id)
         paragraph_summary = record.summary if record is not None else ""
         original_content = record.original_content if record is not None else ""
         try:

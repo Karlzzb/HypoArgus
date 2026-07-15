@@ -150,7 +150,6 @@ class PipelineState(TypedDict, total=False):
     original_paragraphs: OriginalParagraphs
     session_context: SessionContext
     query_time_range: TimeRange
-    paragraph_summaries: Annotated[dict[str, str], _merge_dict]
     paragraph_list: Annotated[list[ParagraphRecord], merge_paragraph_list]
     argument_tree: Annotated[list[Argument], merge_argument_tree]
     hypotheses: Annotated[dict[str, list[Hypothesis]], _merge_dict]

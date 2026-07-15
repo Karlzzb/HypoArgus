@@ -99,7 +99,7 @@ class ParseFn(Protocol):
 
     partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0021 / Slice 1）：
     partition 的纯代码切分 + 字节级自检由 build 闭包承担，本 Protocol 承载 parse 语义——
-    产 ``ParseOutput``（argument_tree + query_time_range 桩 + paragraph_summaries）。
+    产 ``ParseOutput``（argument_tree + query_time_range 桩 + paragraph_list（含 summary））。
     """
 
     def __call__(self, original_paragraphs: OriginalParagraphs) -> ParseOutput: ...
@@ -151,7 +151,7 @@ class HypothesisProposeFn(Protocol):
     """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。
 
     逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
-    ``summary`` 调 ``propose``（T-02：不读 ``Argument.content`` / ``paragraph_summaries``），
+    ``summary`` 调 ``propose``（不读 ``Argument`` 原文字段；原文 / 摘要取自 ``paragraph_list``），
     产 pending 假设 partial（by ``argument_id``）。取证落终态属 Slice 5 的 judgment 节点。
     """
 
@@ -248,15 +248,16 @@ class Agents:
 
 
 def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
-    """解析桩：每段一个只读 background 影子节点 + 桩 query_time_range + 空 summaries +
+    """解析桩：每段一个只读 background 影子节点 + 桩 query_time_range +
     paragraph_list（每段一条聚合根，含 original_content 与 argument_tree_ids）。
 
     影子节点不参与校验与传导、状态恒 ``unverified``、永不进入 ``adopted``，
     故回写对每段都走逐字节拷回通道——tracer bullet 的字节级承诺由此成立。
     真实解析（#2）将在此识别 main_claim/sub_claim/evidence/qualification 并建父子树、
-    并顺产 paragraph_summaries。query_time_range 恒为桩（真实 LLM 时间识别属后续切片）。
+    并顺产段落摘要（折叠进 paragraph_list.summary）。query_time_range 恒为桩（真实 LLM 时间识别属后续切片）。
     paragraph_list 与真实 parse 同形：按规范段序每段一条、original_content 取自该段 bytes
-    解码、argument_tree_ids 为该段影子节点 id（PRD §22 / T-01 双写）。
+    解码、argument_tree_ids 为该段影子节点 id（PRD §22）。T-04：Argument 不存 paragraph_id/content，
+    桩亦不产 paragraph_summaries（摘要单一定义点为 paragraph_list.summary）。
     """
 
     pids = list(original_paragraphs.paragraph_ids())
@@ -264,8 +265,6 @@ def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
         Argument(
             argument_id=f"n-{pid}",
             argument_type=ArgumentType.BACKGROUND,
-            paragraph_id=pid,
-            content=original_paragraphs.get(pid).decode("utf-8", errors="surrogateescape"),
         )
         for pid in pids
     ]
@@ -281,7 +280,6 @@ def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
     return ParseOutput(
         argument_tree=argument_tree,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
-        paragraph_summaries={},
         paragraph_list=paragraph_list,
     )
 
@@ -477,7 +475,7 @@ def _parse_partition_node(agents: Agents) -> NodeFn:
         """parse+partition 合并节点（PRD §1 / ADR-0021 / Slice 1）。
 
         partition 纯代码切分 + 字节级自检（硬停，不兜底），parse 建树 + 顺产
-        query_time_range（桩）/ paragraph_summaries（异常 → 记日志 + 空树向前，PRD §13）。
+        query_time_range（桩）/ paragraph_list（异常 → 记日志 + 空树向前，PRD §13）。
         partition 不变式自检失败即正确性 bug、应硬停（与原 ``_partition_node`` 一致）；
         parse 部分经 ``_guarded`` 兜底，异常时仍写回 ``original_paragraphs``、
         产空 argument_tree + 桩 query_time_range + 空 summaries 向前推进。
@@ -500,12 +498,11 @@ def _parse_partition_node(agents: Agents) -> NodeFn:
 
 
 def _parse_output_patch(out: ParseOutput) -> dict[str, object]:
-    """把 ParseOutput 摊成写回 PipelineState 的 patch（四 channel，含 paragraph_list）。"""
+    """把 ParseOutput 摊成写回 PipelineState 的 patch（三 channel，含 paragraph_list）。"""
 
     return {
         "argument_tree": out.argument_tree,
         "query_time_range": out.query_time_range,
-        "paragraph_summaries": out.paragraph_summaries,
         "paragraph_list": out.paragraph_list,
     }
 
@@ -605,7 +602,7 @@ def _hypothesis_propose_node(agents: Agents) -> NodeFn:
         """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。异常 → 记日志 + 无假设向前。
 
         T-02：逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content``
-        + ``summary`` 调 ``propose``（不再读 ``Argument.content`` / ``paragraph_summaries``），
+        + ``summary`` 调 ``propose``（原文 / 摘要取自 ``paragraph_list``，不读 ``Argument`` 原文字段），
         产 pending 假设 partial。开药不持有节点 ``status``（只产 ``candidate_hypotheses``），整体
         异常即「本轮无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
         """
@@ -815,7 +812,7 @@ MANIFEST: tuple[AgentEntry, ...] = (
         label="解析+切分",
         node_type="parse",
         color="#4A90D9",
-        desc="原文切分为只读段落表 + LLM 建初始论证树（顺产 query_time_range / paragraph_summaries）",
+        desc="原文切分为只读段落表 + LLM 建初始论证树（顺产 query_time_range / paragraph_list）",
     ),
     AgentEntry(
         name="hitl1",
@@ -938,8 +935,8 @@ def create_real_agents(
     在 :func:`create_stub_agents` 基础上替换桩为真实实现。``llm`` 为解析 seam（具体 provider
     适配器属生产装配）；``hitl1_gate`` 为 HITL-1 注入闸门（真实 interrupt+checkpointer
     属后续切片）。``hypothesis_llm`` 给出时开药桩（#5 · Slice 3 重定义为仅 propose）替换为真实
-    「投机生成」实现——逐 argument 读 ``paragraph_summaries`` 调 ``propose``、产 pending
-    假说、只写回 ``candidate_hypotheses``、不改 ``content`` 或 ``status``，字节级承诺依然
+    「投机生成」实现——逐 argument 经 ``paragraph_list`` 反查段原文 / 摘要调 ``propose``、产 pending
+    假说、只写回 ``candidate_hypotheses``、不改 ``status``，字节级承诺依然
     成立。``judgment_llm`` 给出时裁决桩（#4 取证 + #5 取证 + #6 merge + #7 impact + #8
     consistency 五合一·Slice 5）替换为真实裁判实现——吃 citations 判 per-argument /
     per-hypothesis 终态、再按序调 merge/impact/consistency 纯函数、整树写回

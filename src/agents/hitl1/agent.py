@@ -15,10 +15,11 @@
 4. ``edit``：在深拷贝上**逐步**应用 ops（每步 ``validate_tree`` +
    ``validate_paragraph_consistency``）——非法步即终止、整个决策丢弃（调用方原树不动）。
 
-T-02：HITL-1 三 op（merge / split / mark_no_op）在改节点集合时**同步维护**
+T-02/T-04：HITL-1 三 op（merge / split / mark_no_op）在改节点集合时**同步维护**
 ``paragraph_list.argument_tree_ids``——merge 从所属段 ids 移除被合并掉的非幸存者、split 把
 新 id（``{source}-s{n}``）加进源段 ids、mark_no_op 经 ``argument_tree_ids`` 定位该段节点；
-「同段才能合并」断言改由 ``argument_tree_ids`` 归属判定（取代 ``Argument.paragraph_id`` 比较）。
+「同段才能合并」断言由 ``argument_tree_ids`` 归属判定（``Argument`` 不存 ``paragraph_id``，
+T-04 已移除该字段）。
 ``reparent`` / ``set_type`` 不动段落成员关系（节点段落归属恒定，ADR-0001）。
 
 ``fix_boundary`` 延后——domain 无 ``text_span``（ADR-0001），待该字段落地后接入。
@@ -70,23 +71,6 @@ def _owner_paragraph_id(
         if argument_id in record.argument_tree_ids:
             return record.paragraph_id
     return None
-
-
-def _derive_paragraph_list(argument_tree: list[Argument]) -> list[ParagraphRecord]:
-    """从 ``argument_tree`` 的 ``paragraph_id``（双读过渡态字段）派生 paragraph_list。
-
-    供未显式传 paragraph_list 的调用路径（test-only ``confirm``、``confirm_partition`` 缺省）。
-    production 路径由 parse 产出真 paragraph_list 并显式传入。T-04 移除 ``paragraph_id`` 后
-    所有调用方均显式传入 paragraph_list，本派生路径退役。
-    """
-
-    by_para: dict[str, list[str]] = {}
-    for argument in argument_tree:
-        by_para.setdefault(argument.paragraph_id, []).append(argument.argument_id)
-    return [
-        ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
-        for pid, ids in by_para.items()
-    ]
 
 
 def _apply_merge(
@@ -266,14 +250,14 @@ def confirm(
     argument_tree: list[Argument],
     gate: Hitl1Gate,
     *,
-    paragraph_list: list[ParagraphRecord] | None = None,
+    paragraph_list: list[ParagraphRecord],
 ) -> list[Argument]:
     """应用 HITL-1 结构确认决策（SKIP/ACCEPT/EDIT），返回确认后的树。
 
-    T-02：``paragraph_list`` 缺省时从 ``argument_tree`` 派生（test-only 便捷路径）；
-    production 由 ``confirm_partition`` 显式传入 parse 产出的真 paragraph_list。三 op
-    在内部同步 ``argument_tree_ids``，但本函数只返回树（paragraph_list 同步结果经
-    ``confirm_partition`` 的 :class:`Hitl1Outcome` 返回）。
+    ``paragraph_list`` 必填（T-04：``Argument`` 不存 ``paragraph_id``，段落↔节点归属只能
+    由段落聚合根提供；production 由 ``confirm_partition`` 显式传入 parse 产出的真
+    paragraph_list）。三 op 在内部同步 ``argument_tree_ids``，但本函数只返回树
+    （paragraph_list 同步结果经 ``confirm_partition`` 的 :class:`Hitl1Outcome` 返回）。
 
     流程：
     1. ``validate_tree`` + ``validate_paragraph_consistency``——输入自检（不信任调用方）。
@@ -284,8 +268,6 @@ def confirm(
     """
 
     validate_tree(argument_tree)  # 1. 输入自检。
-    if paragraph_list is None:
-        paragraph_list = _derive_paragraph_list(argument_tree)
     validate_paragraph_consistency(argument_tree, paragraph_list)
     decision = gate.review(argument_tree, paragraph_list=paragraph_list)  # 2. 闸门看原始树。
     tree, _pl = _apply_decision(argument_tree, paragraph_list, decision)  # 3. 应用决策。
@@ -294,7 +276,7 @@ def confirm(
 
 def confirm_partition(
     argument_tree: list[Argument],
-    paragraph_list: list[ParagraphRecord] | None = None,
+    paragraph_list: list[ParagraphRecord],
     retry_count: int = 0,
     *,
     gate: Hitl1Gate,
@@ -315,13 +297,11 @@ def confirm_partition(
         树与 paragraph_list 原样深拷贝（partition 重切为桩、不在本节点改树）。
 
     输入自检同 :func:`confirm`：``validate_tree`` + ``validate_paragraph_consistency`` 在闸门
-    review 前复检。``paragraph_list`` 缺省时从 ``argument_tree`` 派生（test-only 便捷路径）；
-    production 经节点闭包显式传入 parse 产出的真 paragraph_list。
+    review 前复检。``paragraph_list`` 必填（T-04：``Argument`` 不存段落归属，须显式传入 parse
+    产出的真 paragraph_list）。
     """
 
     validate_tree(argument_tree)  # 输入自检（不信任调用方）。
-    if paragraph_list is None:
-        paragraph_list = _derive_paragraph_list(argument_tree)
     validate_paragraph_consistency(argument_tree, paragraph_list)
     decision = gate.review(argument_tree, paragraph_list=paragraph_list)  # 闸门看原始树。
 

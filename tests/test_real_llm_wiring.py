@@ -53,29 +53,28 @@ def _scripted_input(lines: Iterable[str]):
 
 
 def _sample_tree() -> list[Argument]:
-    return [
-        Argument(
-            argument_id="n0",
-            argument_type=ArgumentType.MAIN_CLAIM,
-            paragraph_id="p0001",
-            content="主论点",
-        ),
-        Argument(
-            argument_id="n1",
-            argument_type=ArgumentType.EVIDENCE,
-            paragraph_id="p0002",
-            content="论据",
-            parent_id="n0",
-        ),
-    ]
+    a0 = Argument(
+        argument_id="n0",
+        argument_type=ArgumentType.MAIN_CLAIM,
+    )
+    object.__setattr__(a0, "_test_paragraph_id", "p0001")
+    object.__setattr__(a0, "_test_content", "主论点")
+    a1 = Argument(
+        argument_id="n1",
+        argument_type=ArgumentType.EVIDENCE,
+        parent_id="n0",
+    )
+    object.__setattr__(a1, "_test_paragraph_id", "p0002")
+    object.__setattr__(a1, "_test_content", "论据")
+    return [a0, a1]
 
 
 def _sample_paragraph_list(tree: list[Argument]) -> list[ParagraphRecord]:
-    """从树派生 paragraph_list（按 ``paragraph_id`` 分组），供 CLI 闸门渲染反查。"""
+    """从树派生 paragraph_list（按 ``_test_paragraph_id`` 分组），供 CLI 闸门渲染反查。"""
 
     by_para: dict[str, list[str]] = {}
     for a in tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     return [
         ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
         for pid, ids in by_para.items()
@@ -261,20 +260,20 @@ def test_real_agents_rewrite_llm_is_injected_and_proposes_for_touched_paragraph(
         Argument(
             argument_id="n1",
             argument_type=ArgumentType.MAIN_CLAIM,
-            paragraph_id="p0001",
-            content="主论点",
             candidate_hypotheses=[hyp],
         ),
         Argument(
             argument_id="n2",
             argument_type=ArgumentType.SUB_CLAIM,
-            paragraph_id="p0002",
-            content="分论点",
         ),
     ]
+    object.__setattr__(argument_tree[0], "_test_paragraph_id", "p0001")
+    object.__setattr__(argument_tree[0], "_test_content", "主论点")
+    object.__setattr__(argument_tree[1], "_test_paragraph_id", "p0002")
+    object.__setattr__(argument_tree[1], "_test_content", "分论点")
     by_para: dict[str, list[str]] = {}
     for a in argument_tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     paragraph_list = [
         ParagraphRecord(
             paragraph_id=pid,

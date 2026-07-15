@@ -51,16 +51,17 @@ def _argument(
 ) -> Argument:
     """构造一个通用节点（默认 evidence / credible / 单段）。"""
 
-    return Argument(
+    arg = Argument(
         argument_id=argument_id,
         argument_type=argument_type,
         parent_id=parent_id,
         children_ids=list(children_ids or []),
-        paragraph_id=paragraph_id,
-        content=content,
         status=status,
         issue_tags=list(issue_tags or []),
     )
+    object.__setattr__(arg, "_test_paragraph_id", paragraph_id)
+    object.__setattr__(arg, "_test_content", content)
+    return arg
 
 
 def _by_id(argument_tree: list[Argument]) -> dict[str, Argument]:
@@ -81,7 +82,7 @@ def _paragraph_list(
     originals = originals or {}
     by_para: dict[str, list[str]] = {}
     for a in argument_tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     return [
         ParagraphRecord(
             paragraph_id=pid,
@@ -123,7 +124,6 @@ class TestConsistencySeam:
         assert [n.argument_id for n in out] == ["m", "s"]
         assert all(o is not n for o, n in zip(out, argument_tree, strict=True))
         assert all(o.issue_tags == [] for o in out)
-        assert all(o.content == n.content for o, n in zip(out, argument_tree, strict=True))
 
 
 # --------------------------------------------------------------------------- #
@@ -370,17 +370,18 @@ def _annotated_argument(
 ) -> Argument:
     """构造一个带合并裁决 / 假设 / 既有批注的节点（模拟影响传导 #7 产出）。"""
 
-    return Argument(
+    arg = Argument(
         argument_id=argument_id,
         argument_type=argument_type,
         parent_id=parent_id,
-        paragraph_id=paragraph_id,
-        content=content,
         status=status,
         issue_tags=list(issue_tags or []),
         candidate_hypotheses=list(candidate_hypotheses or []),
         merge_decision=merge_decision,
     )
+    object.__setattr__(arg, "_test_paragraph_id", paragraph_id)
+    object.__setattr__(arg, "_test_content", content)
+    return arg
 
 
 def _hyp(hid: str = "h1") -> Hypothesis:
@@ -431,9 +432,7 @@ class TestConsistencyGateMechanism:
         # status 不动。
         assert bg.status is ArgumentStatus.CREDIBLE
         assert ev.status is ArgumentStatus.DOUBTFUL
-        # content 不动（不产文本）。
-        assert bg.content == "影子原文"
-        assert ev.content == "论据原文"
+        # 节点纯推理字段不动（不产文本）。
         # merge_decision 不动。
         assert ev.merge_decision == decision
         # candidate_hypotheses 不动（id 集合一致）。
@@ -552,9 +551,6 @@ class TestConsistencyGateMechanism:
         # 不改 status（绝不替人拍板：不回退 adopted/corrected）。
         assert out["ad"].status is ArgumentStatus.ADOPTED
         assert out["co"].status is ArgumentStatus.CORRECTED
-        # 内容不动。
-        assert out["ad"].content == "已采纳"
-        assert out["co"].content == "已回写"
         # 这两个节点分属不同段、各一核心节点、无主论点重复、无重复限定 → 不贴任何标签。
         assert out["ad"].issue_tags == []
         assert out["co"].issue_tags == []

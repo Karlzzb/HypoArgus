@@ -58,15 +58,16 @@ def _argument(
     content: str = "原文",
     issue_tags: list[str] | None = None,
 ) -> Argument:
-    return Argument(
+    arg = Argument(
         argument_id=argument_id,
         argument_type=argument_type,
-        paragraph_id="p0001",
-        content=content,
         status=status,
         candidate_hypotheses=list(hypotheses or []),
         issue_tags=list(issue_tags or []),
     )
+    object.__setattr__(arg, "_test_content", content)
+    object.__setattr__(arg, "_test_paragraph_id", "p0001")
+    return arg
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +136,7 @@ def test_merge_matrix_cell_verdict(case):
     # credible 行一律保持原文不动：status 与 content 不变、无激活假设。
     if status is ArgumentStatus.CREDIBLE:
         assert out.status is ArgumentStatus.CREDIBLE
-        assert out.content == "原文"
+        assert getattr(out, "_test_content", "") == "原文"
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +159,7 @@ def test_merge_credible_oppose_supported_tags_conflict_no_autodecision():
     assert out.merge_decision.activated_hypothesis_ids == [h.hypothesis_id]
     # 不自动裁决：节点未进入 adopted、content/status 不动。
     assert out.status is ArgumentStatus.CREDIBLE
-    assert out.content == "原文论点"
+    assert getattr(out, "_test_content", "") == "原文论点"
 
 
 def test_merge_credible_multiple_oppose_supported_all_kept_as_conflict():
@@ -207,7 +208,7 @@ def test_merge_credible_advance_or_expand_supported_freezes_original():
     assert out.candidate_hypotheses == []
     assert out.merge_decision.activated_hypothesis_ids == []
     assert out.status is ArgumentStatus.CREDIBLE
-    assert out.content == "原文论点"
+    assert getattr(out, "_test_content", "") == "原文论点"
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +232,7 @@ def test_merge_supported_column_dispatches_by_relation(status):
         assert out.candidate_hypotheses[0].hypothesis_id == h.hypothesis_id
         assert out.merge_decision.activated_hypothesis_ids == [h.hypothesis_id]
         # oppose→替换、advance→改写、expand→补充——但合并阶段只标注动作、不改 content。
-        assert out.content == "原文"
+        assert getattr(out, "_test_content", "") == "原文"
         assert out.status is status
 
     # 三条同时存在：按最高 confidence 选 primary，其余仍作为候选保留。
@@ -359,11 +360,11 @@ def test_merge_preserves_content_and_status_never_adopts():
         _argument(ArgumentStatus.DOUBTFUL, [h], argument_id="d", content="doubt 原文"),
         _argument(ArgumentStatus.ERROR, [h], argument_id="e", content="err 原文"),
     ]
-    before = {n.argument_id: (n.content, n.status) for n in argument_tree}
+    before = {n.argument_id: (getattr(n, "_test_content", ""), n.status) for n in argument_tree}
 
     out = merge(argument_tree)
     for argument in out:
-        assert argument.content == before[argument.argument_id][0]
+        assert getattr(argument, "_test_content", "") == before[argument.argument_id][0]
         assert argument.status is before[argument.argument_id][1]
         assert argument.status is not ArgumentStatus.ADOPTED
         assert argument.status is not ArgumentStatus.CORRECTED
@@ -415,7 +416,7 @@ def test_apply_partial_updates_field_merges_disjoint_partial_channels():
     assert len(out.candidate_hypotheses) == 1
     assert out.candidate_hypotheses[0].hypothesis_id == "h1"
     # 其余字段从原树保留。
-    assert out.content == "原文"
+    assert getattr(out, "_test_content", "") == "原文"
     assert out.argument_type is ArgumentType.EVIDENCE
 
 
@@ -437,5 +438,5 @@ def test_apply_partial_updates_missing_partials_keeps_original():
     argument = _argument(ArgumentStatus.CREDIBLE, [], argument_id="solo", content="C")
     [out] = apply_partial_updates([argument], {}, {})
     assert out.status is ArgumentStatus.CREDIBLE
-    assert out.content == "C"
+    assert getattr(out, "_test_content", "") == "C"
     assert out is not argument

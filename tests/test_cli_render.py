@@ -6,9 +6,9 @@
 - :class:`runtime.cli_gates.CliHitl1Gate._print_tree`：同步 CLI 闸门渲染解析树。
 
 两处均改经 ``paragraph_list.argument_tree_ids`` 反查节点所属段（取代读
-``Argument.paragraph_id``），为 T-04 移除该字段扫清渲染侧依赖。回归锁：构造
-``Argument.paragraph_id`` 与 ``paragraph_list`` 归属**矛盾**的样本，断言渲染取
-``paragraph_list`` 的归属。
+``Argument.paragraph_id``），为 T-04 移除该字段扫清渲染侧依赖。回归锁：``Argument`` 节点
+``n0`` **无** ``paragraph_id`` 字段，段落聚合根声称它属 ``p0099``，断言渲染取
+``paragraph_list`` 的归属（``p0099``，且 ``p0001`` 全文不出现）。
 """
 
 from __future__ import annotations
@@ -21,18 +21,16 @@ from runtime.run_real import _render_hitl1_question, _render_hitl2_question
 
 
 def _contradictory_tree() -> list[Argument]:
-    """节点 ``n0`` 的 ``Argument.paragraph_id=p0001``，但段落聚合根声称它属 ``p0099``。
+    """节点 ``n0`` 无 ``paragraph_id`` 字段（T-04 移除），段落聚合根声称它属 ``p0099``。
 
-    用来证伪「渲染读 ``Argument.paragraph_id``」：若读字段则渲染 ``p0001``，
-    若经 ``paragraph_list`` 反查则渲染 ``p0099``。
+    用来证伪「渲染读 ``Argument.paragraph_id``」：节点已无该字段，归属只能经
+    ``paragraph_list`` 反查得 ``p0099``（``p0001`` 全文不出现）。
     """
 
     return [
         Argument(
             argument_id="n0",
             argument_type=ArgumentType.MAIN_CLAIM,
-            paragraph_id="p0001",
-            content="主论点",
         ),
     ]
 

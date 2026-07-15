@@ -21,7 +21,6 @@ def _argument(
     *,
     parent_id: str | None = None,
     children_ids: list[str] | None = None,
-    paragraph_id: str = "p0001",
 ) -> Argument:
     """构造最小合法节点（避开无关字段噪声）。"""
 
@@ -30,7 +29,6 @@ def _argument(
         argument_type=ArgumentType.BACKGROUND,
         parent_id=parent_id,
         children_ids=list(children_ids or []),
-        paragraph_id=paragraph_id,
     )
 
 
@@ -65,7 +63,7 @@ def test_linear_chain_validates():
 def test_duplicate_argument_id_rejected():
     """argument_id 重复 → TreeInvariantError。"""
 
-    argument_tree = [_argument("n1"), _argument("n1", paragraph_id="p0002")]
+    argument_tree = [_argument("n1"), _argument("n1")]
     with pytest.raises(TreeInvariantError, match="重复"):
         validate_tree(argument_tree)
 

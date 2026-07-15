@@ -64,7 +64,7 @@ class HypothesisLlmClient(Protocol):
 
     - :meth:`propose`：``(argument, paragraph_summary, original_content)`` → 0..N 条假设提案
       （投机生成，不读体检结论/检索；段原文取自段落聚合根 ``ParagraphRecord.original_content``，
-      T-02 取代原先逐节点 ``Argument.content``）。
+      ``Argument`` 不存原文字段）。
 
     真实适配器用 ``with_structured_output(_ProposalsEnvelope)`` 保证结构合法（dev-guide §6.3）。
     本 seam 不绑任何 provider。取证（吃 citations 判终态）属 Slice 5 的 judgment seam，

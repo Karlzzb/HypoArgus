@@ -60,7 +60,7 @@ def _paragraph_list(
     summaries = summaries or {}
     by_para: dict[str, list[str]] = {}
     for a in argument_tree:
-        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+        by_para.setdefault(getattr(a, "_test_paragraph_id", "p0001"), []).append(a.argument_id)
     return [
         ParagraphRecord(
             paragraph_id=pid,
@@ -96,14 +96,15 @@ def _argument(
     content: str = "",
     candidates: list[Hypothesis] | None = None,
 ) -> Argument:
-    return Argument(
+    arg = Argument(
         argument_id=argument_id,
         argument_type=argument_type,
-        paragraph_id=paragraph_id,
-        content=content,
         status=status,
         candidate_hypotheses=list(candidates or []),
     )
+    object.__setattr__(arg, "_test_paragraph_id", paragraph_id)
+    object.__setattr__(arg, "_test_content", content)
+    return arg
 
 
 # --------------------------------------------------------------------------- #

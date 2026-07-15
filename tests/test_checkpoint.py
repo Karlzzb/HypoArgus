@@ -104,7 +104,7 @@ def test_serializer_delegates_other_state_values_unchanged() -> None:
         typ, blob = serde.dumps_typed(raw)
         assert serde.loads_typed((typ, blob)) == raw
 
-    # 原生 dict[str, str]（proposed_rewrites / paragraph_summaries channel）
+    # 原生 dict[str, str]（proposed_rewrites channel）
     pr = {"p0002": "论据[已修订]"}
     typ, blob = serde.dumps_typed(pr)
     assert serde.loads_typed((typ, blob)) == pr
@@ -113,14 +113,11 @@ def test_serializer_delegates_other_state_values_unchanged() -> None:
     arg = Argument(
         argument_id="n0001",
         argument_type=ArgumentType.EVIDENCE,
-        paragraph_id="p0002",
-        content="论据。",
     )
     typ, blob = serde.dumps_typed(arg)
     back = serde.loads_typed((typ, blob))
     assert isinstance(back, Argument)
-    assert back.argument_id == arg.argument_id
-    assert back.content == arg.content
+    assert back == arg
 
     hyp = Hypothesis(
         hypothesis_id="h-abc",
@@ -189,8 +186,6 @@ def test_serializer_round_trips_registered_types_silently(
         Argument(
             argument_id="n0001",
             argument_type=ArgumentType.EVIDENCE,
-            paragraph_id="p0001",
-            content="论据。",
         ),
         Hypothesis(
             hypothesis_id="h-abc",
@@ -281,8 +276,6 @@ def test_serializer_round_trips_hitl1_question_payload_with_paragraph_list(
             Argument(
                 argument_id="n0001",
                 argument_type=ArgumentType.MAIN_CLAIM,
-                paragraph_id="p0001",
-                content="主论点。",
             )
         ],
         paragraph_list=[

@@ -93,12 +93,12 @@ def test_real_parse_produces_valid_meaningful_tree(
 
     契约：
     1. ``parse`` 不抛（结构化绑定 + 树构建 + ``validate_tree`` 全成功）。
-    2. 字节级原文保护：每节点 ``content`` 逐字节来自只读表（LLM 不改写原文）。
-    3. 无凭空 paragraph_id：每节点段落 id 存在于只读表。
+    2. 字节级原文保护：每段 ``paragraph_list.original_content`` 逐字节来自只读表（LLM 不改写原文）。
+    3. 无凭空 paragraph_id：``paragraph_list`` 覆盖只读表全部段、且每个 ``argument_tree_ids`` 的 id 都在树内。
     4. 至少一个核心 ``main_claim`` 节点（核心论点存在）。
     5. 核心节点数 ≥ 2（多段论文有多论证；全背景退化树 = 解析失败）。
     6. 至少一条核心→核心父子链（全根 = LLM 未连证据到论点）。
-    7. 每个实质段落在 ``paragraph_summaries`` 有非空摘要。
+    7. 每个实质段落在 ``paragraph_list.summary`` 有非空摘要。
     8. 至少一个 EVIDENCE 节点 ``argument_weight > 0``；影子节点权重恒 0。
     另显式断 ``validate_tree``（解析器内部已调，此处 belt-and-suspenders）。
     """
@@ -114,22 +114,27 @@ def test_real_parse_produces_valid_meaningful_tree(
     core_nodes = [n for n in nodes if not n.argument_type.is_shadow]
     shadow_nodes = [n for n in nodes if n.argument_type.is_shadow]
     valid_ids = set(op.paragraph_ids())
+    tree_ids = {n.argument_id for n in nodes}
 
-    # 契约 2：字节级原文保护（surrogateescape 解码后逐字节相等）。
-    for n in nodes:
-        expected = op.get(n.paragraph_id)
-        got = n.content.encode("utf-8", errors="surrogateescape")
+    # 契约 2：字节级原文保护（surrogateescape 解码后逐字节相等）——段级 original_content 对照。
+    for rec in out.paragraph_list:
+        expected = op.get(rec.paragraph_id)
+        got = rec.original_content.encode("utf-8", errors="surrogateescape")
         assert got == expected, (
-            f"[{name}] 字节保护破坏：节点 {n.argument_id} (paragraph_id={n.paragraph_id}) "
-            f"content 不逐字节来自只读表（len got={len(got)} != len expected={len(expected)}）"
+            f"[{name}] 字节保护破坏：段落 {rec.paragraph_id} 的 original_content "
+            f"不逐字节来自只读表（len got={len(got)} != len expected={len(expected)}）"
         )
 
-    # 契约 3：无凭空 paragraph_id。
-    for n in nodes:
-        assert n.paragraph_id in valid_ids, (
-            f"[{name}] 凭空 paragraph_id：节点 {n.argument_id} 的 "
-            f"paragraph_id={n.paragraph_id!r} 不在只读表 {sorted(valid_ids)}"
-        )
+    # 契约 3：paragraph_list 全覆盖只读表、无凭空造段；argument_tree_ids 的 id 全在树内。
+    assert {r.paragraph_id for r in out.paragraph_list} == valid_ids, (
+        f"[{name}] paragraph_list 未全覆盖只读表段集合："
+        f"{sorted({r.paragraph_id for r in out.paragraph_list})} vs {sorted(valid_ids)}"
+    )
+    listed_ids = {aid for r in out.paragraph_list for aid in r.argument_tree_ids}
+    assert listed_ids <= tree_ids, (
+        f"[{name}] argument_tree_ids 含 argument_tree 不存在的节点："
+        f"{sorted(listed_ids - tree_ids)}"
+    )
 
     # 契约 4：至少一个核心 main_claim。
     main_claims = [n for n in core_nodes if n.argument_type == ArgumentType.MAIN_CLAIM]
@@ -151,10 +156,11 @@ def test_real_parse_produces_valid_meaningful_tree(
         f"全根 = LLM 未把证据连到论点）"
     )
 
-    # 契约 7：每个实质段落有非空摘要。
+    # 契约 7：每个实质段落有非空摘要（paragraph_list.summary）。
     substantive = _substantive_paragraph_ids(op)
+    summary_by_pid = {r.paragraph_id: r.summary for r in out.paragraph_list}
     missing_summaries = [
-        pid for pid in substantive if not out.paragraph_summaries.get(pid, "").strip()
+        pid for pid in substantive if not summary_by_pid.get(pid, "").strip()
     ]
     assert not missing_summaries, (
         f"[{name}] {len(missing_summaries)}/{len(substantive)} 个实质段落缺摘要："

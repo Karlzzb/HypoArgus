@@ -347,8 +347,8 @@ def _cycle_factory():
 # 真实开药接入（issue #5 集成 · Slice 3 重定义为仅 propose）
 #
 # create_real_agents 在给出 hypothesis_llm 时把开药桩替换为真实「投机生成」实现。
-# 开药读 paragraph_summaries 逐 argument 调 propose、产 pending 假说、只写回
-# candidate_hypotheses、不改 content/status、无人采纳 → 终稿逐字节等于原文的承诺继续成立。
+# 开药经 paragraph_list 反查段原文 / 摘要逐 argument 调 propose、产 pending 假说、只写回
+# candidate_hypotheses、不改 status、无人采纳 → 终稿逐字节等于原文的承诺继续成立。
 # 取证（吃 citations 判终态）属 Slice 5 的 judgment 节点，不在 hypothesis_propose 内。
 # --------------------------------------------------------------------------- #
 

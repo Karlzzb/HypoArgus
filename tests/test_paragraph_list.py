@@ -83,26 +83,23 @@ def test_stub_parse_writes_paragraph_list_to_state():
     # 每段原文逐字节等于解码 bytes。
     for rec in paragraph_list:
         assert rec.original_content == _dec(original_paragraphs.get(rec.paragraph_id))
-    # argument_tree_ids 与 argument_tree 一致（stub 每段一个 background 影子节点）。
-    tree_by_para: dict[str, list[str]] = {}
-    for n in argument_tree:
-        tree_by_para.setdefault(n.paragraph_id, []).append(n.argument_id)
-    for rec in paragraph_list:
-        assert rec.argument_tree_ids == tree_by_para.get(rec.paragraph_id, [])
+    # argument_tree_ids 与 argument_tree 节点集一致（stub 每段一个 background 影子节点）。
+    tree_ids = {n.argument_id for n in argument_tree}
+    pl_ids = {aid for rec in paragraph_list for aid in rec.argument_tree_ids}
+    assert pl_ids == tree_ids
     # stub 影子节点恒 BACKGROUND（不硬造论点）。
     for n in argument_tree:
         assert n.argument_type == ArgumentType.BACKGROUND
 
 
 def test_stub_parse_paragraph_list_summary_empty_in_stub():
-    """stub parse 桩的 paragraph_list.summary 为空（桩不产摘要，与空 paragraph_summaries 一致）。"""
+    """stub parse 桩的 paragraph_list.summary 为空（桩不产摘要）。"""
 
     doc = "段。\n".encode()
     orch = Orchestrator()
     state = orch.graph.invoke({"original_doc": doc, "session_context": DEFAULT_SESSION_CONTEXT})
     for rec in state["paragraph_list"]:
         assert rec.summary == ""
-    assert state["paragraph_summaries"] == {}
 
 
 

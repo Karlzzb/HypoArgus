@@ -143,10 +143,14 @@ class Hypothesis(BaseModel):
 
 
 class Argument(BaseModel):
-    """论证树节点。
+    """论证树节点（纯推理结构）。
 
-    节点只携带自身那一段原文（作为推理输入）加 ``paragraph_id`` 指针，
-    绝不存整篇原文（ADR-0005）。``paragraph_id`` 为单数——一个节点不可跨段（ADR-0001）。
+    节点**不再持有段落原文与段落归属**——原文每段唯一一份存于段落聚合根
+    :class:`ParagraphRecord.original_content`，段落↔节点的一对多关系正向存储于
+    ``ParagraphRecord.argument_tree_ids``（PRD §Solution / 取代 ADR-0005 决策 2 的新 ADR）。
+    本类只承载推理字段：身份、类型、父子指针、权重、状态机、批注、假设、合并裁决、采纳链。
+    一个节点不可跨段（ADR-0001）——该约束现由 ``argument_tree_ids`` 归属判定（每
+    ``argument_id`` 恰出现于一个段落），不再由本类字段表达。
 
     ``argument_weight`` (0-100) 由解析智能体建树时按明文 rubric 赋值（带数据/引源的
     直接论据高分、泛泛断言低分），供影响传导计算剩余支撑率（ADR-0013）。影子节点
@@ -166,8 +170,6 @@ class Argument(BaseModel):
     argument_type: ArgumentType
     parent_id: str | None = None
     children_ids: list[str] = Field(default_factory=list)
-    paragraph_id: str
-    content: str = ""
     argument_weight: int = Field(default=0, ge=0, le=100)
     status: ArgumentStatus = ArgumentStatus.UNVERIFIED
     issue_tags: list[str] = Field(default_factory=list)
@@ -187,8 +189,8 @@ class ParagraphRecord(BaseModel):
     「段落存原句」，见取代该决策的新 ADR）。
 
     ``argument_tree`` channel 仍为扁平 ``list[Argument]`` 且按 ``argument_id`` upsert 不变；
-    本记录与树侧经 ``argument_id`` 互相引用，不嵌套。``Argument`` 在双写过渡态暂仍携带
-    ``paragraph_id`` / ``content``（T-04 移除）；本记录是其正向、去重的替代承载。
+    本记录与树侧经 ``argument_id`` 互相引用，不嵌套。``Argument`` 只承载推理字段（无
+    ``paragraph_id`` / ``content``——T-04 已移除）；本记录是段落原文与摘要的单一定义点。
     """
 
     paragraph_id: str

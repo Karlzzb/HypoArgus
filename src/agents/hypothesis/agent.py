@@ -33,6 +33,7 @@ propose 读 ``paragraph_list``（段落聚合根），逐 argument 经 ``argumen
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 
 from agents.hypothesis.contract import HypothesisLlmClient
 from domain import (
@@ -50,6 +51,11 @@ __all__ = ["propose_hypotheses"]
 # --------------------------------------------------------------------------- #
 # 主逻辑：纯函数 seam，可独立单测
 # --------------------------------------------------------------------------- #
+
+
+#: 默认并发上限。有界并发防 LLM 限流风暴（DashScope / qwen-max）把全部节点打空
+#: （per-argument 异常兜底会静默置空，无界 fan-out 在大文档下会全节点空）。
+_DEFAULT_MAX_CONCURRENCY: int = 8
 
 
 _HYPOTHESIS_TYPES: frozenset[ArgumentType] = frozenset(
@@ -81,6 +87,8 @@ def propose_hypotheses(
     argument_tree: list[Argument],
     paragraph_list: list[ParagraphRecord],
     llm: HypothesisLlmClient,
+    *,
+    max_concurrency: int = _DEFAULT_MAX_CONCURRENCY,
 ) -> dict[str, list[Hypothesis]]:
     """对覆盖范围内的节点投机生成假设，返回 partial 更新（by ``argument_id``）。
 
@@ -93,6 +101,10 @@ def propose_hypotheses(
       由本节点写回，二者在 reducer 处合流，供 #6 矩阵裁决）。
     - partial 只存候选假设列表本身，不再塞整节点——合流由 merge 按 ``argument_id`` 取本
       值写回 ``candidate_hypotheses``，不修改输入树。
+    - **并发执行**：覆盖范围内的节点经有界线程池并发 ``propose``（``max_concurrency`` 上限，
+      防 LLM 限流风暴）。单节点 ``propose`` 异常仍独立兜底为空列表（保守、不抛出、不卡死），
+      一节点失败不拖累其余。``hypothesis_id`` 由 ``(argument_id, relation, text, idx)`` 派生，
+      与调度顺序无关，故 partial 与串行实现逐字节等价。
     """
 
     paragraph_by_argument_id: dict[str, ParagraphRecord] = {
@@ -100,10 +112,12 @@ def propose_hypotheses(
         for record in paragraph_list
         for aid in record.argument_tree_ids
     }
+    eligible = [a for a in argument_tree if _should_hypothesize(a)]
     updates: dict[str, list[Hypothesis]] = {}
-    for argument in argument_tree:
-        if not _should_hypothesize(argument):
-            continue
+    if not eligible:
+        return updates
+
+    def _propose_one(argument: Argument) -> tuple[str, list[Hypothesis]]:
         record = paragraph_by_argument_id.get(argument.argument_id)
         paragraph_summary = record.summary if record is not None else ""
         original_content = record.original_content if record is not None else ""
@@ -123,5 +137,10 @@ def propose_hypotheses(
             )
             for idx, proposal in enumerate(proposals)
         ]
-        updates[argument.argument_id] = hypotheses
+        return argument.argument_id, hypotheses
+
+    workers = max(1, max_concurrency)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for aid, hypotheses in executor.map(_propose_one, eligible):
+            updates[aid] = hypotheses
     return updates

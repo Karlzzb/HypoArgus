@@ -14,6 +14,9 @@ T-02：``propose`` 经 ``paragraph_list`` 反查该段 ``original_content`` + ``
 
 from __future__ import annotations
 
+import threading
+import time
+
 from agents.hypothesis import (
     FakeHypothesisLlmClient,
     HypothesisProposal,
@@ -152,7 +155,7 @@ def test_propose_covers_evidence_and_sub_claim_skips_rest():
     )
     updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     assert set(updates) == {"s", "e"}
-    assert proposed == ["s", "e"]  # 未对 m/q/b 调用 propose
+    assert set(proposed) == {"s", "e"}  # 未对 m/q/b 调用 propose（并发下调用顺序不保证）
 
 
 def test_propose_passes_per_node_paragraph_summary():
@@ -328,7 +331,7 @@ def test_propose_does_not_read_verification_status():
     updates = propose_hypotheses(
         argument_tree, _paragraph_list(argument_tree, _summaries(("p1", "摘要1"), ("p2", "摘要2"))), llm
     )
-    assert seen_arguments == ["ok", "bad"]
+    assert set(seen_arguments) == {"ok", "bad"}  # 并发下调用顺序不保证，仅断言集合
     for nid in ("ok", "bad"):
         assert updates[nid][0].status is HypothesisStatus.PENDING
 
@@ -359,3 +362,76 @@ def test_propose_seam_receives_paragraph_original_content():
     llm = FakeHypothesisLlmClient(propose_factory=propose)
     propose_hypotheses(argument_tree, _paragraph_list(argument_tree), llm)
     assert captured == {"e": "论据原文ABC"}  # 段原文经 paragraph_list 反查传入 seam
+
+
+# --------------------------------------------------------------------------- #
+# 并发执行（串行 → 并发重构）：propose 调用在时间上重叠 + 有界
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_fanout_overlaps_in_time():
+    """并发：多节点 propose 调用在时间上重叠（非串行）。
+
+    串行实现下任一时刻只有一个 propose 在途，``Barrier(2)`` 永不满足 → 超时抛
+    ``BrokenBarrierError`` → 异常兜底置空 → 全节点空假设 → 断言失败（RED）。
+    并发实现下 ≥2 个调用同时到达 barrier → 即刻释放 → 各产 1 条假设（GREEN）。
+    """
+
+    argument_tree = [
+        _argument(argument_id=f"n{i}", paragraph_id=f"p{i}", content=f"c{i}")
+        for i in range(6)
+    ]
+    barrier = threading.Barrier(2, timeout=2.0)
+
+    def propose(argument, paragraph_summary, original_content):
+        barrier.wait()  # 阻塞至 ≥2 个调用同时到达（证明重叠）
+        return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
+
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    updates = propose_hypotheses(
+        argument_tree,
+        _paragraph_list(argument_tree, _summaries(*[(f"p{i}", "s") for i in range(6)])),
+        llm,
+    )
+    assert set(updates) == {f"n{i}" for i in range(6)}
+    for hypotheses in updates.values():
+        assert len(hypotheses) == 1
+        assert hypotheses[0].status is HypothesisStatus.PENDING
+
+
+def test_propose_respects_max_concurrency_bound():
+    """有界并发：同一时刻在途 propose 数 ≤ max_concurrency（防 LLM 限流风暴）。
+
+    ``max_concurrency=4``、16 节点：``ThreadPoolExecutor`` 硬上限保证在途 ≤ 4。
+    无界实现（16 在途）会让 ``max_in_flight == 16`` → ``≤ 4`` 断言失败（RED）；
+    串行实现（``max_in_flight == 1``）→ ``≥ 2`` 断言失败（RED）。
+    """
+
+    argument_tree = [
+        _argument(argument_id=f"n{i}", paragraph_id=f"p{i}", content=f"c{i}")
+        for i in range(16)
+    ]
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+
+    def propose(argument, paragraph_summary, original_content):
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.05)  # 持有调用使在途计数可测
+        with lock:
+            in_flight -= 1
+        return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
+
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    updates = propose_hypotheses(
+        argument_tree,
+        _paragraph_list(argument_tree, _summaries(*[(f"p{i}", "s") for i in range(16)])),
+        llm,
+        max_concurrency=4,
+    )
+    assert set(updates) == {f"n{i}" for i in range(16)}
+    assert max_in_flight <= 4  # 不超上限（有界）
+    assert max_in_flight >= 2  # 且确有并发（未退化为串行）

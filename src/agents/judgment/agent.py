@@ -47,6 +47,7 @@ from domain import (
     ArgumentStatus,
     Hypothesis,
     HypothesisStatus,
+    ParagraphRecord,
     SessionContext,
     TimeRange,
 )
@@ -112,17 +113,20 @@ def judge_and_adjudicate(
     argument_tree: list[Argument],
     hypotheses: dict[str, list[Hypothesis]],
     citations: dict[str, list[Source]],
+    paragraph_list: list[ParagraphRecord],
     session_context: SessionContext,
     query_time_range: TimeRange,
     llm: JudgmentLlmClient,
 ) -> JudgmentOutcome:
     """吃 citations 判终态、再按序调 merge/impact/consistency 纯函数、整树写回。
 
-    - ``llm.judge(...)`` 取 per-argument / per-hypothesis 终态（输入压缩铁律见模块 docstring）。
+    - ``llm.judge(...)`` 取 per-argument / per-hypothesis 终态（T-02：按段聚合节点 + 段原文一次，
+      输入压缩铁律见模块 docstring）。
     - 构造局部 ``argument_credibility``（verdict→:class:`ArgumentStatus`）+
       ``updated_hypotheses``（pending→终态写回假说）。
     - ``merge_with_partials`` 字段级合流两 partial + 矩阵裁决；``impact`` 影响传导；
-      ``consistency`` 一致性批注——三者均为**不动**的既有纯函数，本函数仅按序串联。
+      ``consistency`` 一致性批注（T-02：按 ``argument_tree_ids`` 分组、``original_content`` 去重）——
+      三者均为**不动**的既有纯函数，本函数仅按序串联。
     - 返回 :class:`JudgmentOutcome`：裁决后的整树（写回 ``argument_tree`` channel）+
       终态化假说（写回 ``hypotheses`` channel，供 HITL-2 与矩阵回看）。
 
@@ -131,7 +135,7 @@ def judge_and_adjudicate(
     """
 
     result: JudgmentResult = llm.judge(
-        argument_tree, hypotheses, citations, session_context, query_time_range
+        argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
     )
     argument_credibility: dict[str, ArgumentStatus] = {
         entry.argument_id: _ARG_VERDICT_TO_STATUS[entry.verdict]
@@ -144,5 +148,5 @@ def judge_and_adjudicate(
         argument_tree, argument_credibility, updated_hypotheses, merge
     )
     impacted = impact(merged)
-    final = consistency(impacted)
+    final = consistency(impacted, paragraph_list)
     return JudgmentOutcome(argument_tree=final, hypotheses=updated_hypotheses)

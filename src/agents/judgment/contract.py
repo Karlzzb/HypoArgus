@@ -24,7 +24,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import Argument, Hypothesis, SessionContext, TimeRange
+from domain import Argument, Hypothesis, ParagraphRecord, SessionContext, TimeRange
 from infra.retrieval import Source
 
 __all__ = [
@@ -114,15 +114,16 @@ class JudgmentOutcome(BaseModel):
 class JudgmentLlmClient(Protocol):
     """裁决 LLM seam（Slice 5 五合一）。
 
-    - :meth:`judge`：吃 ``argument_tree`` + ``hypotheses`` + ``citations`` + 贯穿背景
-      （``session_context`` / ``query_time_range``），产 per-argument / per-hypothesis 终态
-      裁决（:class:`JudgmentResult`）。
+    - :meth:`judge`：吃 ``argument_tree`` + ``hypotheses`` + ``citations`` + ``paragraph_list``
+      + 贯穿背景（``session_context`` / ``query_time_range``），产 per-argument / per-hypothesis
+      终态裁决（:class:`JudgmentResult`）。
 
     真实适配器用 ``with_structured_output(_JudgmentEnvelope)`` 保证结构合法（dev-guide §6.3），
-    并据节点 ``content`` + 假说 ``text`` + citation 片段推理。本 seam 不绑任何 provider。
-    输入压缩铁律（PRD §7）：prompt 只喂 ``argument.content`` + 假说 ``text`` + citation 片段
-    + 背景；**不回灌** ``status`` / ``argument_weight`` / ``parent_id`` / ``children_ids`` /
-    ``issue_tags`` / ``merge_decision``——这些由 ``agent.py`` 在调用前后管理、不进 LLM。
+    并据段 ``original_content`` + 节点 ``argument_type`` + 假说 ``text`` + citation 片段推理。本 seam
+    不绑任何 provider。输入压缩铁律（PRD §7）：T-02 prompt 按段聚合节点——每段 ``original_content``
+    出现一次、节点只列 ``argument_id`` / ``argument_type``（不再逐节点 ``Argument.content``）+ 假说
+    ``text`` + citation 片段 + 背景；**不回灌** ``status`` / ``argument_weight`` / ``parent_id`` /
+    ``children_ids`` / ``issue_tags`` / ``merge_decision``——这些由 ``agent.py`` 在调用前后管理、不进 LLM。
     """
 
     def judge(
@@ -130,6 +131,7 @@ class JudgmentLlmClient(Protocol):
         argument_tree: list[Argument],
         hypotheses: dict[str, list[Hypothesis]],
         citations: dict[str, list[Source]],
+        paragraph_list: list[ParagraphRecord],
         session_context: SessionContext,
         query_time_range: TimeRange,
     ) -> JudgmentResult: ...
@@ -138,8 +140,8 @@ class JudgmentLlmClient(Protocol):
 class FakeJudgmentLlmClient:
     """离线裁决 LLM 桩。provider-free、确定（供单测）。
 
-    - ``judge_factory``：``callable(argument_tree, hypotheses, citations, session_context,
-      query_time_range) -> JudgmentResult``，可据输入动态决策。
+    - ``judge_factory``：``callable(argument_tree, hypotheses, citations, paragraph_list,
+      session_context, query_time_range) -> JudgmentResult``，可据输入动态决策。
     - 无 → 返回**空** :class:`JudgmentResult`（无裁决 → 全 KEEP → 未触达 → 逐字节忠实，
       tracer bullet 承诺）。
     """
@@ -149,7 +151,7 @@ class FakeJudgmentLlmClient:
         *,
         judge_factory: Callable[
             [list[Argument], dict[str, list[Hypothesis]], dict[str, list[Source]],
-             SessionContext, TimeRange],
+             list[ParagraphRecord], SessionContext, TimeRange],
             JudgmentResult,
         ]
         | None = None,
@@ -161,11 +163,17 @@ class FakeJudgmentLlmClient:
         argument_tree: list[Argument],
         hypotheses: dict[str, list[Hypothesis]],
         citations: dict[str, list[Source]],
+        paragraph_list: list[ParagraphRecord],
         session_context: SessionContext,
         query_time_range: TimeRange,
     ) -> JudgmentResult:
         if self._judge_factory is not None:
             return self._judge_factory(
-                argument_tree, hypotheses, citations, session_context, query_time_range
+                argument_tree,
+                hypotheses,
+                citations,
+                paragraph_list,
+                session_context,
+                query_time_range,
             )
         return JudgmentResult()

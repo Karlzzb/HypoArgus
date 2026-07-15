@@ -6,7 +6,8 @@
 
 Slice 3 重构：hypothesis 节点重定义为 **hypothesis_propose**——仅 ``propose``、不取证，
 产 ``list[Hypothesis]``（status=pending）。取证移至 Slice 5 的 judgment 节点。
-``propose`` 读 ``paragraph_summaries``（非整段 content），逐 argument 调用。
+T-02：``propose`` 经 ``paragraph_list`` 反查该段 ``original_content`` + ``summary``
+（不再读 ``Argument.content`` / ``paragraph_summaries`` dict），逐 argument 调用。
 
 ``FakeHypothesisLlmClient`` 保证离线、确定、可断言。
 """
@@ -20,7 +21,7 @@ from agents.hypothesis import (
     HypothesisStatus,
     propose_hypotheses,
 )
-from domain import Argument, ArgumentStatus, ArgumentType
+from domain import Argument, ArgumentStatus, ArgumentType, ParagraphRecord
 
 
 def _argument(
@@ -43,6 +44,31 @@ def _summaries(*pairs: tuple[str, str]) -> dict[str, str]:
     return {pid: summary for pid, summary in pairs}
 
 
+def _paragraph_list(
+    argument_tree: list[Argument],
+    summaries: dict[str, str] | None = None,
+) -> list[ParagraphRecord]:
+    """从树 + 摘要构造 paragraph_list。
+
+    测试树每段单节点，故 ``original_content`` 取该段节点的 ``content``（与 parse 同源：每段一份
+    原文）。production 路径由 parse 从 ``OriginalParagraphs`` 解码产出，结构一致。
+    """
+
+    summaries = summaries or {}
+    by_para: dict[str, list[Argument]] = {}
+    for a in argument_tree:
+        by_para.setdefault(a.paragraph_id, []).append(a)
+    return [
+        ParagraphRecord(
+            paragraph_id=pid,
+            summary=summaries.get(pid, ""),
+            original_content=by_para[pid][0].content,
+            argument_tree_ids=[a.argument_id for a in by_para[pid]],
+        )
+        for pid in by_para
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # propose 产 pending 假说 + 喂段落摘要
 # --------------------------------------------------------------------------- #
@@ -52,10 +78,10 @@ def test_propose_single_evidence_yields_pending_hypothesis():
     """生成一条对立假设 → candidate_hypotheses 恰一条、status=pending。"""
 
     argument_tree = [_argument()]
-    seen: list[tuple[str, str]] = []
+    seen: list[tuple[str, str, str]] = []
 
-    def propose(argument, paragraph_summary):
-        seen.append((argument.argument_id, paragraph_summary))
+    def propose(argument, paragraph_summary, original_content):
+        seen.append((argument.argument_id, paragraph_summary, original_content))
         return [
             HypothesisProposal(
                 text="对立假设：数据应取次年口径",
@@ -66,7 +92,7 @@ def test_propose_single_evidence_yields_pending_hypothesis():
 
     llm = FakeHypothesisLlmClient(propose_factory=propose)
     summaries = _summaries(("p0001", "论据摘要"))
-    updates = propose_hypotheses(argument_tree, summaries, llm)
+    updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
 
     assert set(updates) == {"n0"}
     hypotheses = updates["n0"]
@@ -77,8 +103,8 @@ def test_propose_single_evidence_yields_pending_hypothesis():
     assert h.status is HypothesisStatus.PENDING  # propose 期一律 pending（取证属 judgment·Slice 5）
     assert h.confidence == 0.8
     assert h.hypothesis_id  # 稳定非空 id（供 #9/#10 采纳链引用）
-    # propose 收到的是段落摘要（非整段 content）。
-    assert seen == [("n0", "论据摘要")]
+    # propose 收到段落摘要与段原文（非整段 content 的旧路径）。
+    assert seen == [("n0", "论据摘要", "原文论据")]
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +130,7 @@ def test_propose_covers_evidence_and_sub_claim_skips_rest():
     argument_tree = _full_tree()
     proposed: list[str] = []
 
-    def propose(argument, paragraph_summary):
+    def propose(argument, paragraph_summary, original_content):
         proposed.append(argument.argument_id)
         return [
             HypothesisProposal(
@@ -117,7 +143,7 @@ def test_propose_covers_evidence_and_sub_claim_skips_rest():
         ("p1", "主论点摘要"), ("p2", "分论点摘要"), ("p3", "论据摘要"),
         ("p4", "限定摘要"), ("p5", "背景摘要"),
     )
-    updates = propose_hypotheses(argument_tree, summaries, llm)
+    updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     assert set(updates) == {"s", "e"}
     assert proposed == ["s", "e"]  # 未对 m/q/b 调用 propose
 
@@ -128,28 +154,28 @@ def test_propose_passes_per_node_paragraph_summary():
     argument_tree = _full_tree()
     seen: dict[str, str] = {}
 
-    def propose(argument, paragraph_summary):
+    def propose(argument, paragraph_summary, original_content):
         seen[argument.argument_id] = paragraph_summary
         return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
 
     llm = FakeHypothesisLlmClient(propose_factory=propose)
     summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
-    propose_hypotheses(argument_tree, summaries, llm)
+    propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     assert seen == {"s": "分论点摘要", "e": "论据摘要"}
 
 
 def test_propose_missing_summary_fed_as_empty_no_hang():
-    """paragraph_summaries 缺该段时喂空串、不抛、流程继续。"""
+    """paragraph_list 缺该段时喂空串、不抛、流程继续。"""
 
     argument_tree = [_argument()]
     seen: list[str] = []
 
-    def propose(argument, paragraph_summary):
+    def propose(argument, paragraph_summary, original_content):
         seen.append(paragraph_summary)
         return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
 
     llm = FakeHypothesisLlmClient(propose_factory=propose)
-    updates = propose_hypotheses(argument_tree, {}, llm)
+    updates = propose_hypotheses(argument_tree, [], llm)  # 空 paragraph_list → 缺段喂空
     assert seen == [""]
     assert len(updates["n0"]) == 1
     assert updates["n0"][0].status is HypothesisStatus.PENDING
@@ -165,7 +191,7 @@ def test_propose_no_proposals_yields_empty_candidate_list():
 
     argument_tree = [_argument()]
     llm = FakeHypothesisLlmClient()  # 默认 propose → []
-    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
+    updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, _summaries(("p0001", "摘要"))), llm)
     assert updates["n0"] == []
 
 
@@ -174,12 +200,12 @@ def test_propose_exception_yields_empty_no_hang():
 
     argument_tree = [_argument(), _argument(argument_id="n1", paragraph_id="p2")]
     llm = FakeHypothesisLlmClient(
-        propose_factory=lambda argument, summary: (
+        propose_factory=lambda argument, summary, original_content: (
             _ for _ in ()
         ).throw(RuntimeError("LLM 不可用"))
     )
     updates = propose_hypotheses(
-        argument_tree, _summaries(("p0001", "摘要"), ("p2", "摘要2")), llm
+        argument_tree, _paragraph_list(argument_tree, _summaries(("p0001", "摘要"), ("p2", "摘要2"))), llm
     )
     assert updates["n0"] == []
     assert updates["n1"] == []
@@ -190,7 +216,7 @@ def test_propose_exception_yields_empty_no_hang():
 # --------------------------------------------------------------------------- #
 
 
-def _oppose_proposals(argument: Argument, summary: str) -> list[HypothesisProposal]:
+def _oppose_proposals(argument: Argument, summary: str, original_content: str) -> list[HypothesisProposal]:
     return [HypothesisProposal(text="x", relation=HypothesisRelation.OPPOSE)]
 
 
@@ -201,7 +227,7 @@ def test_propose_does_not_rewrite_content_or_status():
     before = {n.argument_id: (n.content, n.status) for n in argument_tree}
     llm = FakeHypothesisLlmClient(propose_factory=_oppose_proposals)
     summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
-    propose_hypotheses(argument_tree, summaries, llm)
+    propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     for n in argument_tree:
         assert (n.content, n.status) == before[n.argument_id]
 
@@ -213,7 +239,7 @@ def test_propose_does_not_mutate_input_tree():
     originals = {n.argument_id: n.model_copy(deep=True) for n in argument_tree}
     llm = FakeHypothesisLlmClient(propose_factory=_oppose_proposals)
     summaries = _summaries(("p2", "分论点摘要"), ("p3", "论据摘要"))
-    propose_hypotheses(argument_tree, summaries, llm)
+    propose_hypotheses(argument_tree, _paragraph_list(argument_tree, summaries), llm)
     for n in argument_tree:
         assert n == originals[n.argument_id], f"输入树被改写：{n.argument_id}"
 
@@ -223,7 +249,7 @@ def test_propose_each_hypothesis_carries_single_relation():
 
     argument_tree = [_argument()]
 
-    def proposals(argument, summary):
+    def proposals(argument, summary, original_content):
         return [
             HypothesisProposal(text="对立项", relation=HypothesisRelation.OPPOSE),
             HypothesisProposal(text="递进项", relation=HypothesisRelation.ADVANCE),
@@ -231,7 +257,7 @@ def test_propose_each_hypothesis_carries_single_relation():
         ]
 
     llm = FakeHypothesisLlmClient(propose_factory=proposals)
-    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
+    updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, _summaries(("p0001", "摘要"))), llm)
     relations = [h.relation for h in updates["n0"]]
     assert relations == [
         HypothesisRelation.OPPOSE,
@@ -240,7 +266,7 @@ def test_propose_each_hypothesis_carries_single_relation():
     ]
     # hypothesis_id 稳定、同输入再跑一次结果一致（可重算、幂等链前提）。
     again = propose_hypotheses(
-        argument_tree, _summaries(("p0001", "摘要")), FakeHypothesisLlmClient(propose_factory=proposals)
+        argument_tree, _paragraph_list(argument_tree, _summaries(("p0001", "摘要"))), FakeHypothesisLlmClient(propose_factory=proposals)
     )
     assert [h.hypothesis_id for h in again["n0"]] == [
         h.hypothesis_id for h in updates["n0"]
@@ -252,7 +278,7 @@ def test_propose_pending_status_regardless_of_proposals():
 
     argument_tree = [_argument()]
 
-    def proposals(argument, summary):
+    def proposals(argument, summary, original_content):
         return [
             HypothesisProposal(text="a", relation=HypothesisRelation.OPPOSE, confidence=0.9),
             HypothesisProposal(text="b", relation=HypothesisRelation.ADVANCE, confidence=0.1),
@@ -260,7 +286,7 @@ def test_propose_pending_status_regardless_of_proposals():
         ]
 
     llm = FakeHypothesisLlmClient(propose_factory=proposals)
-    updates = propose_hypotheses(argument_tree, _summaries(("p0001", "摘要")), llm)
+    updates = propose_hypotheses(argument_tree, _paragraph_list(argument_tree, _summaries(("p0001", "摘要"))), llm)
     assert all(h.status is HypothesisStatus.PENDING for h in updates["n0"])
 
 
@@ -279,7 +305,7 @@ def test_propose_does_not_read_verification_status():
     ]
     seen_arguments: list[str] = []
 
-    def propose(argument, paragraph_summary):
+    def propose(argument, paragraph_summary, original_content):
         seen_arguments.append(argument.argument_id)
         return [
             HypothesisProposal(
@@ -289,8 +315,34 @@ def test_propose_does_not_read_verification_status():
 
     llm = FakeHypothesisLlmClient(propose_factory=propose)
     updates = propose_hypotheses(
-        argument_tree, _summaries(("p1", "摘要1"), ("p2", "摘要2")), llm
+        argument_tree, _paragraph_list(argument_tree, _summaries(("p1", "摘要1"), ("p2", "摘要2"))), llm
     )
     assert seen_arguments == ["ok", "bad"]
     for nid in ("ok", "bad"):
         assert updates[nid][0].status is HypothesisStatus.PENDING
+
+
+# --------------------------------------------------------------------------- #
+# T-02 回归锁：propose seam 收到该段 original_content
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_seam_receives_paragraph_original_content():
+    """Fake-LLM spy：propose 收到该段 ``original_content``（经 paragraph_list 反查，T-02 回归锁）。
+
+    引发本重构的原始问题在假设侧同样被回答：节点产假设时拿到的是所在段原文（而非仅摘要）。
+    本测试把「原文到达假设 seam」锁为回归。
+    """
+
+    argument_tree = [
+        Argument(argument_id="e", argument_type=ArgumentType.EVIDENCE, paragraph_id="p1", content="论据原文ABC"),
+    ]
+    captured: dict[str, str] = {}
+
+    def propose(argument, paragraph_summary, original_content):
+        captured[argument.argument_id] = original_content
+        return [HypothesisProposal(text="对立", relation=HypothesisRelation.OPPOSE)]
+
+    llm = FakeHypothesisLlmClient(propose_factory=propose)
+    propose_hypotheses(argument_tree, _paragraph_list(argument_tree), llm)
+    assert captured == {"e": "论据原文ABC"}  # 段原文经 paragraph_list 反查传入 seam

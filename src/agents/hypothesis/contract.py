@@ -9,8 +9,9 @@ Slice 3（重构）：hypothesis 节点重定义为 **hypothesis_propose**——
 产 ``list[Hypothesis]``（status=pending）。既有 ``next_verify_step`` 取证职责移出（推迟到
 Slice 5 的 judgment 节点重接），故取证步模型（verdict / search / conclude / verify-step
 判别联合）从本 seam 删除。``propose`` 输入从单 ``Argument`` 改为
-``(argument, paragraph_summary)``——逐 argument 调用、读段落摘要而非整段 content（PRD §7
-输入压缩铁律）。
+``(argument, paragraph_summary, original_content)``——逐 argument 调用、读段落聚合根的段原文
+（T-02：``ParagraphRecord.original_content``，取代逐节点 ``Argument.content``）+ 段落摘要
+（PRD §7 输入压缩铁律）。
 """
 
 from __future__ import annotations
@@ -61,8 +62,9 @@ class HypothesisProposal(BaseModel):
 class HypothesisLlmClient(Protocol):
     """开药 LLM seam（Slice 3 重构后仅 propose）。
 
-    - :meth:`propose`：``(argument, paragraph_summary)`` → 0..N 条假设提案
-      （投机生成，不读体检结论/检索；读段落摘要而非整段 content）。
+    - :meth:`propose`：``(argument, paragraph_summary, original_content)`` → 0..N 条假设提案
+      （投机生成，不读体检结论/检索；段原文取自段落聚合根 ``ParagraphRecord.original_content``，
+      T-02 取代原先逐节点 ``Argument.content``）。
 
     真实适配器用 ``with_structured_output(_ProposalsEnvelope)`` 保证结构合法（dev-guide §6.3）。
     本 seam 不绑任何 provider。取证（吃 citations 判终态）属 Slice 5 的 judgment seam，
@@ -70,7 +72,10 @@ class HypothesisLlmClient(Protocol):
     """
 
     def propose(
-        self, argument: Argument, paragraph_summary: str
+        self,
+        argument: Argument,
+        paragraph_summary: str,
+        original_content: str,
     ) -> list[HypothesisProposal]: ...
 
 
@@ -78,20 +83,22 @@ class FakeHypothesisLlmClient:
     """离线开药 LLM 桩。provider-free、确定（供单测）。
 
     生成（``propose``）：
-    - ``propose_factory``：``callable(argument, paragraph_summary) -> list[HypothesisProposal]``，
-      可据节点与段落摘要决策。
+    - ``propose_factory``：``callable(argument, paragraph_summary, original_content)
+      -> list[HypothesisProposal]``，可据节点、段落摘要与段原文决策。
     - 无 → 返回 ``[]``（无假设，等价于不生成的最简桩）。
     """
 
     def __init__(
         self,
         *,
-        propose_factory: Callable[[Argument, str], list[HypothesisProposal]]
+        propose_factory: Callable[[Argument, str, str], list[HypothesisProposal]]
         | None = None,
     ) -> None:
         self._propose_factory = propose_factory
 
-    def propose(self, argument: Argument, paragraph_summary: str) -> list[HypothesisProposal]:
+    def propose(
+        self, argument: Argument, paragraph_summary: str, original_content: str
+    ) -> list[HypothesisProposal]:
         if self._propose_factory is not None:
-            return self._propose_factory(argument, paragraph_summary)
+            return self._propose_factory(argument, paragraph_summary, original_content)
         return []

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from agents.consistency import (
-    DUPLICATE_QUALIFICATION_TAG,
+    DUPLICATE_PARAGRAPH_CONTENT_TAG,
     MIXED_PARAGRAPH_KIND_TAG,
     MULTI_MAIN_CLAIM_TAG,
     MULTI_PRIMARY_PER_PARAGRAPH_TAG,
@@ -30,6 +30,7 @@ from domain import (
     ArgumentType,
     MergeAction,
     MergeDecision,
+    ParagraphRecord,
 )
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +67,31 @@ def _by_id(argument_tree: list[Argument]) -> dict[str, Argument]:
     return {n.argument_id: n for n in argument_tree}
 
 
+def _paragraph_list(
+    argument_tree: list[Argument],
+    originals: dict[str, str] | None = None,
+) -> list[ParagraphRecord]:
+    """从树构造 paragraph_list：按 ``argument_id`` 所属段（``paragraph_id``）正向分组。
+
+    T-02：consistency 按 ``argument_tree_ids`` 分组、按 ``original_content`` 去重。测试树各
+    节点带 ``paragraph_id``（双读过渡态字段），故据此分组；``original_content`` 由 ``originals``
+    显式给出（默认空——重复扫描跳过空原文，不影响其它扫描）。
+    """
+
+    originals = originals or {}
+    by_para: dict[str, list[str]] = {}
+    for a in argument_tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    return [
+        ParagraphRecord(
+            paragraph_id=pid,
+            original_content=originals.get(pid, ""),
+            argument_tree_ids=ids,
+        )
+        for pid, ids in by_para.items()
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # 纯函数 seam：无瑕疵树原样通过、返回新实例（tracer bullet）
 # --------------------------------------------------------------------------- #
@@ -93,7 +119,7 @@ class TestConsistencySeam:
                 content="分论点",
             ),
         ]
-        out = consistency(argument_tree)
+        out = consistency(argument_tree, _paragraph_list(argument_tree))
         assert [n.argument_id for n in out] == ["m", "s"]
         assert all(o is not n for o, n in zip(out, argument_tree, strict=True))
         assert all(o.issue_tags == [] for o in out)
@@ -115,7 +141,7 @@ class TestMixedParagraphKind:
             _argument("bg", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001"),
             _argument("ev", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MIXED_PARAGRAPH_KIND_TAG in out["bg"].issue_tags
         assert MIXED_PARAGRAPH_KIND_TAG in out["ev"].issue_tags
 
@@ -126,7 +152,7 @@ class TestMixedParagraphKind:
             _argument("ev1", argument_type=ArgumentType.EVALUATION, paragraph_id="p0001"),
             _argument("sc", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0001"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MIXED_PARAGRAPH_KIND_TAG in out["ev1"].issue_tags
         assert MIXED_PARAGRAPH_KIND_TAG in out["sc"].issue_tags
 
@@ -137,7 +163,7 @@ class TestMixedParagraphKind:
             _argument("bg", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001"),
             _argument("ev1", argument_type=ArgumentType.EVALUATION, paragraph_id="p0001"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert all(MIXED_PARAGRAPH_KIND_TAG not in n.issue_tags for n in out.values())
 
     def test_pure_core_paragraph_not_tagged(self):
@@ -147,7 +173,7 @@ class TestMixedParagraphKind:
             _argument("sc", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0001"),
             _argument("ev", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert all(MIXED_PARAGRAPH_KIND_TAG not in n.issue_tags for n in out.values())
 
     def test_mixed_in_one_paragraph_does_not_leak_to_other_paragraphs(self):
@@ -158,7 +184,7 @@ class TestMixedParagraphKind:
             _argument("ev", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001"),
             _argument("sc", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0002"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MIXED_PARAGRAPH_KIND_TAG in out["bg"].issue_tags
         assert MIXED_PARAGRAPH_KIND_TAG in out["ev"].issue_tags
         assert MIXED_PARAGRAPH_KIND_TAG not in out["sc"].issue_tags
@@ -179,7 +205,7 @@ class TestMultiPrimaryPerParagraph:
             _argument("r1", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
             _argument("r2", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MULTI_PRIMARY_PER_PARAGRAPH_TAG in out["r1"].issue_tags
         assert MULTI_PRIMARY_PER_PARAGRAPH_TAG in out["r2"].issue_tags
 
@@ -190,7 +216,7 @@ class TestMultiPrimaryPerParagraph:
             _argument("r1", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
             _argument("r2", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0002"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         # 每段各一根 → 边界正常（multi_main_claim 另算，见下）。
         assert all(MULTI_PRIMARY_PER_PARAGRAPH_TAG not in n.issue_tags for n in out.values())
 
@@ -201,7 +227,7 @@ class TestMultiPrimaryPerParagraph:
             _argument("r", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
             _argument("c", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001", parent_id="r"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MULTI_PRIMARY_PER_PARAGRAPH_TAG not in out["r"].issue_tags
         assert MULTI_PRIMARY_PER_PARAGRAPH_TAG not in out["c"].issue_tags
 
@@ -221,7 +247,7 @@ class TestMultiMainClaim:
             _argument("m1", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
             _argument("m2", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0002"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert MULTI_MAIN_CLAIM_TAG in out["m1"].issue_tags
         assert MULTI_MAIN_CLAIM_TAG in out["m2"].issue_tags
 
@@ -232,7 +258,7 @@ class TestMultiMainClaim:
             _argument("m", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
             _argument("s", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0002", parent_id="m"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert all(MULTI_MAIN_CLAIM_TAG not in n.issue_tags for n in out.values())
 
     def test_no_main_claim_not_tagged(self):
@@ -242,31 +268,36 @@ class TestMultiMainClaim:
             _argument("s1", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0001"),
             _argument("s2", argument_type=ArgumentType.SUB_CLAIM, paragraph_id="p0002"),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         assert all(MULTI_MAIN_CLAIM_TAG not in n.issue_tags for n in out.values())
 
 
 # --------------------------------------------------------------------------- #
-# 全局 · 术语定义一致：重复限定（归一化内容完全相同）
+# 段落级 · 原文重复：两段 original_content 归一化相同（T-02：按段原文去重）
 # --------------------------------------------------------------------------- #
 
 
-class TestDuplicateQualification:
-    """``duplicate_qualification``：同一限定被逐字重复是潜在冗余瑕疵。"""
+class TestDuplicateParagraphContent:
+    """``duplicate_paragraph_content``：两段原文逐字重复是潜在冗余瑕疵。
 
-    def test_two_identical_qualifications_tagged(self):
-        """两个 qualification 内容相同 → 双方贴标签。"""
+    T-02 前 consistency 按 ``qualification`` 节点 ``content`` 去重；``Argument.content`` 移除后
+    改按段落聚合根 ``original_content`` 去重（每段一份原文）。重复段的全部节点贴标签。
+    """
+
+    def test_two_identical_paragraphs_tagged(self):
+        """两段原文相同 → 双方段内节点贴 ``duplicate_paragraph_content``。"""
 
         argument_tree = [
             _argument("q1", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p0001", content="限速 60"),
             _argument("q2", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p0002", content="限速 60"),
         ]
-        out = _by_id(consistency(argument_tree))
-        assert DUPLICATE_QUALIFICATION_TAG in out["q1"].issue_tags
-        assert DUPLICATE_QUALIFICATION_TAG in out["q2"].issue_tags
+        originals = {"p0001": "限速 60", "p0002": "限速 60"}
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree, originals)))
+        assert DUPLICATE_PARAGRAPH_CONTENT_TAG in out["q1"].issue_tags
+        assert DUPLICATE_PARAGRAPH_CONTENT_TAG in out["q2"].issue_tags
 
     def test_whitespace_and_case_insensitive_normalization(self):
-        """空白与大小写差异视为同一限定（归一化判定）。"""
+        """空白与大小写差异视为同一段原文（归一化判定）。"""
 
         argument_tree = [
             _argument(
@@ -282,38 +313,42 @@ class TestDuplicateQualification:
                 content="限速 60",
             ),
         ]
-        out = _by_id(consistency(argument_tree))
-        assert DUPLICATE_QUALIFICATION_TAG in out["q1"].issue_tags
-        assert DUPLICATE_QUALIFICATION_TAG in out["q2"].issue_tags
+        originals = {"p0001": "  限速   60  ", "p0002": "限速 60"}
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree, originals)))
+        assert DUPLICATE_PARAGRAPH_CONTENT_TAG in out["q1"].issue_tags
+        assert DUPLICATE_PARAGRAPH_CONTENT_TAG in out["q2"].issue_tags
 
-    def test_distinct_qualifications_not_tagged(self):
-        """两个 qualification 内容不同 → 不贴标签。"""
+    def test_distinct_paragraphs_not_tagged(self):
+        """两段原文不同 → 不贴标签。"""
 
         argument_tree = [
             _argument("q1", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p0001", content="限速 60"),
             _argument("q2", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p0002", content="限速 80"),
         ]
-        out = _by_id(consistency(argument_tree))
-        assert all(DUPLICATE_QUALIFICATION_TAG not in n.issue_tags for n in out.values())
+        originals = {"p0001": "限速 60", "p0002": "限速 80"}
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree, originals)))
+        assert all(DUPLICATE_PARAGRAPH_CONTENT_TAG not in n.issue_tags for n in out.values())
 
-    def test_single_qualification_not_tagged(self):
-        """仅一个 qualification → 不贴标签。"""
+    def test_single_paragraph_not_tagged(self):
+        """仅一段 → 不贴标签。"""
 
         argument_tree = [
             _argument("q", argument_type=ArgumentType.QUALIFICATION, paragraph_id="p0001", content="限速 60"),
         ]
-        out = _by_id(consistency(argument_tree))
-        assert DUPLICATE_QUALIFICATION_TAG not in out["q"].issue_tags
+        originals = {"p0001": "限速 60"}
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree, originals)))
+        assert DUPLICATE_PARAGRAPH_CONTENT_TAG not in out["q"].issue_tags
 
-    def test_non_qualification_identical_content_not_tagged(self):
-        """两个 evidence 内容相同不触发术语重复（规则只针对 qualification）。"""
+    def test_empty_original_content_skipped(self):
+        """空 ``original_content`` 的段不参与重复判定（不与其它空段误判）。"""
 
         argument_tree = [
             _argument("e1", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001", content="同一论据"),
             _argument("e2", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0002", content="同一论据"),
         ]
-        out = _by_id(consistency(argument_tree))
-        assert all(DUPLICATE_QUALIFICATION_TAG not in n.issue_tags for n in out.values())
+        # 两段均无原文（空）→ 重复扫描跳过、不贴标签。
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
+        assert all(DUPLICATE_PARAGRAPH_CONTENT_TAG not in n.issue_tags for n in out.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -388,7 +423,7 @@ class TestConsistencyGateMechanism:
                 content="论据原文",
             ),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         bg, ev = out["bg"], out["ev"]
         # 唯一变化：追加 mixed_paragraph_kind。
         assert MIXED_PARAGRAPH_KIND_TAG in bg.issue_tags
@@ -425,7 +460,7 @@ class TestConsistencyGateMechanism:
                 issue_tags=["conflict"],  # 既有 conflict
             ),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         # 既有标签全保留、顺序不变；两条新标签去重追加在后。
         assert out["bg"].issue_tags == [
             "weakening",
@@ -457,7 +492,7 @@ class TestConsistencyGateMechanism:
         ]
         before = {n.argument_id: n.model_copy(deep=True) for n in argument_tree}
 
-        consistency(argument_tree)
+        consistency(argument_tree, _paragraph_list(argument_tree))
 
         for n in argument_tree:
             assert n == before[n.argument_id], f"输入树被改写：{n.argument_id}"
@@ -468,7 +503,7 @@ class TestConsistencyGateMechanism:
         argument_tree = [
             _annotated_argument("m", argument_type=ArgumentType.MAIN_CLAIM, paragraph_id="p0001"),
         ]
-        out = consistency(argument_tree)
+        out = consistency(argument_tree, _paragraph_list(argument_tree))
         assert all(o is not n for o, n in zip(out, argument_tree, strict=True))
         assert all(o.issue_tags == [] for o in out)
 
@@ -479,8 +514,8 @@ class TestConsistencyGateMechanism:
             _annotated_argument("bg", argument_type=ArgumentType.BACKGROUND, paragraph_id="p0001"),
             _annotated_argument("ev", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0001"),
         ]
-        once = consistency(argument_tree)
-        twice = consistency(once)
+        once = consistency(argument_tree, _paragraph_list(argument_tree))
+        twice = consistency(once, _paragraph_list(once))
         # 再扫一次：每节点模型相等（批注集合与顺序完全一致，不重复追加）。
         assert [n.model_dump() for n in twice] == [n.model_dump() for n in once]
         for n in twice:
@@ -513,7 +548,7 @@ class TestConsistencyGateMechanism:
                 content="已回写",
             ),
         ]
-        out = _by_id(consistency(argument_tree))
+        out = _by_id(consistency(argument_tree, _paragraph_list(argument_tree)))
         # 不改 status（绝不替人拍板：不回退 adopted/corrected）。
         assert out["ad"].status is ArgumentStatus.ADOPTED
         assert out["co"].status is ArgumentStatus.CORRECTED
@@ -535,7 +570,7 @@ class TestConsistencyGateMechanism:
                 "ev", argument_type=ArgumentType.EVIDENCE, paragraph_id="p0003"
             ),  # p0003 混段
         ]
-        out = consistency(argument_tree)
+        out = consistency(argument_tree, _paragraph_list(argument_tree))
         # 节点数量与顺序不变（不打回、不丢弃、不重调度）。
         assert [n.argument_id for n in out] == ["m1", "m2", "bg", "ev"]
         # 有问题的节点被贴标、但仍留在树里交 HITL-2。

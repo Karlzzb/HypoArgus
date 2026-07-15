@@ -86,7 +86,7 @@ def test_rewrite_loop_exception_falls_back_to_empty_proposed_rewrites_and_logs()
     base = create_stub_agents()
 
     def throwing_rewrite_loop(
-        argument_tree, citations, paragraph_summaries, original_paragraphs,
+        argument_tree, citations, paragraph_list,
         session_context, query_time_range,
     ):
         raise RuntimeError("rewrite_loop boom")
@@ -114,18 +114,18 @@ def test_judgment_wholesale_exception_marks_in_scope_arguments_error():
         hitl1_gate=_skip_gate(),
     )
 
-    def throwing_judgment(argument_tree, hypotheses, citations, session_context, query_time_range):
+    def throwing_judgment(argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range):
         raise RuntimeError("judgment boom")
 
     captured: dict = {}
 
     def wrapping_rewrite_loop(
-        argument_tree, citations, paragraph_summaries, original_paragraphs,
+        argument_tree, citations, paragraph_list,
         session_context, query_time_range,
     ):
         captured["argument_tree"] = argument_tree  # judgment 整体异常后写入 argument_tree 的标记树
         return base.rewrite_loop(
-            argument_tree, citations, paragraph_summaries, original_paragraphs,
+            argument_tree, citations, paragraph_list,
             session_context, query_time_range,
         )
 

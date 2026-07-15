@@ -26,7 +26,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from domain import Argument, ArgumentType
+from domain import Argument, ArgumentType, ParagraphRecord
 
 __all__ = [
     "Hitl1Action",
@@ -152,12 +152,15 @@ class Hitl1Outcome:
 
     - ``argument_tree``：确认后的树（SKIP/ACCEPT/EDIT 时可能改树形、不改文本；REPLAY /
       耗尽时原样深拷贝——partition 重切为伪代码桩，不在本节点改树）。
+    - ``paragraph_list``：确认后的段落聚合根（T-02：EDIT 时随 merge/split/mark_no_op 同步
+      ``argument_tree_ids``；REPLAY / 耗尽时原样深拷贝）。写回 state 的 ``paragraph_list`` channel。
     - ``route``：图层级路由裁决（CONTINUE / REPLAY）。
     - ``retry_count``：打回计数器（REPLAY 时 +1；耗尽时不 +1、保留达上限值）。
     - ``exhausted``：是否因打回超 ``max_retries`` 被迫向前推进（受控分支、非异常降级）。
     """
 
     argument_tree: list[Argument]
+    paragraph_list: list[ParagraphRecord]
     route: Hitl1Route
     retry_count: int
     exhausted: bool = False

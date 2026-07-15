@@ -11,7 +11,7 @@
 | 切片 | 标题 | 依赖 | 状态 |
 |---|---|---|---|
 | T-01 | 领域模型 + paragraph_list channel + parse 产出（双写） | — | 已完成 |
-| T-02 | LLM seam + consistency 迁移读取 paragraph_list；HITL-1 op 同步 + 一致性自检 | T-01 | 未开始 |
+| T-02 | LLM seam + consistency 迁移读取 paragraph_list；HITL-1 op 同步 + 一致性自检 | T-01 | 已完成 |
 | T-03 | CLI 渲染反查 + checkpoint 往返 paragraph_list | T-02 | 未开始 |
 | T-04 | 翻转：移除 Argument.paragraph_id/content，退役 paragraph_summaries，真实 LLM 测试适配 | T-02, T-03 | 未开始 |
 | T-05 | 文档（STATE.md / CONTEXT.md）+ 新 ADR 取代 ADR-0005 决策 2 | T-04 | 未开始 |
@@ -66,7 +66,7 @@ class ParagraphRecord(BaseModel):
 
 ## T-02：LLM seam + consistency 迁移读取 paragraph_list；HITL-1 op 同步 + 一致性自检
 
-- **状态**：未开始
+- **状态**：已完成
 - **依赖**：T-01（需要 parse 产出 `paragraph_list`）
 - **覆盖用户故事**：8、9、10、11、12、13、14、15、28
 
@@ -83,16 +83,16 @@ HITL-1 三 op 在改节点集合时**同步维护 `argument_tree_ids`**：`merge
 
 ### Acceptance criteria
 
-- [ ] hypothesis propose seam（`src/agents/hypothesis/agent.py` + `src/infra/llm_adapters.py::_build_propose_prompt`）取该段 `original_content`（经 `paragraph_list` 反查），不再读 `Argument.content`。
-- [ ] judgment seam（`_build_judgment_prompt`）改为按段聚合节点 + 段原文一次，prompt 语义变更在测试中体现。
-- [ ] rewrite seam（`_build_rewrite_prompt` + `propose_rewrites`）遍历 `paragraph_list`、按 `argument_tree_ids` 解析节点、取该段 `original_content`，不再读 `Argument.content` / 反向 join。
-- [ ] `src/agents/consistency.py` 按 `argument_tree_ids` 分组、用 `original_content` 去重，不再读 `Argument.paragraph_id` / `.content`；`merge` / `impact` 签名不变。
-- [ ] HITL-1 `_apply_merge` / `_apply_split` / `_apply_mark_no_op`（`src/agents/hitl1/agent.py`）同步维护 `argument_tree_ids`；`reparent` / `set_type` 不动成员关系。
-- [ ] 「同段才能合并」断言改由 `argument_tree_ids` 归属判定（取代 `Argument.paragraph_id` 比较），违例抛 `TreeInvariantError`。
-- [ ] 新增结构自检：`argument_id` 恰出现于一个段落 `argument_tree_ids`、且 ids 中每个 id 存在于 `argument_tree`，不符即硬停。
-- [ ] HITL-1 单测扩展：merge / split / mark_no_op 后断言 `argument_tree_ids` 与 `argument_tree` 实际节点集一致。
-- [ ] Fake-LLM spy 测试：用 `FakeRewriteLlmClient` 的 `propose_factory` 捕获 rewrite seam 收到的载荷，断言被触达段的 `original_content` 出现在传给 LLM 的渲染 prompt 中（把引发本重构的原始问题锁为回归）。
-- [ ] 质量门全绿。
+- [x] hypothesis propose seam（`src/agents/hypothesis/agent.py` + `src/infra/llm_adapters.py::_build_propose_prompt`）取该段 `original_content`（经 `paragraph_list` 反查），不再读 `Argument.content`。
+- [x] judgment seam（`_build_judgment_prompt`）改为按段聚合节点 + 段原文一次，prompt 语义变更在测试中体现。
+- [x] rewrite seam（`_build_rewrite_prompt` + `propose_rewrites`）遍历 `paragraph_list`、按 `argument_tree_ids` 解析节点、取该段 `original_content`，不再读 `Argument.content` / 反向 join。
+- [x] `src/agents/consistency.py` 按 `argument_tree_ids` 分组、用 `original_content` 去重，不再读 `Argument.paragraph_id` / `.content`；`merge` / `impact` 签名不变。
+- [x] HITL-1 `_apply_merge` / `_apply_split` / `_apply_mark_no_op`（`src/agents/hitl1/agent.py`）同步维护 `argument_tree_ids`；`reparent` / `set_type` 不动成员关系。
+- [x] 「同段才能合并」断言改由 `argument_tree_ids` 归属判定（取代 `Argument.paragraph_id` 比较），违例抛 `TreeInvariantError`。
+- [x] 新增结构自检：`argument_id` 恰出现于一个段落 `argument_tree_ids`、且 ids 中每个 id 存在于 `argument_tree`，不符即硬停。
+- [x] HITL-1 单测扩展：merge / split / mark_no_op 后断言 `argument_tree_ids` 与 `argument_tree` 实际节点集一致。
+- [x] Fake-LLM spy 测试：用 `FakeRewriteLlmClient` 的 `propose_factory` 捕获 rewrite seam 收到的载荷，断言被触达段的 `original_content` 出现在传给 LLM 的渲染 prompt 中（把引发本重构的原始问题锁为回归）。
+- [x] 质量门全绿。
 
 ### Blocked by
 

@@ -212,13 +212,15 @@ def test_real_agents_rewrite_llm_is_injected_and_proposes_for_touched_paragraph(
         Hypothesis,
         HypothesisRelation,
         HypothesisStatus,
+        ParagraphRecord,
     )
     from original_paragraphs import OriginalParagraphs
 
     called: dict = {}
 
-    def factory(paragraph_id, paragraph_summary, arguments, citations, sc, qtr):
+    def factory(paragraph_id, paragraph_summary, original_content, arguments, citations, sc, qtr):
         called["pid"] = paragraph_id
+        called["original_content"] = original_content
         return "REWRITTEN"
 
     agents = create_real_agents(
@@ -250,18 +252,32 @@ def test_real_agents_rewrite_llm_is_injected_and_proposes_for_touched_paragraph(
             content="分论点",
         ),
     ]
+    by_para: dict[str, list[str]] = {}
+    for a in argument_tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    paragraph_list = [
+        ParagraphRecord(
+            paragraph_id=pid,
+            summary="",
+            original_content=original_paragraphs.get(pid).decode(
+                "utf-8", errors="surrogateescape"
+            ),
+            argument_tree_ids=by_para.get(pid, []),
+        )
+        for pid in original_paragraphs.paragraph_ids()
+    ]
 
     outcome = agents.rewrite_loop(
         argument_tree,
         {},
-        {},
-        original_paragraphs,
+        paragraph_list,
         DEFAULT_SESSION_CONTEXT,
         DEFAULT_QUERY_TIME_RANGE,
     )
     assert isinstance(outcome, RewriteLoopOutcome)
     assert outcome.proposed_rewrites == {"p0001": "REWRITTEN"}  # 仅触达段 p0001 提议
     assert called["pid"] == "p0001"  # 未触达段 p0002 不调 LLM
+    assert called["original_content"] == "主论点。\n\n"  # T-02：改写 seam 收到该段原文（含段间分隔字节）
     assert outcome.errors == []
 
 

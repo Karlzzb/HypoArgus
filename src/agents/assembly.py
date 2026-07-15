@@ -108,15 +108,20 @@ class ParseFn(Protocol):
 class Hitl1Fn(Protocol):
     """HITL-1 partition 确认闸门（ADR-0018·重定义）。
 
-    读 ``argument_tree`` + 打回计数 ``retry_count``，经 :func:`agents.hitl1.confirm_partition`
-    产 :class:`agents.hitl1.Hitl1Outcome`（确认后的树 + 路由 CONTINUE/REPLAY + 计数 + 耗尽标签）。
-    确认继续（SKIP/ACCEPT/EDIT）→ 下游；打回重跑（REPLAY）→ 重跑 parse+partition（按 user
-    prompt，当前伪代码桩）；打回有界，超限向前 + 贴 partition_retry_exhausted（受控分支、
-    非异常降级）。既有结构编辑（reparent/merge/split/...）收编于「确认继续」语义。
+    读 ``argument_tree`` + ``paragraph_list`` + 打回计数 ``retry_count``，经
+    :func:`agents.hitl1.confirm_partition` 产 :class:`agents.hitl1.Hitl1Outcome`（确认后的树 +
+    同步后的 paragraph_list + 路由 CONTINUE/REPLAY + 计数 + 耗尽标签）。T-02：EDIT 时随
+    merge/split/mark_no_op 同步 ``argument_tree_ids``。确认继续（SKIP/ACCEPT/EDIT）→ 下游；
+    打回重跑（REPLAY）→ 重跑 parse+partition（按 user prompt，当前伪代码桩）；打回有界，超限
+    向前 + 贴 partition_retry_exhausted（受控分支、非异常降级）。既有结构编辑
+    （reparent/merge/split/...）收编于「确认继续」语义。
     """
 
     def __call__(
-        self, argument_tree: list[Argument], retry_count: int
+        self,
+        argument_tree: list[Argument],
+        paragraph_list: list[ParagraphRecord],
+        retry_count: int,
     ) -> Hitl1Outcome: ...
 
 
@@ -125,8 +130,10 @@ class JudgmentFn(Protocol):
 
     吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/consistency
     纯函数、整树写回 ``argument_tree``（单写者，故裁撤 ``argument_credibility`` partial channel）。
-    输入压缩铁律见 :mod:`agents.judgment`：只喂 ``argument.content`` + 假说 ``text`` +
-    citation 片段 + 背景；不回灌 status/weight/parent_id/children_ids/issue_tags/merge_decision。
+    T-02：裁决 prompt 按段聚合节点 + 段原文一次、consistency 按 ``argument_tree_ids`` 分组去重，
+    故本 Protocol 载 ``paragraph_list``。输入压缩铁律见 :mod:`agents.judgment`：只喂段
+    ``original_content`` + 假说 ``text`` + citation 片段 + 背景；不回灌
+    status/weight/parent_id/children_ids/issue_tags/merge_decision。
     """
 
     def __call__(
@@ -134,6 +141,7 @@ class JudgmentFn(Protocol):
         argument_tree: list[Argument],
         hypotheses: dict[str, list[Hypothesis]],
         citations: dict[str, list[Source]],
+        paragraph_list: list[ParagraphRecord],
         session_context: SessionContext,
         query_time_range: TimeRange,
     ) -> JudgmentOutcome: ...
@@ -142,14 +150,15 @@ class JudgmentFn(Protocol):
 class HypothesisProposeFn(Protocol):
     """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。
 
-    逐 argument 读 ``paragraph_summaries`` 调 ``propose``（不取证），产 pending 假设
-    partial（by ``argument_id``）。取证落终态属 Slice 5 的 judgment 节点。
+    逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
+    ``summary`` 调 ``propose``（T-02：不读 ``Argument.content`` / ``paragraph_summaries``），
+    产 pending 假设 partial（by ``argument_id``）。取证落终态属 Slice 5 的 judgment 节点。
     """
 
     def __call__(
         self,
         argument_tree: list[Argument],
-        paragraph_summaries: dict[str, str],
+        paragraph_list: list[ParagraphRecord],
     ) -> dict[str, list[Hypothesis]]: ...
 
 
@@ -179,9 +188,11 @@ class RewriteLoopFn(Protocol):
     对被触达段（supported 假说 / 命中 citations）由 LLM 提议重写文本、未触达段省略；
     产 ``proposed_rewrites``（仅触达段）+ per-段 LLM 失败日志（``errors``）。rewrite_loop
     **不碰 ``argument_tree``**（新流程按段/文本工作，与 argument 状态解耦）；失败段记日志 +
-    回退原文（信号在 ``errors`` channel、不写 ``argument_tree``）。输入压缩铁律见
-    :mod:`agents.rewrite_loop`：只喂 ``paragraph_summary`` + argument ``content`` /
-    ``argument_type`` + 假说 ``text`` + citation 片段 + 背景；不回灌内部状态字段。
+    回退原文（信号在 ``errors`` channel、不写 ``argument_tree``）。T-02：直接遍历
+    ``paragraph_list``、按 ``argument_tree_ids`` 正向解析节点、取该段 ``original_content``，
+    不再反向 join ``Argument.paragraph_id`` / 读 ``Argument.content``。输入压缩铁律见
+    :mod:`agents.rewrite_loop`：只喂 ``paragraph_summary`` + 段 ``original_content`` +
+    argument ``argument_type`` + 假说 ``text`` + citation 片段 + 背景；不回灌内部状态字段。
 
     LLM seam 经 :func:`create_real_agents` 的 ``rewrite_llm`` 注入（``real`` 工厂以
     ``partial(propose_rewrites, llm=...)`` 预绑定）；桩（``_stub_rewrite_loop``）内部构造
@@ -192,8 +203,7 @@ class RewriteLoopFn(Protocol):
         self,
         argument_tree: list[Argument],
         citations: dict[str, list[Source]],
-        paragraph_summaries: dict[str, str],
-        original_paragraphs: OriginalParagraphs,
+        paragraph_list: list[ParagraphRecord],
         session_context: SessionContext,
         query_time_range: TimeRange,
     ) -> RewriteLoopOutcome: ...
@@ -276,7 +286,11 @@ def _stub_parse(original_paragraphs: OriginalParagraphs) -> ParseOutput:
     )
 
 
-def _stub_hitl1(argument_tree: list[Argument], retry_count: int) -> Hitl1Outcome:
+def _stub_hitl1(
+    argument_tree: list[Argument],
+    paragraph_list: list[ParagraphRecord],
+    retry_count: int,
+) -> Hitl1Outcome:
     """HITL-1 桩：partition 确认闸门保守继续（不打回）。
 
     恒返回 CONTINUE、计数不变、不 exhausted——桩路径下不触发打回循环、parse+partition
@@ -286,6 +300,7 @@ def _stub_hitl1(argument_tree: list[Argument], retry_count: int) -> Hitl1Outcome
 
     return Hitl1Outcome(
         argument_tree=[n.model_copy(deep=True) for n in argument_tree],
+        paragraph_list=[r.model_copy(deep=True) for r in paragraph_list],
         route=Hitl1Route.CONTINUE,
         retry_count=retry_count,
         exhausted=False,
@@ -293,7 +308,7 @@ def _stub_hitl1(argument_tree: list[Argument], retry_count: int) -> Hitl1Outcome
 
 
 def _stub_hypothesis_propose(
-    argument_tree: list[Argument], paragraph_summaries: dict[str, str]
+    argument_tree: list[Argument], paragraph_list: list[ParagraphRecord]
 ) -> dict[str, list[Hypothesis]]:
     """开药桩：不生成假设。"""
 
@@ -322,6 +337,7 @@ def _stub_judgment(
     argument_tree: list[Argument],
     hypotheses: dict[str, list[Hypothesis]],
     citations: dict[str, list[Source]],
+    paragraph_list: list[ParagraphRecord],
     session_context: SessionContext,
     query_time_range: TimeRange,
 ) -> JudgmentOutcome:
@@ -339,6 +355,7 @@ def _stub_judgment(
         argument_tree,
         hypotheses,
         citations,
+        paragraph_list,
         session_context,
         query_time_range,
         llm=FakeJudgmentLlmClient(),
@@ -361,8 +378,7 @@ def _stub_hitl2(
 def _stub_rewrite_loop(
     argument_tree: list[Argument],
     citations: dict[str, list[Source]],
-    paragraph_summaries: dict[str, str],
-    original_paragraphs: OriginalParagraphs,
+    paragraph_list: list[ParagraphRecord],
     session_context: SessionContext,
     query_time_range: TimeRange,
 ) -> RewriteLoopOutcome:
@@ -377,8 +393,7 @@ def _stub_rewrite_loop(
     return propose_rewrites_fn(
         argument_tree,
         citations,
-        paragraph_summaries,
-        original_paragraphs,
+        paragraph_list,
         session_context,
         query_time_range,
         llm=FakeRewriteLlmClient(),
@@ -496,10 +511,12 @@ def _parse_output_patch(out: ParseOutput) -> dict[str, object]:
 
 
 def _hitl1_outcome_patch(outcome: Hitl1Outcome) -> dict[str, object]:
-    """把 :class:`Hitl1Outcome` 摊成写回 PipelineState 的 patch（route + 计数 + 树 + 耗尽标签）。"""
+    """把 :class:`Hitl1Outcome` 摊成写回 PipelineState 的 patch（route + 计数 + 树 +
+    paragraph_list + 耗尽标签）。"""
 
     patch: dict[str, object] = {
         "argument_tree": outcome.argument_tree,
+        "paragraph_list": outcome.paragraph_list,
         "hitl1_route": outcome.route.value,
         "partition_retry_count": outcome.retry_count,
     }
@@ -521,10 +538,13 @@ def _hitl1_node(agents: Agents) -> NodeFn:
         """
 
         argument_tree = state["argument_tree"]
+        paragraph_list = state.get("paragraph_list", [])
         retry_count = int(state.get("partition_retry_count", 0))
         return _guarded(
             "hitl1",
-            lambda: _hitl1_outcome_patch(agents.hitl1(argument_tree, retry_count)),
+            lambda: _hitl1_outcome_patch(
+                agents.hitl1(argument_tree, paragraph_list, retry_count)
+            ),
             lambda: {
                 "argument_tree": argument_tree,
                 "hitl1_route": Hitl1Route.CONTINUE.value,
@@ -551,6 +571,7 @@ def _judgment_node(agents: Agents) -> NodeFn:
         argument_tree = state["argument_tree"]
         hypotheses = state.get("hypotheses", {})
         citations = state.get("citations", {})
+        paragraph_list = state.get("paragraph_list", [])
         session_context = state["session_context"]
         query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
 
@@ -559,6 +580,7 @@ def _judgment_node(agents: Agents) -> NodeFn:
                 argument_tree,
                 hypotheses,
                 citations,
+                paragraph_list,
                 session_context,
                 query_time_range,
             )
@@ -582,18 +604,19 @@ def _hypothesis_propose_node(agents: Agents) -> NodeFn:
     def hypothesis_propose_node(state: PipelineState) -> dict[str, object]:
         """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。异常 → 记日志 + 无假设向前。
 
-        逐 argument 读 ``paragraph_summaries``（非整段 content）调 ``propose``，产 pending
-        假设 partial。开药不持有节点 ``status``（只产 ``candidate_hypotheses``），整体异常
-        即「本轮无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
+        T-02：逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content``
+        + ``summary`` 调 ``propose``（不再读 ``Argument.content`` / ``paragraph_summaries``），
+        产 pending 假设 partial。开药不持有节点 ``status``（只产 ``candidate_hypotheses``），整体
+        异常即「本轮无假设」——不置节点 ``error``（避免覆盖体检判决），记日志、空 partial 向前。
         """
 
         argument_tree = state["argument_tree"]
-        paragraph_summaries = state.get("paragraph_summaries", {})
+        paragraph_list = state.get("paragraph_list", [])
         return _guarded(
             "hypothesis_propose",
             lambda: {
                 "hypotheses": agents.hypothesis_propose(
-                    argument_tree, paragraph_summaries
+                    argument_tree, paragraph_list
                 )
             },
             lambda: {},
@@ -672,19 +695,20 @@ def _rewrite_loop_node(agents: Agents) -> NodeFn:
         """逐段重写提议（#10·Slice 6·ADR-0017）。异常 → 降级空 proposed_rewrites + 日志、
         单向向前（PRD §13）。
 
-        读 ``argument_tree``（触达判定：段内有 supported 假说 / 命中 citations）+ ``citations``
-        + ``paragraph_summaries`` + ``original_paragraphs``（规范段序）+ 贯穿背景
-        （``session_context`` / ``query_time_range``），调 ``agents.rewrite_loop`` 逐段提议重写、
-        写回 ``proposed_rewrites`` channel（单写者=rewrite_loop、读者=hitl2、reducer=_merge_dict）。
-        per-段 LLM 失败由 :func:`agents.rewrite_loop.propose_rewrites` 捕获、记入 ``outcome.errors``
-        （该段省略、回退原文）；整体异常 → ``_guarded`` 降级空 proposed_rewrites + 日志向前——
+        T-02：读 ``paragraph_list``（段落聚合根），逐段按 ``argument_tree_ids`` 正向解析节点、
+        取该段 ``original_content`` 调 ``agents.rewrite_loop``——不再反向 join
+        ``Argument.paragraph_id`` / 读 ``Argument.content``。读 ``argument_tree``（触达判定：
+        段内有 supported 假说 / 命中 citations）+ ``citations`` + ``paragraph_list`` + 贯穿背景
+        （``session_context`` / ``query_time_range``），写回 ``proposed_rewrites`` channel
+        （单写者=rewrite_loop、读者=hitl2、reducer=_merge_dict）。per-段 LLM 失败由
+        :func:`agents.rewrite_loop.propose_rewrites` 捕获、记入 ``outcome.errors``（该段省略、
+        回退原文）；整体异常 → ``_guarded`` 降级空 proposed_rewrites + 日志向前——
         rewrite_loop **不碰 ``argument_tree``**（信号在 errors channel、不写树）。
         """
 
         argument_tree = state["argument_tree"]
         citations = state.get("citations", {})
-        paragraph_summaries = state.get("paragraph_summaries", {})
-        original_paragraphs = state["original_paragraphs"]
+        paragraph_list = state.get("paragraph_list", [])
         session_context = state["session_context"]
         query_time_range = state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)
 
@@ -692,8 +716,7 @@ def _rewrite_loop_node(agents: Agents) -> NodeFn:
             outcome = agents.rewrite_loop(
                 argument_tree,
                 citations,
-                paragraph_summaries,
-                original_paragraphs,
+                paragraph_list,
                 session_context,
                 query_time_range,
             )

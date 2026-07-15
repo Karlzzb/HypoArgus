@@ -373,7 +373,7 @@ def test_real_hypothesis_wired_arguments_get_pending_hypotheses_byte_identity():
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument, summary: [
+            propose_factory=lambda argument, summary, original_content: [
                 HypothesisProposal(
                     text=f"针对{argument.argument_id}的对立假设",
                     relation=HypothesisRelation.OPPOSE,
@@ -382,8 +382,8 @@ def test_real_hypothesis_wired_arguments_get_pending_hypotheses_byte_identity():
         ),
     )
 
-    def wrapped_hypothesis_propose(argument_tree, paragraph_summaries):
-        updates = agents.hypothesis_propose(argument_tree, paragraph_summaries)
+    def wrapped_hypothesis_propose(argument_tree, paragraph_list):
+        updates = agents.hypothesis_propose(argument_tree, paragraph_list)
         record.update(updates)
         return updates
 
@@ -411,7 +411,7 @@ def test_real_hypothesis_propose_exception_still_byte_identity_no_hang():
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument, summary: (
+            propose_factory=lambda argument, summary, original_content: (
                 _ for _ in ()
             ).throw(RuntimeError("propose LLM 不可用"))
         ),
@@ -438,7 +438,7 @@ def _judge_argument_verdicts_factory(
 ):
     """构造 judge_factory：对指定 argument_id 返回对应终态裁决，其余不裁决。"""
 
-    def factory(argument_tree, hypotheses, citations, session_context, query_time_range):
+    def factory(argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range):
         return JudgmentResult(
             argument_verdicts=[
                 ArgumentVerdictEntry(argument_id=aid, verdict=v)
@@ -475,10 +475,10 @@ def test_real_judgment_argument_verdicts_land_in_tree_byte_identity():
     captured: dict = {}
 
     def wrapped_judgment(
-        argument_tree, hypotheses, citations, session_context, query_time_range
+        argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
     ):
         outcome = agents.judgment(
-            argument_tree, hypotheses, citations, session_context, query_time_range
+            argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
         )
         captured["out"] = outcome
         return outcome
@@ -514,14 +514,14 @@ def test_real_judgment_hypothesis_verdicts_trigger_merge_action_byte_identity():
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument, summary: (
+            propose_factory=lambda argument, summary, original_content: (
                 [HypothesisProposal(text="对立证据", relation=HypothesisRelation.OPPOSE)]
                 if argument.argument_id == "n0001"
                 else []
             ),
         ),
         judgment_llm=FakeJudgmentLlmClient(
-            judge_factory=lambda argument_tree, hypotheses, citations, sc, qtr: JudgmentResult(
+            judge_factory=lambda argument_tree, hypotheses, citations, pl, sc, qtr: JudgmentResult(
                 argument_verdicts=[
                     ArgumentVerdictEntry(
                         argument_id="n0001",
@@ -542,10 +542,10 @@ def test_real_judgment_hypothesis_verdicts_trigger_merge_action_byte_identity():
     captured: dict = {}
 
     def wrapped_judgment(
-        argument_tree, hypotheses, citations, session_context, query_time_range
+        argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
     ):
         outcome = agents.judgment(
-            argument_tree, hypotheses, citations, session_context, query_time_range
+            argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
         )
         captured["out"] = outcome
         return outcome
@@ -621,10 +621,10 @@ def test_real_judgment_impact_propagates_invalid_up_chain_byte_identity():
     captured: dict = {}
 
     def wrapped_judgment(
-        argument_tree, hypotheses, citations, session_context, query_time_range
+        argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
     ):
         outcome = agents.judgment(
-            argument_tree, hypotheses, citations, session_context, query_time_range
+            argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
         )
         captured["out"] = outcome
         return outcome
@@ -664,10 +664,10 @@ def test_real_judgment_consistency_tags_multi_main_claim_byte_identity():
     captured: dict = {}
 
     def wrapped_judgment(
-        argument_tree, hypotheses, citations, session_context, query_time_range
+        argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
     ):
         outcome = agents.judgment(
-            argument_tree, hypotheses, citations, session_context, query_time_range
+            argument_tree, hypotheses, citations, paragraph_list, session_context, query_time_range
         )
         captured["out"] = outcome
         return outcome
@@ -707,14 +707,14 @@ def test_e2e_touched_confirmed_rewrite_lands_in_final_document():
         llm=FakeLlmClient(result=ParseResult(proposals=_sub_claim_evidence_proposals())),
         hitl1_gate=_skip_gate(),
         hypothesis_llm=FakeHypothesisLlmClient(
-            propose_factory=lambda argument, summary: (
+            propose_factory=lambda argument, summary, original_content: (
                 [HypothesisProposal(text="对立证据", relation=HypothesisRelation.OPPOSE)]
                 if argument.argument_id == "n0001"
                 else []
             ),
         ),
         judgment_llm=FakeJudgmentLlmClient(
-            judge_factory=lambda argument_tree, hypotheses, citations, sc, qtr: JudgmentResult(
+            judge_factory=lambda argument_tree, hypotheses, citations, pl, sc, qtr: JudgmentResult(
                 argument_verdicts=[
                     ArgumentVerdictEntry(
                         argument_id="n0001",
@@ -731,7 +731,7 @@ def test_e2e_touched_confirmed_rewrite_lands_in_final_document():
             )
         ),
         rewrite_llm=FakeRewriteLlmClient(
-            propose_factory=lambda paragraph_id, paragraph_summary, arguments, citations, sc, qtr: (
+            propose_factory=lambda paragraph_id, paragraph_summary, original_content, arguments, citations, sc, qtr: (
                 "论据[已修订]" if paragraph_id == "p0002" else None
             ),
         ),

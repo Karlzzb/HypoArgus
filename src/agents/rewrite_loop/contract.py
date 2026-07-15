@@ -8,9 +8,11 @@ ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + outcome 模型
 
 Slice 6（ADR-0017）：judgment 之后、hitl2 之前新增 ``rewrite_loop`` 节点。对**被触达段**
 （段内有 ``supported`` 假说 / 命中 citations）由 LLM 提议一版重写文本；未触达段不进
-``proposed_rewrites``（→ hitl2 逐字节拷回）。本 seam 逐段调 ``propose_rewrite``——
-吃 ``paragraph_summary`` + 段内 ``Argument``（含 ``candidate_hypotheses``）+ 段聚合
-``citations`` + 背景；产提议重写文本（``str | None``，``None`` = 选择不提议）。
+``proposed_rewrites``（→ hitl2 逐字节拷回）。本 seam 逐段调 ``propose_rewrite``——吃
+``paragraph_summary`` + 该段 ``original_content``（段落聚合根 ``ParagraphRecord`` 单份原文，
+T-02 取代原先每个节点各拷一份的 ``Argument.content``）+ 段内 ``Argument``（含
+``candidate_hypotheses``）+ 段聚合 ``citations`` + 背景；产提议重写文本（``str | None``，
+``None`` = 选择不提议）。
 """
 
 from __future__ import annotations
@@ -59,20 +61,23 @@ class RewriteLlmClient(Protocol):
     """逐段重写提议 LLM seam（Slice 6）。
 
     - :meth:`propose_rewrite`：吃单段输入（``paragraph_id`` + ``paragraph_summary`` +
+      该段 ``original_content``（段落聚合根单份原文，T-02 取代逐节点 ``Argument.content``）+
       段内 ``Argument``（含 ``candidate_hypotheses``）+ 段聚合 ``citations`` + 贯穿背景
       ``session_context`` / ``query_time_range``），产该段提议重写文本。返回 ``None`` /
       空串 = 该段不提议（hitl2 见无提议 → 逐字节拷回原文）。
 
-    真实适配器只把 ``paragraph_summary`` + argument ``content`` / ``argument_type`` +
-    假说 ``text`` / ``relation`` + citation 片段 + 背景喂 LLM（输入压缩铁律，PRD §7）；
-    **不回灌** ``status`` / ``argument_weight`` / ``parent_id`` / ``children_ids`` /
-    ``issue_tags`` / ``merge_decision``——这些不进 prompt。本 seam 不绑任何 provider。
+    真实适配器只把 ``paragraph_summary`` + 段 ``original_content`` + argument
+    ``argument_type`` + 假说 ``text`` / ``relation`` + citation 片段 + 背景喂 LLM（输入压缩
+    铁律，PRD §7）；**不回灌** ``status`` / ``argument_weight`` / ``parent_id`` /
+    ``children_ids`` / ``issue_tags`` / ``merge_decision``——这些不进 prompt。本 seam 不绑任何
+    provider。T-02 双读过渡：``Argument.content`` 字段暂存但本 seam 不再读。
     """
 
     def propose_rewrite(
         self,
         paragraph_id: str,
         paragraph_summary: str,
+        original_content: str,
         arguments: list[Argument],
         citations: list[Source],
         session_context: SessionContext,
@@ -83,8 +88,9 @@ class RewriteLlmClient(Protocol):
 class FakeRewriteLlmClient:
     """离线逐段重写 LLM 桩。provider-free、确定（供单测）。
 
-    - ``propose_factory``：``callable(paragraph_id, paragraph_summary, arguments, citations,
-      session_context, query_time_range) -> str | None``，可据段输入动态决策。
+    - ``propose_factory``：``callable(paragraph_id, paragraph_summary, original_content,
+      arguments, citations, session_context, query_time_range) -> str | None``，可据段输入
+      动态决策（亦供 T-02 spy 断言「改写 seam 收到该段 original_content」回归锁）。
     - 无 → 返回 ``None``（不提议；桩路径无触达段 → 永不被调 → ``proposed_rewrites={}``
       → 字节一致）。
     """
@@ -93,7 +99,7 @@ class FakeRewriteLlmClient:
         self,
         *,
         propose_factory: Callable[
-            [str, str, list[Argument], list[Source], SessionContext, TimeRange],
+            [str, str, str, list[Argument], list[Source], SessionContext, TimeRange],
             str | None,
         ]
         | None = None,
@@ -104,6 +110,7 @@ class FakeRewriteLlmClient:
         self,
         paragraph_id: str,
         paragraph_summary: str,
+        original_content: str,
         arguments: list[Argument],
         citations: list[Source],
         session_context: SessionContext,
@@ -113,6 +120,7 @@ class FakeRewriteLlmClient:
             return self._propose_factory(
                 paragraph_id,
                 paragraph_summary,
+                original_content,
                 arguments,
                 citations,
                 session_context,

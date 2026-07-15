@@ -26,8 +26,8 @@ from agents.hitl1 import (
     confirm_partition,
 )
 from agents.hitl1.contract import Hitl1Route
-from domain import Argument, ArgumentType
-from tree_invariants import TreeInvariantError
+from domain import Argument, ArgumentType, ParagraphRecord
+from tree_invariants import TreeInvariantError, validate_paragraph_consistency
 
 
 def _argument(
@@ -673,4 +673,184 @@ def test_seam_does_not_alter_sync_review_full_fidelity():
     reviewed = gate.review(_abc_tree())
     assert reviewed.action is Hitl1Action.EDIT
     assert reviewed.ops == decision.ops  # ops 全保真（不被 action-only 语义削空）
+
+
+# --------------------------------------------------------------------------- #
+# slice 8（T-02）：HITL-1 op 同步 argument_tree_ids + 段落↔节点一致性自检
+#
+# merge / split / mark_no_op 在改节点集合时同步维护所属段 ``argument_tree_ids``；
+# 「同段才能合并」断言改由 ``argument_tree_ids`` 归属判定；新增结构自检：
+# ``argument_tree`` 中每个 ``argument_id`` 恰出现于一个段落的 ``argument_tree_ids``、
+# 且 ``argument_tree_ids`` 中每个 id 都存在于 ``argument_tree``，不符即硬停。
+# --------------------------------------------------------------------------- #
+
+
+def _paragraph_list(argument_tree: list[Argument]) -> list[ParagraphRecord]:
+    """从树派生 paragraph_list（按 ``paragraph_id`` 分组；与 confirm 缺省派生同源）。"""
+
+    by_para: dict[str, list[str]] = {}
+    for a in argument_tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    return [
+        ParagraphRecord(paragraph_id=pid, argument_tree_ids=ids)
+        for pid, ids in by_para.items()
+    ]
+
+
+def _pl_ids(out: object) -> set[str]:
+    return {aid for r in out.paragraph_list for aid in r.argument_tree_ids}  # type: ignore[attr-defined]
+
+
+def test_confirm_partition_merge_syncs_argument_tree_ids():
+    """merge 同段两节点 → 所属段 ids 移除非幸存者、保留幸存者，与树节点集一致（T-02）。"""
+
+    from agents.hitl1 import MergeOp
+
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, children_ids=["b", "c"]),
+        _argument("b", parent_id="a", paragraph_id="p0001"),
+        _argument("c", parent_id="a", paragraph_id="p0001", children_ids=["d"]),
+        _argument("d", parent_id="c", paragraph_id="p0001"),
+    ]
+    out = confirm_partition(
+        argument_tree,
+        _paragraph_list(argument_tree),
+        retry_count=0,
+        gate=_gate(
+            Hitl1Decision(action=Hitl1Action.EDIT, ops=[MergeOp(argument_ids=["b", "c"])])
+        ),
+    )
+    tree_ids = {n.argument_id for n in out.argument_tree}
+    assert tree_ids == _pl_ids(out)  # 段落↔节点一致性
+    p0001 = next(r for r in out.paragraph_list if r.paragraph_id == "p0001")
+    assert "c" not in p0001.argument_tree_ids  # 非幸存者 c 已移除
+    assert "b" in p0001.argument_tree_ids  # 幸存者 b 保留
+    assert "d" in p0001.argument_tree_ids  # d 仍在
+    validate_paragraph_consistency(out.argument_tree, out.paragraph_list)  # 自检不抛
+
+
+def test_confirm_partition_split_syncs_argument_tree_ids():
+    """split 节点 → 新 id 加入源段 ids，与树节点集一致（T-02）。"""
+
+    from agents.hitl1 import SplitOp
+
+    argument_tree = _abc_tree()  # a / b / c 均属 p0001
+    out = confirm_partition(
+        argument_tree,
+        _paragraph_list(argument_tree),
+        retry_count=0,
+        gate=_gate(
+            Hitl1Decision(action=Hitl1Action.EDIT, ops=[SplitOp(argument_id="b")])
+        ),
+    )
+    tree_ids = {n.argument_id for n in out.argument_tree}
+    assert tree_ids == _pl_ids(out)  # 新 id 在树与 ids 两处
+    p0001 = next(r for r in out.paragraph_list if r.paragraph_id == "p0001")
+    new_ids = [aid for aid in p0001.argument_tree_ids if aid not in {"a", "b", "c"}]
+    assert len(new_ids) == 1  # 新拆分 id 恰一个、加入源段
+    assert new_ids[0] in tree_ids
+    validate_paragraph_consistency(out.argument_tree, out.paragraph_list)
+
+
+def test_confirm_partition_mark_no_op_locates_via_argument_tree_ids():
+    """mark_no_op 经 argument_tree_ids 定位该段节点、转影子；成员关系不变（T-02）。"""
+
+    from agents.hitl1 import MarkNoOpOp
+
+    argument_tree = [
+        _argument(
+            "a",
+            argument_type=ArgumentType.MAIN_CLAIM,
+            argument_weight=80,
+            children_ids=["b", "c"],
+        ),
+        _argument(
+            "b", parent_id="a", paragraph_id="p0001", argument_type=ArgumentType.EVIDENCE, argument_weight=70
+        ),
+        _argument(
+            "c", parent_id="a", paragraph_id="p0002", argument_type=ArgumentType.EVIDENCE, argument_weight=60
+        ),
+    ]
+    out = confirm_partition(
+        argument_tree,
+        _paragraph_list(argument_tree),
+        retry_count=0,
+        gate=_gate(
+            Hitl1Decision(action=Hitl1Action.EDIT, ops=[MarkNoOpOp(paragraph_id="p0001")])
+        ),
+    )
+    by_id = {n.argument_id: n for n in out.argument_tree}
+    # p0001 的节点（a、b）转影子、权重 0；p0002 的 c 不受影响。
+    assert by_id["a"].argument_type == ArgumentType.BACKGROUND
+    assert by_id["b"].argument_type == ArgumentType.BACKGROUND
+    assert by_id["c"].argument_type == ArgumentType.EVIDENCE
+    # mark_no_op 不动成员关系 → argument_tree_ids 与树一致。
+    assert {n.argument_id for n in out.argument_tree} == _pl_ids(out)
+
+
+def test_confirm_partition_reparent_does_not_touch_membership():
+    """reparent 不动段落成员关系：argument_tree_ids 与树节点集不变（T-02）。"""
+
+    from agents.hitl1 import ReparentOp
+
+    argument_tree = _abc_tree()  # a(root,b,c 同段 p0001)
+    before_ids = {n.argument_id for n in argument_tree}
+    out = confirm_partition(
+        argument_tree,
+        _paragraph_list(argument_tree),
+        retry_count=0,
+        gate=_gate(
+            Hitl1Decision(action=Hitl1Action.EDIT, ops=[ReparentOp(argument_id="c", new_parent_id="b")])
+        ),
+    )
+    # reparent 改 parent/children、不改段落成员 → ids 集合不变。
+    assert {n.argument_id for n in out.argument_tree} == before_ids
+    validate_paragraph_consistency(out.argument_tree, out.paragraph_list)
+
+
+def test_validate_paragraph_consistency_hard_stops_on_drift():
+    """paragraph_list.argument_tree_ids 与 argument_tree 漂移 → 硬停（T-02 自检）。"""
+
+    argument_tree = [_argument("a", paragraph_id="p0001")]
+
+    # 漂移 1：argument_tree_ids 含 argument_tree 不存在的节点 "ghost"。
+    dangling = [ParagraphRecord(paragraph_id="p0001", argument_tree_ids=["a", "ghost"])]
+    with pytest.raises(TreeInvariantError):
+        validate_paragraph_consistency(argument_tree, dangling)
+
+    # 漂移 2：树有节点未归属任何段（ids 漏掉 a）。
+    missing = [ParagraphRecord(paragraph_id="p0001", argument_tree_ids=[])]
+    with pytest.raises(TreeInvariantError):
+        validate_paragraph_consistency(argument_tree, missing)
+
+    # 漂移 3：一个 argument_id 出现于多个段落的 ids。
+    dup = [
+        ParagraphRecord(paragraph_id="p0001", argument_tree_ids=["a"]),
+        ParagraphRecord(paragraph_id="p0002", argument_tree_ids=["a"]),
+    ]
+    with pytest.raises(TreeInvariantError):
+        validate_paragraph_consistency(argument_tree, dup)
+
+
+def test_confirm_partition_merge_cross_paragraph_rejected_via_tree_ids():
+    """「同段才能合并」经 argument_tree_ids 归属判定：跨段 merge 抛 TreeInvariantError（T-02）。"""
+
+    from agents.hitl1 import MergeOp
+
+    argument_tree = [
+        _argument("a", argument_type=ArgumentType.MAIN_CLAIM, children_ids=["b", "c"]),
+        _argument("b", parent_id="a", paragraph_id="p0001"),
+        _argument("c", parent_id="a", paragraph_id="p0002"),
+    ]
+    snapshot = [n.model_dump() for n in argument_tree]
+    with pytest.raises(TreeInvariantError, match="跨段|paragraph"):
+        confirm_partition(
+            argument_tree,
+            _paragraph_list(argument_tree),
+            retry_count=0,
+            gate=_gate(
+                Hitl1Decision(action=Hitl1Action.EDIT, ops=[MergeOp(argument_ids=["b", "c"])])
+            ),
+        )
+    assert [n.model_dump() for n in argument_tree] == snapshot  # 调用方原树不动
 

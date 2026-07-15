@@ -30,6 +30,7 @@ from domain import (
     Hypothesis,
     HypothesisRelation,
     HypothesisStatus,
+    ParagraphRecord,
 )
 from infra.retrieval import Source
 from original_paragraphs import OriginalParagraphs
@@ -47,6 +48,28 @@ def _store(*paragraphs: tuple[str, str]) -> OriginalParagraphs:
     return OriginalParagraphs(
         [Paragraph(pid, text.encode("utf-8")) for pid, text in paragraphs]
     )
+
+
+def _paragraph_list(
+    store: OriginalParagraphs,
+    argument_tree: list[Argument],
+    summaries: dict[str, str] | None = None,
+) -> list[ParagraphRecord]:
+    """从原文表 + 树构造 paragraph_list（original_content 取自段 bytes 解码，与 parse 同源）。"""
+
+    summaries = summaries or {}
+    by_para: dict[str, list[str]] = {}
+    for a in argument_tree:
+        by_para.setdefault(a.paragraph_id, []).append(a.argument_id)
+    return [
+        ParagraphRecord(
+            paragraph_id=pid,
+            summary=summaries.get(pid, ""),
+            original_content=store.get(pid).decode("utf-8", errors="surrogateescape"),
+            argument_tree_ids=by_para.get(pid, []),
+        )
+        for pid in store.paragraph_ids()
+    ]
 
 
 def _hyp(
@@ -91,7 +114,7 @@ def _argument(
 def test_propose_rewrites_touched_by_supported_hypothesis_gets_proposal():
     """段内有 supported 假说 → 触达 → LLM 提议文本落入 proposed_rewrites。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
     argument_tree = [
         _argument("n0", paragraph_id="p0001", argument_type=ArgumentType.MAIN_CLAIM, content="主论点。"),
         _argument(
@@ -100,15 +123,15 @@ def test_propose_rewrites_touched_by_supported_hypothesis_gets_proposal():
         ),
     ]
 
-    def factory(pid, summary, arguments, citations, sc, qtr):
+    def factory(pid, summary, original_content, arguments, citations, sc, qtr):
         assert pid == "p0002"
+        assert original_content == "分论点。"  # T-02：改写 seam 收到该段原文
         return "重写后的分论点"
 
     outcome = propose_rewrites(
         argument_tree,
         citations={},
-        paragraph_summaries={"p0002": "分论点摘要"},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree, {"p0002": "分论点摘要"}),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
@@ -122,7 +145,7 @@ def test_propose_rewrites_touched_by_supported_hypothesis_gets_proposal():
 def test_propose_rewrites_untouched_paragraph_omitted_and_never_calls_llm():
     """段无 supported 假说、无 citations → 未触达 → 不进 proposed_rewrites、不调 LLM。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
     argument_tree = [
         _argument("n0", paragraph_id="p0001", content="主论点。"),
         # p0002 仅 pending 假说、无 citations → 未触达。
@@ -133,15 +156,14 @@ def test_propose_rewrites_untouched_paragraph_omitted_and_never_calls_llm():
     ]
     seen: list[str] = []
 
-    def factory(pid, summary, arguments, citations, sc, qtr):  # type: ignore[no-untyped-def]
+    def factory(pid, summary, original_content, arguments, citations, sc, qtr):  # type: ignore[no-untyped-def]
         seen.append(pid)
         return "不应被调"
 
     outcome = propose_rewrites(
         argument_tree,
         citations={},
-        paragraph_summaries={},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
@@ -155,21 +177,20 @@ def test_propose_rewrites_untouched_paragraph_omitted_and_never_calls_llm():
 def test_propose_rewrites_touched_by_citations_gets_proposal():
     """段无 supported 假说但有命中 citations → 触达 → 提议。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
     argument_tree = [
         _argument("n0", paragraph_id="p0001", content="主论点。"),
         _argument("n1", paragraph_id="p0002", content="分论点。"),  # 无假说
     ]
     citations = {"n1": [Source(source_id="s1", kind="network", origin="url", snippet="证据")]}
 
-    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+    def factory(pid, summary, original_content, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
         return "据证据重写"
 
     outcome = propose_rewrites(
         argument_tree,
         citations=citations,
-        paragraph_summaries={"p0002": "摘要"},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree, {"p0002": "摘要"}),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
@@ -181,7 +202,7 @@ def test_propose_rewrites_touched_by_citations_gets_proposal():
 def test_propose_rewrites_llm_returns_none_omits_silently():
     """LLM 返回 None（选择不提议）→ 省略、不记 error（非失败）。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
     argument_tree = [
         _argument(
             "n1", paragraph_id="p0002", content="分论点。",
@@ -189,14 +210,13 @@ def test_propose_rewrites_llm_returns_none_omits_silently():
         ),
     ]
 
-    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+    def factory(pid, summary, original_content, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
         return None
 
     outcome = propose_rewrites(
         argument_tree,
         citations={},
-        paragraph_summaries={"p0002": "摘要"},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree, {"p0002": "摘要"}),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
@@ -208,7 +228,7 @@ def test_propose_rewrites_llm_returns_none_omits_silently():
 def test_propose_rewrites_llm_raises_omits_and_logs_per_paragraph():
     """某触达段 LLM 抛错 → 该段省略 + 记 [rewrite_loop] 日志、其余段照常提议（不杀全树）。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"), ("p0003", "论据。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"), ("p0003", "论据。"))
     argument_tree = [
         _argument(
             "n1", paragraph_id="p0002", content="分论点。",
@@ -220,7 +240,7 @@ def test_propose_rewrites_llm_raises_omits_and_logs_per_paragraph():
         ),
     ]
 
-    def factory(pid, summary, arguments, citations, sc, qtr):
+    def factory(pid, summary, original_content, arguments, citations, sc, qtr):
         if pid == "p0002":
             raise RuntimeError("LLM boom")
         return "重写论据"
@@ -228,8 +248,7 @@ def test_propose_rewrites_llm_raises_omits_and_logs_per_paragraph():
     outcome = propose_rewrites(
         argument_tree,
         citations={},
-        paragraph_summaries={"p0002": "摘要", "p0003": "摘要"},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree, {"p0002": "摘要", "p0003": "摘要"}),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
@@ -246,7 +265,7 @@ def test_propose_rewrites_llm_raises_omits_and_logs_per_paragraph():
 def test_propose_rewrites_does_not_mutate_argument_tree():
     """rewrite_loop 不碰 argument_tree：输入树对象 / 字段不变。"""
 
-    original_paragraphs = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点。"))
     argument_tree = [
         _argument(
             "n1", paragraph_id="p0002", content="分论点。",
@@ -255,20 +274,85 @@ def test_propose_rewrites_does_not_mutate_argument_tree():
     ]
     snapshot = [n.model_dump() for n in argument_tree]
 
-    def factory(pid, summary, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
+    def factory(pid, summary, original_content, arguments, c, sc, qtr):  # type: ignore[no-untyped-def]
         return "重写"
 
     propose_rewrites(
         argument_tree,
         citations={},
-        paragraph_summaries={"p0002": "摘要"},
-        original_paragraphs=original_paragraphs,
+        paragraph_list=_paragraph_list(store, argument_tree, {"p0002": "摘要"}),
         session_context=DEFAULT_SESSION_CONTEXT,
         query_time_range=DEFAULT_QUERY_TIME_RANGE,
         llm=FakeRewriteLlmClient(propose_factory=factory),
     )
 
     assert [n.model_dump() for n in argument_tree] == snapshot
+
+
+# --------------------------------------------------------------------------- #
+# T-02 回归锁：改写 seam 收到该段 original_content（引发本重构的原始问题）
+# --------------------------------------------------------------------------- #
+
+
+def test_rewrite_seam_receives_paragraph_original_content():
+    """Fake-LLM spy：触达段调用 propose_rewrite 时拿到该段 ``original_content``（T-02 回归锁）。
+
+    引发本重构的原始问题（「分段后是否只有段落 id 与总结、段落原文是否传到改写节点」）
+    在本方案下被结构性回答：原文以 ``paragraph_list.original_content`` 单份存储、经
+    ``argument_tree_ids`` 正向解析节点后传入改写 seam。本测试把「原文到达改写节点」锁为回归。
+    """
+
+    store = _store(("p0001", "主论点。"), ("p0002", "分论点原文XYZ。"))
+    argument_tree = [
+        _argument("n0", paragraph_id="p0001", argument_type=ArgumentType.MAIN_CLAIM, content="主论点。"),
+        _argument(
+            "n1", paragraph_id="p0002", content="分论点原文XYZ。",
+            candidates=[_hyp("h1", status=HypothesisStatus.SUPPORTED)],
+        ),
+    ]
+    captured: dict[str, str] = {}
+
+    def factory(pid, summary, original_content, arguments, citations, sc, qtr):
+        captured[pid] = original_content
+        return "重写" if pid == "p0002" else None
+
+    outcome = propose_rewrites(
+        argument_tree,
+        citations={},
+        paragraph_list=_paragraph_list(store, argument_tree),
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+        llm=FakeRewriteLlmClient(propose_factory=factory),
+    )
+
+    # 仅触达段 p0002 被调；其 original_content == 段落原文（非摘要、非空）。
+    assert captured == {"p0002": "分论点原文XYZ。"}
+    assert outcome.proposed_rewrites == {"p0002": "重写"}
+
+
+def test_build_rewrite_prompt_uses_paragraph_original_not_node_content():
+    """渲染后的 prompt 含段 ``original_content``、不含逐节点 ``Argument.content``（T-02）。
+
+    真实 adapter ``QwenRewriteLlmClient`` 的 prompt 由 :func:`_build_rewrite_prompt` 构造——
+    按段聚合：段原文一次、节点只列 id/type。节点 content 与段原文不同时，prompt 取段原文、
+    不取节点 content，把「不再读 ``Argument.content``」锁为回归。
+    """
+
+    from infra.llm_adapters import _build_rewrite_prompt
+
+    # 节点 content 与段落 original_content 不同：证明 prompt 取段原文、不再读节点 content。
+    arguments = [_argument("n1", paragraph_id="p0002", content="节点旧文本")]
+    prompt = _build_rewrite_prompt(
+        paragraph_id="p0002",
+        paragraph_summary="摘要",
+        original_content="段落原文XYZ",
+        arguments=arguments,
+        citations=[],
+        session_context=DEFAULT_SESSION_CONTEXT,
+        query_time_range=DEFAULT_QUERY_TIME_RANGE,
+    )
+    assert "段落原文XYZ" in prompt
+    assert "节点旧文本" not in prompt
 
 
 # --------------------------------------------------------------------------- #

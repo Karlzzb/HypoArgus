@@ -1,8 +1,9 @@
 """论证树结构不变式校验（纯函数 seam，PRD §4、ADR-0001）。
 
 解析器自检与 HITL-1 编辑后复检共用此 seam：所有「LLM 不可信、必须代码兜底」的
-结构硬约束在此以可执行断言表达。本 seam 只校验**树自身**的结构性质（不依赖只读
-原文表）；段级字节校验（``paragraph_id`` 是否存在、``content`` 是否逐字节来自只读表）
+结构硬约束在此以可执行断言表达。本 seam 校验**树自身的结构性质**与**段落↔节点
+一致性**（T-02 新增：``paragraph_list.argument_tree_ids`` 与 ``argument_tree`` 节点集
+一致）；段级字节校验（``paragraph_id`` 是否存在、``content`` 是否逐字节来自只读表）
 在解析器内完成，因为只有解析器持有只读表。
 
 校验的不变式：
@@ -11,13 +12,20 @@
 2. 每个非空 ``parent_id`` 指向树内存在的节点。
 3. 父子链无环（一个节点不是自己的祖先）。
 4. ``children_ids`` 与 ``parent_id`` 双向一致：A 的 children 含 B ⟺ B 的 parent 是 A。
+5. （T-02）段落↔节点一致：``argument_tree`` 中每个 ``argument_id`` 恰出现于一个段落的
+   ``argument_tree_ids``、且 ``argument_tree_ids`` 中每个 id 都存在于 ``argument_tree``。
 """
 
 from __future__ import annotations
 
-from domain import Argument
+from domain import Argument, ParagraphRecord
 
-__all__ = ["TreeInvariantError", "validate_tree", "rebuild_children"]
+__all__ = [
+    "TreeInvariantError",
+    "validate_tree",
+    "validate_paragraph_consistency",
+    "rebuild_children",
+]
 
 
 class TreeInvariantError(Exception):
@@ -103,3 +111,36 @@ def validate_tree(argument_tree: list[Argument]) -> None:
                     f"节点 {argument.argument_id} 的 parent_id 是 "
                     f"{argument.parent_id!r}，但父节点 children_ids 不含它"
                 )
+
+
+def validate_paragraph_consistency(
+    argument_tree: list[Argument], paragraph_list: list[ParagraphRecord]
+) -> None:
+    """校验段落↔节点一致性不变式（T-02）；违反任一则抛 :class:`TreeInvariantError`。
+
+    - ``argument_tree`` 中每个 ``argument_id`` 恰出现于一个段落的 ``argument_tree_ids``
+      （不重、不漏）。
+    - ``argument_tree_ids`` 中每个 id 都存在于 ``argument_tree``（无悬空引用）。
+
+    与 :func:`validate_tree` 同侧：解析器建树后自检、HITL-1 编辑后复检都走此函数——
+    段落↔节点关系由代码保证，漂移即硬停（项目「正确性硬停、不兜底」惯例）。
+    """
+
+    tree_ids: set[str] = {a.argument_id for a in argument_tree}
+    seen: set[str] = set()
+    for record in paragraph_list:
+        for aid in record.argument_tree_ids:
+            if aid in seen:
+                raise TreeInvariantError(
+                    f"argument_id {aid} 出现于多个段落的 argument_tree_ids（段落↔节点一对多漂移）"
+                )
+            seen.add(aid)
+            if aid not in tree_ids:
+                raise TreeInvariantError(
+                    f"段落 {record.paragraph_id} 的 argument_tree_ids 含 argument_tree 不存在的节点 {aid}"
+                )
+    missing = tree_ids - seen
+    if missing:
+        raise TreeInvariantError(
+            f"argument_tree 节点未归属任何段落的 argument_tree_ids：{missing}"
+        )

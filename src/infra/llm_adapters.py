@@ -35,7 +35,7 @@ from agents.parser import (
     ParsedNodeProposal,
     ParseResult,
 )
-from domain import Argument, ArgumentType, Hypothesis, SessionContext, TimeRange
+from domain import Argument, ArgumentType, Hypothesis, ParagraphRecord, SessionContext, TimeRange
 from infra.retrieval import Source
 
 logger = logging.getLogger(__name__)
@@ -90,15 +90,25 @@ def _build_summaries_prompt(batch: list[ParagraphView]) -> str:
     )
 
 
-def _build_propose_prompt(argument: Argument, paragraph_summary: str) -> str:
+def _build_propose_prompt(
+    argument: Argument, paragraph_summary: str, original_content: str
+) -> str:
+    """构造假设生成 prompt（PRD §7 输入压缩铁律）。
+
+    T-02：节点所在段原文取自 ``paragraph_list.original_content``（每段一份），不再读
+    ``Argument.content``。confidence 0-1 仅排序、不裁决。
+    """
     summary_block = (
         f"段落摘要：\n{paragraph_summary}" if paragraph_summary else "段落摘要：（无）"
+    )
+    original_block = (
+        f"节点所在段原文：\n{original_content}" if original_content else "节点所在段原文：（无）"
     )
     return (
         "你是论证修订假设生成器。对给定节点投机生成 0..N 条**可证伪**的修订假设，"
         "每条恰好一种 relation（oppose=对立替换 / advance=递进改写 / expand=扩展追加）。"
         "confidence 0-1 仅用于排序、不参与裁决。无假设则返回空列表。\n\n"
-        f"节点 [type={argument.argument_type.value}] 内容：\n{argument.content}\n\n"
+        f"节点 [type={argument.argument_type.value}]：\n{original_block}\n\n"
         f"{summary_block}"
     )
 
@@ -133,26 +143,38 @@ def _build_judgment_prompt(
     argument_tree: list[Argument],
     hypotheses: dict[str, list[Hypothesis]],
     citations: dict[str, list[Source]],
+    paragraph_list: list[ParagraphRecord],
     session_context: SessionContext,
     query_time_range: TimeRange,
 ) -> str:
     """构造裁决 prompt（PRD §7 输入压缩铁律）。
 
-    只喂节点 ``content`` + 假说 ``text`` + citation 片段 + 运行背景（session_context /
+    T-02：按段聚合节点——遍历 ``paragraph_list``，每段 ``original_content`` 出现一次、
+    段内节点只列 ``argument_id`` / ``argument_type``（不再逐节点 ``Argument.content``）。
+    只喂段原文 + 假说 ``text`` + citation 片段 + 运行背景（session_context /
     query_time_range）；**不回灌** status/argument_weight/parent_id/children_ids/issue_tags/
     merge_decision——这些由 :func:`agents.judgment.judge_and_adjudicate` 在调用前后管理。
     """
 
-    args_block = "\n".join(
-        f"- [节点 {a.argument_id} | type={a.argument_type.value}] {a.content}"
-        for a in argument_tree
-    )
+    by_id = {a.argument_id: a for a in argument_tree}
+    para_lines: list[str] = []
+    for record in paragraph_list:
+        node_line = ", ".join(
+            f"[节点 {aid} | type={by_id[aid].argument_type.value}]"
+            for aid in record.argument_tree_ids
+            if aid in by_id
+        ) or "（无）"
+        original_block = record.original_content or "（无）"
+        para_lines.append(
+            f"- [段落 {record.paragraph_id}]\n  原文：{original_block}\n  节点：{node_line}"
+        )
+    args_block = "\n".join(para_lines) or "（无）"
     return (
         "你是论证裁决器。据检索素材对覆盖范围内（main_claim / sub_claim / evidence）的节点"
         "判 per-argument 终态（credible / doubtful / error），并对各假设判终态"
         "（supported / doubtful / refuted）。未覆盖节点（qualification / 影子）不判。"
         "无据可判者可省略（不列入 verdicts 即视为未裁决）。\n\n"
-        f"节点：\n{args_block}\n\n"
+        f"段落：\n{args_block}\n\n"
         f"假设：\n{_format_hypotheses(hypotheses)}\n\n"
         f"检索素材：\n{_format_citations(citations)}\n\n"
         f"运行背景：current_time={session_context.current_time.isoformat()}"
@@ -458,10 +480,10 @@ class QwenHypothesisLlmClient:
         return self._propose_chain
 
     def propose(
-        self, argument: Argument, paragraph_summary: str
+        self, argument: Argument, paragraph_summary: str, original_content: str
     ) -> list[HypothesisProposal]:
         envelope = self._get_propose_chain().invoke(
-            _build_propose_prompt(argument, paragraph_summary)
+            _build_propose_prompt(argument, paragraph_summary, original_content)
         )
         assert isinstance(envelope, _ProposalsEnvelope)
         return envelope.proposals
@@ -495,6 +517,7 @@ class QwenJudgmentLlmClient:
         argument_tree: list[Argument],
         hypotheses: dict[str, list[Hypothesis]],
         citations: dict[str, list[Source]],
+        paragraph_list: list[ParagraphRecord],
         session_context: SessionContext,
         query_time_range: TimeRange,
     ) -> JudgmentResult:
@@ -503,6 +526,7 @@ class QwenJudgmentLlmClient:
                 argument_tree,
                 hypotheses,
                 citations,
+                paragraph_list,
                 session_context,
                 query_time_range,
             )
@@ -525,6 +549,7 @@ class _RewriteEnvelope(BaseModel):
 def _build_rewrite_prompt(
     paragraph_id: str,
     paragraph_summary: str,
+    original_content: str,
     arguments: list[Argument],
     citations: list[Source],
     session_context: SessionContext,
@@ -532,14 +557,16 @@ def _build_rewrite_prompt(
 ) -> str:
     """构造重写提议 prompt（PRD §7 输入压缩铁律）。
 
-    只喂段落摘要 + 段内 argument ``content`` / ``argument_type`` + 段内假说 ``text`` /
+    T-02：段原文改取 ``paragraph_list.original_content``（每段一份），prompt 按段聚合——
+    段原文出现一次、节点只列 ``argument_id`` / ``argument_type``（不再逐节点拷 ``content``）。
+    只喂段落摘要 + 段原文 + 段内 argument ``argument_type`` + 段内假说 ``text`` /
     ``relation`` + citation 片段 + 运行背景（session_context / query_time_range）；**不回灌**
     ``status`` / ``argument_weight`` / ``parent_id`` / ``children_ids`` / ``issue_tags`` /
     ``merge_decision``——这些不进 prompt（rewrite_loop 与 argument 状态解耦）。
     """
 
     args_block = "\n".join(
-        f"- [节点 {a.argument_id} | type={a.argument_type.value}] {a.content}"
+        f"- [节点 {a.argument_id} | type={a.argument_type.value}]"
         for a in arguments
     ) or "（无）"
     hyps = [h for a in arguments for h in a.candidate_hypotheses]
@@ -560,11 +587,14 @@ def _build_rewrite_prompt(
     summary_block = (
         f"段落摘要：\n{paragraph_summary}" if paragraph_summary else "段落摘要：（无）"
     )
+    original_block = (
+        f"段落原文：\n{original_content}" if original_content else "段落原文：（无）"
+    )
     return (
         "你是论证文档修订器。对给定段落（已识别其论证节点与相关假设 / 检索素材）"
         "产出一版重写后的完整段落文本，使其论证更稳健 / 更准确。若该段无需修订，"
         "返回空串。\n\n"
-        f"[段落 {paragraph_id}]\n{summary_block}\n\n"
+        f"[段落 {paragraph_id}]\n{summary_block}\n\n{original_block}\n\n"
         f"节点：\n{args_block}\n\n假设：\n{hyp_block}\n\n"
         f"检索素材：\n{cit_block}\n\n"
         f"运行背景：current_time={session_context.current_time.isoformat()}"
@@ -579,7 +609,8 @@ class QwenRewriteLlmClient:
     Slice 6（ADR-0017）：judgment 之后对被触达段产一版重写文本。输出为自由文本（非判别联合），
     用扁平信封 :class:`_RewriteEnvelope` 经 ``with_structured_output`` 绑定（provider 兼容、
     与其它 adapter 同形）；空串 = 选择不提议（→ hitl2 逐字节拷回原文）。输入压缩铁律见
-    :func:`_build_rewrite_prompt`：不回灌内部状态字段（rewrite_loop 与 argument 状态解耦）。
+    :func:`_build_rewrite_prompt`：T-02 段原文取 ``paragraph_list.original_content``、不回灌
+    内部状态字段（rewrite_loop 与 argument 状态解耦）。
     """
 
     def __init__(
@@ -600,6 +631,7 @@ class QwenRewriteLlmClient:
         self,
         paragraph_id: str,
         paragraph_summary: str,
+        original_content: str,
         arguments: list[Argument],
         citations: list[Source],
         session_context: SessionContext,
@@ -609,6 +641,7 @@ class QwenRewriteLlmClient:
             _build_rewrite_prompt(
                 paragraph_id,
                 paragraph_summary,
+                original_content,
                 arguments,
                 citations,
                 session_context,

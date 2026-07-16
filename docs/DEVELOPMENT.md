@@ -26,7 +26,7 @@ START → parse+partition
           产 argument_tree + paragraph_list + query_time_range
         → hitl1                  （partition 确认闸门；可打回重跑 parse+partition，有界·ADR-0017）
         → hypothesis_propose     （逐 argument 产候选假说，status=pending）
-        → retrieval              （批量检索，统一返回 citations·当前桩）
+        → retrieval              （批量检索，统一返回 citations·真实后端可选注入·ADR-0026）
         → judgment               （LLM 取证 + 纯函数 merge/impact/consistency·ADR-0017）
         → rewrite_loop           （逐段 LLM 提议重写；未触达段逐字节拷回·ADR-0017·Slice 6）
         → hitl2                  （人确认终稿文本·终稿文本确认闸门·Slice 6 重定位）
@@ -42,7 +42,7 @@ END
 | 合并 | `partition` + `parse` → `parse+partition` | 单一 `AgentEntry`，`deps=()` 接 START；partition 切分 + 字节自检、parse 建树主逻辑不动（`Argument` 不再存 `content` / `paragraph_id`，原句收到 `paragraph_list`），新增两阶段 LLM 调用多吐 `query_time_range` / `paragraph_list`（摘要折叠进 `paragraph_list.summary`，P-01：树 + 摘要分块拆关注点）。ADR-0017 / ADR-0025 |
 | 重定义 | `hitl1` | partition 确认闸门 + 有界打回（ADR-0017）；动作集对齐「确认继续 / 打回重跑」 |
 | 新增 | `hypothesis_propose` | 逐 argument 调 `propose`（不取证），产 pending 假说；读 `paragraph_list`（取该段 `original_content` + `summary`）。ADR-0017 |
-| 新增 | `retrieval` | 批量检索，统一返回 `citations`；当前伪代码桩（空 citations，不联网）。ADR-0017 |
+| 新增 | `retrieval` | 批量检索，统一返回 `citations`；真实后端已落地（vendored SearchAgent V12·ADR-0026），默认未注入 `retrieval_runtime` 时为桩（产空 citations、不联网），注入后产真实非空 citations。 |
 | 五合一 | `verification` + `hypothesis`（取证）+ `merge` + `impact` + `consistency` → `judgment` | 控制流合并为 1，merge/impact/consistency 纯函数逻辑不动、由 judgment 按序串联调用。ADR-0017 |
 | 新增 | `rewrite_loop` | 逐段 LLM 提议重写；产 `proposed_rewrites`。ADR-0017·Slice 6 |
 | 重定位 | `hitl2` | 终稿文本确认闸门：逐段确认 / 编辑 / 驳回 `proposed_rewrites`，拼 `final_document`。ADR-0017·Slice 6 |
@@ -89,9 +89,13 @@ START
   │
   ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ ④ retrieval           【单次·伪代码桩·无 LLM·有 _guarded·真实后端 Out of Scope】│
-│    读 argument_tree + hypotheses + query_time_range + session_context      │
-│    当前桩不联网、产空 citations（infra.retrieval 接口层不变）                 │
+│ ④ retrieval           【单次·无 LLM·有 _guarded·真实后端可选注入·ADR-0026】   │
+│    读 argument_tree + hypotheses + query_time_range + session_context +     │
+│           paragraph_list                                                      │
+│    默认桩：未注入 retrieval_runtime → 不联网、产空 citations（tracer bullet）   │
+│    真实后端：注入 lazy_search_agent_runtime() → vendored SearchAgent V12      │
+│      （Volcano 全网检索 + Bisheng KB + 结构化检索、with_llm=False、verdict     │
+│      丢弃），产非空可溯源 citations 供 judgment 重判                         │
 │    失败降级 → 空 citations 向前                                              │
 │    writes: citations（dict[str, list[Source]]，partial channel）           │
 └────────────────────────────────────────────────────────────────────────────┘

@@ -1,8 +1,9 @@
 """真实 V12 检索全链慢集成测试（``real_llm`` 标记）。
 
-与 ``tests/test_real_llm_pipeline_e2e.py``（检索桩产空 citations、保守闸门下终稿逐字节
-等于原文）互补——本测试驱动 **真实检索后端**（Slice 2 的 ``lazy_search_agent_runtime``：
-``with_llm=False``、Volcano 全网检索、daemon worker loop 承载、进程级单例）：
+与 ``tests/test_real_llm_pipeline_e2e.py``（保守闸门下终稿逐字节等于原文；Slice 2 起亦
+exercising 真实检索，见下文）互补——本测试驱动 **真实检索后端**（Slice 2 的
+``lazy_search_agent_runtime``：``with_llm=False``、Volcano 全网检索、daemon worker loop
+承载、进程级单例）：
 
 真实解析 → 真实开药 → 真实检索（citations 非空）→ 真实裁决（据真实证据判终态）。
 

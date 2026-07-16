@@ -1,12 +1,15 @@
 """真实 LLM 端到端流水线测试：整条 ``run_real_pipeline`` 跑真实论文。
 
 与 ``test_real_llm_parse.py``（只验解析层）互补——本测试驱动**整条真实装配**：
-真实解析（两阶段）→ 真实开药 → 检索桩（空 citations）→ 真实裁决 → 真实重写提议
-→ 保守 HITL-2。保守闸门全驳回 + 空 citations → 无触达段 → 终稿逐字节等于原文。
+真实解析（两阶段）→ 真实开药 → 真实检索 → 真实裁决 → 真实重写提议 → 保守 HITL-2。
+Slice 2 起 ``run_real_pipeline`` 装配 ``lazy_search_agent_runtime``（Volcano 全网检索、
+``with_llm=False``），故检索阶段产**真实 citations**（可能非空）；但保守闸门全驳回一切
+重写 → 无论 citations 空或非空均无触达段改动 → 终稿逐字节等于原文。
 
 这是 tracer bullet 在真实数据规模上的兑现：即使真实 LLM 调用偶发抖动，各 stage
 ``_guarded`` 兜底单向向前，终稿仍逐字节还原原文（保护原文底线）。断言确定性——
-不依赖 LLM 非确定输出（保守闸门驳回一切变更）。需 ``DASHSCOPE_API_KEY`` + 网络，缺则跳过。
+不依赖 LLM 非确定输出（保守闸门驳回一切变更）。需 ``DASHSCOPE_API_KEY`` + 网络，缺则跳过
+（VOLCANO/BISHENG 凭证缺时检索降级回空 citations，终稿底线不变——故本测试不以其为前置）。
 """
 
 from __future__ import annotations
@@ -61,10 +64,11 @@ def test_run_real_pipeline_byte_identical_on_real_paper(
 ) -> None:
     """整条真实 LLM 流水线跑真实论文：保守闸门 → 终稿逐字节等于原文。
 
-    真实解析（两阶段）+ 真实开药 + 真实裁决 + 真实重写提议，但检索桩产空 citations、
-    HITL-1 保守 SKIP、HITL-2 保守全驳回——故无触达段、终稿逐字节还原原文。
-    这是 tracer bullet 在真实数据规模上的兑现：任一 LLM 调用抖动由 ``_guarded``
-    兜底（单向向前、回退原文 bytes），终稿底线不变。
+    真实解析（两阶段）+ 真实开药 + 真实裁决 + 真实重写提议；检索阶段自 Slice 2 起为
+    真实后端（``lazy_search_agent_runtime``、Volcano 全网检索、citations 可能非空），但
+    HITL-1 保守 SKIP、HITL-2 保守全驳回一切重写——故无论 citations 空或非空均无触达段改动、
+    终稿逐字节还原原文。这是 tracer bullet 在真实数据规模上的兑现：任一 LLM 调用抖动由
+    ``_guarded`` 兜底（单向向前、回退原文 bytes），终稿底线不变。
     """
 
     name, doc = paper

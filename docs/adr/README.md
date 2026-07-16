@@ -39,7 +39,7 @@
 
 ### 检索后端 / 子智能体迁入
 
-- [0026 — 迁入 SearchAgent V12 作为真实检索后端](0026-real-retrieval-backend-via-searchagent-v12.md) — 挂 retrieval seam、vendor + carve-out、daemon worker loop + `run_coroutine_threadsafe` 桥接、`with_llm=False` 丢 verdict、domain whitelist 作废（已记录 PRD §6 偏差）。配套 `docs/prd-search-agent-integration.md`。
+- [0026 — 迁入 SearchAgent V12 作为真实检索后端](0026-real-retrieval-backend-via-searchagent-v12.md) — 挂 retrieval seam、vendor + carve-out、daemon worker loop + `run_coroutine_threadsafe` 桥接、`with_llm=False` 丢 verdict、domain whitelist 作废（已记录 PRD §6 偏差）。
 
 ### 运行时控制面 / 可视化
 

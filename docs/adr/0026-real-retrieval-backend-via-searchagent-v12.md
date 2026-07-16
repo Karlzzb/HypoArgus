@@ -4,8 +4,7 @@
 
 已接受（2026-07-16）。
 本 ADR 捕获「把已存在的事实核验子智能体 SearchAgent V12 迁入主智能体作真实检索后端」的全部架构决议。
-配套母 PRD：`docs/prd-search-agent-integration.md`（自含全部决议与定位线索）。
-配套任务：`docs/tasks/search-agent-integration/`（Slice 0–3 已落地，commits `a6d0dc1` / `4d5bd51` / `c5a5d3d` / `184d39b`；本 ADR 为 Slice 4 收尾）。
+落地切片（commit）：`a6d0dc1`（Slice 0 vendor+carve-out）/ `4d5bd51`（Slice 1 RetrievalFn 5 输入）/ `c5a5d3d`（Slice 2 真实适配器）/ `184d39b`（Slice 3 real_llm 全链测试）/ `6d93dd9`（Slice 4 本 ADR + 文档同步）；5 切片全部落地。
 字段流向见 `docs/STATE.md` §3.1（retrieval 行 / `citations` 行）；术语见 `CONTEXT.md`「智能体角色」。
 取代关系：无；承接 ADR-0025 既成代价（`Argument` 无文本字段）的下游消费面，并为 ADR-0014 的 retrieval 子包补齐。
 

@@ -1,5 +1,5 @@
 """HITL-2 ``build_review`` / ``resolve_rewrites`` / ``assemble_final_document`` /
-``confirm`` 纯函数（PRD §13、ADR-0010/0017、Slice 6）。
+``confirm`` 纯函数（PRD §13、ADR-0010/0017）。
 
 ``build_review`` 构建终稿确认呈现（被触达段的原文 × 提议重写文本），``resolve_rewrites``
 应用段级三态决策（确认 / 编辑 / 驳回），``assemble_final_document`` 按规范顺序拼接

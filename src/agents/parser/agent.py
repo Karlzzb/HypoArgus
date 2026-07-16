@@ -3,7 +3,7 @@
 在只读原文段落底座上**唯一语义解析入口**：识别论证节点、构建论证树、回填指针——
 无权新建、改写或重排段落。LLM 只做「识别」：按段返回节点提议（段归属、类型、父索引、
 权重）。解析器强制 LLM 不可信的所有结构硬约束（控制流落代码而非 prompt 散文，
-见 ``docs/langgraph-dev-guide.md``）：
+见 ``docs/DEVELOPMENT.md`` §11）：
 
 - ``paragraph_id`` 必须存在于只读表——不凭空造段、不跨段（ADR-0001）。
 - ``original_content`` 逐字节从只读表按 ``paragraph_id`` 拷回到段落聚合根

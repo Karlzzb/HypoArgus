@@ -32,9 +32,9 @@
 
 - [0014 — 包重构 src/ 扁平 + manifest 驱动装配](0014-package-restructure-infra-agents-runtime.md) — `package-dir={""="src"}`；加 Agent 触点 7→3。
 
-### 流水线重构（Slice 1–6）
+### 流水线重构
 
-- [0017 — 流水线重构（Slice 1–6）](0017-pipeline-refactor-slices-1-6.md) — **整合自原 0017/0018/0019/0020/0021 + 原 0016 存活残余**。
+- [0017 — 流水线重构](0017-pipeline-refactor-slices-1-6.md) — **整合自原 0017/0018/0019/0020/0021 + 原 0016 存活残余**。
   §1 rewrite_loop 放弃字节一致 / 裁撤 writeback；§2 hitl1 partition 闸门 + 有界打回；§3 五合一 judgment（删 ReAct infra）；§4 partition prompt 驱动；§5 贯穿 state 落 PipelineState；§6 RunnableConfig 承载 langgraph 原生机制。
 
 ### 检索后端 / 子智能体迁入
@@ -52,7 +52,7 @@
 本次清理（2026-07-15）合并 / 删除的记录，编号永久作废、不复用：
 
 - **原 0004**（回写按 node_type 分流）— 已合并入 [0006](0006-merge-decision-matrix.md)（其分流改由语义关系驱动）。
-- **原 0015**（工具框架 seam 骨架移植）— 引入的 `infra/tool_protocol.py`/`retrieval_tool.py`/`runtime/tool_registry.py` 随 Slice 5 五合一删除，零外部引用，整条废弃。
+- **原 0015**（工具框架 seam 骨架移植）— 引入的 `infra/tool_protocol.py`/`retrieval_tool.py`/`runtime/tool_registry.py` 随五合一删除，零外部引用，整条废弃。
 - **原 0016**（历史对话 seam）— `HistoryStore` 部分随 ReAct 删除废弃；`RunnableConfig` 承载 langgraph 原生机制的存活残余并入 [0017 §6](0017-pipeline-refactor-slices-1-6.md)。
 - **原 0018 / 0019 / 0020 / 0021** — 分别并入 [0017 §2 / §3 / §4 / §5](0017-pipeline-refactor-slices-1-6.md)。
 

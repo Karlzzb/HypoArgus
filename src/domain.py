@@ -69,7 +69,7 @@ class HypothesisStatus(StrEnum):
     """假设状态（ADR-0008 + PRD §1 重构）。
 
     ``pending`` 为 propose 期状态（hypothesis_propose 节点产出、尚未取证）；judgment
-    节点（Slice 5）据 ``citations`` 取证后落终态 ``supported / doubtful / refuted``，与
+    节点据 ``citations`` 取证后落终态 ``supported / doubtful / refuted``，与
     原文侧 ``credible/doubtful/error`` 对称：``supported`` ↔ ``credible``、``doubtful`` ↔
     ``doubtful``、``refuted`` ↔ ``error``。``confidence`` 不参与此判决，仅用于同节点多条
     ``supported`` 假设的排序。
@@ -130,7 +130,7 @@ class Hypothesis(BaseModel):
 
     ``hypothesis_id`` 由开药 Agent 确定性派生（节点 id + 关系 + 文本 + 序号），
     供 HITL-2（#9）采纳与回写（#10）幂等链引用。``status`` 初值为 ``pending``
-    （hypothesis_propose 产出、尚未取证），judgment（Slice 5）取证后落终态
+    （hypothesis_propose 产出、尚未取证），judgment 取证后落终态
     ``supported / doubtful / refuted``，是双轨合并（#6）矩阵
     ``原文.status × 假设.status`` 的唯一输入；``confidence`` 0-1，仅排序、不裁决。
     """
@@ -200,7 +200,7 @@ class ParagraphRecord(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# 贯穿 state 域类型（ADR-0017 / PRD §17·Slice 1）
+# 贯穿 state 域类型（ADR-0017 / PRD §17）
 #
 # session_context 为贯穿全链的运行上下文（单写者=入口注入、全链只读，进 LLM 检索与生成
 # seam 的背景）；query_time_range 为本文所需数据查询时间范围（单写者=parse+partition，

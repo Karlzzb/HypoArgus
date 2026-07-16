@@ -1,4 +1,4 @@
-"""逐段重写提议 Agent：rewrite_loop 节点（PRD §12、ADR-0017、Slice 6）。
+"""逐段重写提议 Agent：rewrite_loop 节点（PRD §12、ADR-0017）。
 
 对 judgment 之后的 ``argument_tree`` 逐段（按 ``paragraph_list`` 规范顺序）判定
 **触达**：段内任一 ``candidate_hypotheses`` 含 ``supported`` 假说，或 ``citations`` 命中

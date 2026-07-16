@@ -6,7 +6,7 @@
 
 ## 1. 节点身份
 
-- **图/阶段名**：`parse+partition`（合并节点，ADR-0017 / Slice 1）
+- **图/阶段名**：`parse+partition`（合并节点，ADR-0017）
 - **位置**：`START` 之后的第一个节点，`deps=()`
 - **节点入口闭包**：`_parse_partition_node(agents)` → `parse_partition_node(state)`
   - 源码：`src/agents/assembly.py:473-497`

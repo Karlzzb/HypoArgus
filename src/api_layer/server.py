@@ -64,7 +64,7 @@ _logger = logging.getLogger(__name__)
 
 def _real_agents() -> Any:
     """真实四 LLM seam + ``InterruptHitl*Gate`` + 真实检索后端（与
-    :func:`runtime.run_real.arun_real_pipeline` 同源；retrieval runtime 进程级单例、Slice 2）。"""
+    :func:`runtime.run_real.arun_real_pipeline` 同源；retrieval runtime 进程级单例）。"""
 
     chat = build_qwen_chat_model()
     return create_real_agents(
@@ -74,7 +74,7 @@ def _real_agents() -> Any:
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=InterruptHitl2Gate(),
-        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：spine 进程级单例、daemon worker loop 承载、跨所有请求复用。
+        retrieval_runtime=lazy_search_agent_runtime(),  # spine 进程级单例、daemon worker loop 承载、跨所有请求复用。
     )
 
 

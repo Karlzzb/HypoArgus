@@ -3,7 +3,7 @@
 contract 层（parser / verification / hypothesis 的 ``*LlmClient`` Protocol）provider-free、
 不绑任何 provider；本模块是「第二个 adapter」（deep-module 两-adapter 原则）：把
 ``langchain_openai.ChatOpenAI`` 指向 DashScope 的 OpenAI-compatible 端点，复用其
-``with_structured_output`` 满足结构化输出契约（dev-guide §6.3）。provider 无关——
+``with_structured_output`` 满足结构化输出契约（DEVELOPMENT.md §11）。provider 无关——
 注入其它 ``BaseChatModel`` 即指向别的网关。
 
 安全红线（见 CLAUDE.md）：API key **只**读环境变量 ``DASHSCOPE_API_KEY``——

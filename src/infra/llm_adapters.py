@@ -2,7 +2,7 @@
 
 contract 层（``LlmClient`` / ``HypothesisLlmClient`` / ``JudgmentLlmClient`` / ``RewriteLlmClient`` Protocol）
 provider-free；本模块把注入的 :class:`langchain_core.language_models.BaseChatModel` 经
-``with_structured_output`` 绑到各 seam 的结构化输出契约（dev-guide §6.3）。
+``with_structured_output`` 绑到各 seam 的结构化输出契约（DEVELOPMENT.md §11）。
 
 设计要点：
 
@@ -461,7 +461,7 @@ class QwenParseLlmClient:
 class QwenHypothesisLlmClient:
     """开药 LLM seam 的真实 adapter（``HypothesisLlmClient`` Protocol 的第二 adapter）。
 
-    Slice 3 重构后仅 ``propose``（不取证）；取证（吃 citations 判终态）属 Slice 5 的
+    重构后仅 ``propose``（不取证）；取证（吃 citations 判终态）属
     judgment adapter，不在此处。
     """
 
@@ -492,7 +492,7 @@ class QwenHypothesisLlmClient:
 class QwenJudgmentLlmClient:
     """裁决 LLM seam 的真实 adapter（``JudgmentLlmClient`` Protocol 的第二 adapter）。
 
-    Slice 5 五合一：吃 citations 判 per-argument / per-hypothesis 终态。``JudgmentResult``
+    五合一：吃 citations 判 per-argument / per-hypothesis 终态。``JudgmentResult``
     本即扁平信封（``argument_verdicts`` + ``hypothesis_verdicts`` 两 list、无判别联合），
     故直接用 contract schema 经 ``with_structured_output`` 绑定、无需额外信封映射（与
     :class:`QwenParseLlmClient` 同形）。输入压缩铁律见 :func:`_build_judgment_prompt`。
@@ -536,7 +536,7 @@ class QwenJudgmentLlmClient:
 
 
 # --------------------------------------------------------------------------- #
-# 重写提议 seam（Slice 6）
+# 重写提议 seam
 # --------------------------------------------------------------------------- #
 
 
@@ -606,7 +606,7 @@ def _build_rewrite_prompt(
 class QwenRewriteLlmClient:
     """逐段重写提议 LLM seam 的真实 adapter（``RewriteLlmClient`` Protocol 的第二 adapter）。
 
-    Slice 6（ADR-0017）：judgment 之后对被触达段产一版重写文本。输出为自由文本（非判别联合），
+    ADR-0017：judgment 之后对被触达段产一版重写文本。输出为自由文本（非判别联合），
     用扁平信封 :class:`_RewriteEnvelope` 经 ``with_structured_output`` 绑定（provider 兼容、
     与其它 adapter 同形）；空串 = 选择不提议（→ hitl2 逐字节拷回原文）。输入压缩铁律见
     :func:`_build_rewrite_prompt`：T-02 段原文取 ``paragraph_list.original_content``、不回灌

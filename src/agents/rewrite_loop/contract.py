@@ -1,12 +1,12 @@
 """逐段重写提议 Agent 契约：rewrite_loop seam + LLM Protocol + 离线 Fake 桩
-（PRD §12、ADR-0017、Slice 6）。
+（PRD §12、ADR-0017）。
 
 ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + outcome 模型，``agent.py``
 放逐段提议纯函数。``RewriteLlmClient`` 为注入 seam：真实适配器用
-``with_structured_output`` 或直 ``str`` 输出（dev-guide §6.3）；本切片提供
+``with_structured_output`` 或直 ``str`` 输出（DEVELOPMENT.md §11）；本切片提供
 ``FakeRewriteLoopLlmClient`` 供离线单测——provider-free、确定、可断言。
 
-Slice 6（ADR-0017）：judgment 之后、hitl2 之前新增 ``rewrite_loop`` 节点。对**被触达段**
+ADR-0017：judgment 之后、hitl2 之前新增 ``rewrite_loop`` 节点。对**被触达段**
 （段内有 ``supported`` 假说 / 命中 citations）由 LLM 提议一版重写文本；未触达段不进
 ``proposed_rewrites``（→ hitl2 逐字节拷回）。本 seam 逐段调 ``propose_rewrite``——吃
 ``paragraph_summary`` + 该段 ``original_content``（段落聚合根 ``ParagraphRecord`` 单份原文，
@@ -58,7 +58,7 @@ class RewriteLoopOutcome(BaseModel):
 
 
 class RewriteLlmClient(Protocol):
-    """逐段重写提议 LLM seam（Slice 6）。
+    """逐段重写提议 LLM seam。
 
     - :meth:`propose_rewrite`：吃单段输入（``paragraph_id`` + ``paragraph_summary`` +
       该段 ``original_content``（段落聚合根单份原文，T-02 取代逐节点 ``Argument.content``）+

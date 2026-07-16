@@ -1,13 +1,13 @@
-"""开药 Agent 契约：投机生成 seam + LLM Protocol + 离线 Fake 桩（PRD §5、issue #5、Slice 3）。
+"""开药 Agent 契约：投机生成 seam + LLM Protocol + 离线 Fake 桩（PRD §5、issue #5）。
 
 ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + proposal 模型，``agent.py``
 放 propose 纯函数。``HypothesisLlmClient`` 为注入 seam：真实适配器用
-``with_structured_output(_ProposalsEnvelope)``（dev-guide §6.3）；本切片提供
+``with_structured_output(_ProposalsEnvelope)``（DEVELOPMENT.md §11）；本切片提供
 ``FakeHypothesisLlmClient`` 供离线单测——provider-free、确定、可断言。
 
-Slice 3（重构）：hypothesis 节点重定义为 **hypothesis_propose**——仅 ``propose``、不取证，
+重构：hypothesis 节点重定义为 **hypothesis_propose**——仅 ``propose``、不取证，
 产 ``list[Hypothesis]``（status=pending）。既有 ``next_verify_step`` 取证职责移出（推迟到
-Slice 5 的 judgment 节点重接），故取证步模型（verdict / search / conclude / verify-step
+judgment 节点重接），故取证步模型（verdict / search / conclude / verify-step
 判别联合）从本 seam 删除。``propose`` 输入从单 ``Argument`` 改为
 ``(argument, paragraph_summary, original_content)``——逐 argument 调用、读段落聚合根的段原文
 （T-02：``ParagraphRecord.original_content``，取代逐节点 ``Argument.content``）+ 段落摘要
@@ -60,14 +60,14 @@ class HypothesisProposal(BaseModel):
 
 
 class HypothesisLlmClient(Protocol):
-    """开药 LLM seam（Slice 3 重构后仅 propose）。
+    """开药 LLM seam（重构后仅 propose）。
 
     - :meth:`propose`：``(argument, paragraph_summary, original_content)`` → 0..N 条假设提案
       （投机生成，不读体检结论/检索；段原文取自段落聚合根 ``ParagraphRecord.original_content``，
       ``Argument`` 不存原文字段）。
 
-    真实适配器用 ``with_structured_output(_ProposalsEnvelope)`` 保证结构合法（dev-guide §6.3）。
-    本 seam 不绑任何 provider。取证（吃 citations 判终态）属 Slice 5 的 judgment seam，
+    真实适配器用 ``with_structured_output(_ProposalsEnvelope)`` 保证结构合法（DEVELOPMENT.md §11）。
+    本 seam 不绑任何 provider。取证（吃 citations 判终态）属 judgment seam，
     不在此处。
     """
 

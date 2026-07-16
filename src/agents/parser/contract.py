@@ -71,7 +71,7 @@ class ParagraphView(BaseModel):
 
 
 class ParsedNodeProposal(BaseModel):
-    """LLM 提出的单个节点（结构化输出，dev-guide §6.3）。
+    """LLM 提出的单个节点（结构化输出，DEVELOPMENT.md §11）。
 
     不含 ``content``：节点文本由解析器从只读表逐字节拷回，LLM 无权改写。
     ``parent_index`` 指向 LLM 输出列表中的父节点位置（稳定、由 LLM 控制排序），
@@ -137,7 +137,7 @@ class ParseOutput(BaseModel):
 class LlmClient(Protocol):
     """解析 LLM seam：按段输入 → 结构化节点提议。
 
-    真实适配器用 ``with_structured_output(ParseResult)`` 保证结构合法（dev-guide §6.3），
+    真实适配器用 ``with_structured_output(ParseResult)`` 保证结构合法（DEVELOPMENT.md §11），
     并把 :data:`WEIGHT_RUBRIC` 写进解析 prompt。本 seam 不绑任何 provider。
     """
 

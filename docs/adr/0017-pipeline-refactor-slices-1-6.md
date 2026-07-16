@@ -1,8 +1,8 @@
-# ADR-0017：流水线重构（Slice 1–6）
+# ADR-0017：流水线重构
 
 ## 状态
 
-已接受（2026-07-13 起，Slice 1–6 逐片落地；2026-07-15 整合）。
+已接受（2026-07-13 起；2026-07-15 整合为统一偏离记录）。
 本 ADR 是流水线重构的**统一偏离记录**，整合并取代下列原单条 ADR：
 
 - 原 ADR-0017（重写阶段放弃字节一致 / 段落原文不被 LLM 改写 / 幂等纯函数回写）→ §1
@@ -10,7 +10,7 @@
 - 原 ADR-0019（verification / hypothesis 取证 / merge / impact / consistency 五合一为 judgment）→ §3
 - 原 ADR-0020（partition 变 prompt 驱动）→ §4
 - 原 ADR-0021（贯穿 state 落 PipelineState）→ §5
-- 原 ADR-0016（RunnableConfig 承载 langgraph 原生机制）的**存活残余** → §6（其 HistoryStore 部分随 Slice 5 五合一删除，见 §3）
+- 原 ADR-0016（RunnableConfig 承载 langgraph 原生机制）的**存活残余** → §6（其 HistoryStore 部分随五合一删除，见 §3）
 
 配套术语见 `CONTEXT.md`「重构方向术语」；字段流向见 `docs/STATE.md` §1.2；模块边界与装配见 `docs/DEVELOPMENT.md` §1/§2。
 本 ADR 部分覆盖 ADR-0009（确定性切分，§4）、ADR-0011（adopted→corrected 回写幂等，§1）；ADR-0005（两层存储）与 ADR-0010（HITL-2 硬闸门）不动。
@@ -219,7 +219,7 @@ retrieval / rewrite / judgment / hypothesis_propose 节点读 `session_context` 
 
 ## 影响汇总
 
-- 拓扑（Slice 6 后）：`START → parse+partition → hitl1 → hypothesis_propose → retrieval → judgment → rewrite_loop → hitl2 → END`（hitl1 经条件边有有界打回回 `parse+partition`）。
+- 拓扑（重构后）：`START → parse+partition → hitl1 → hypothesis_propose → retrieval → judgment → rewrite_loop → hitl2 → END`（hitl1 经条件边有有界打回回 `parse+partition`）。
 - 字节级还原承诺范围收窄为「未触达段逐字节忠实」；被触达段由 rewrite_loop 提议、hitl2 确认。
 - HITL-2 仍为唯一决策闸门（ADR-0010）；hitl1 为 partition 确认闸门 + 有界打回。
 - 删除 ReAct 独占 infra（`tool_protocol.py` / `retrieval_tool.py` / `history.py`）；judgment 吃预取 citations、串联 merge/impact/consistency 纯函数。

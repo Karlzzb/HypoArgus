@@ -1,7 +1,7 @@
 """交互式 CLI HITL 闸门——HITL-1 / HITL-2 闸门 seam 的第二 adapter。
 
 contract 层（``Hitl1Gate`` / ``Hitl2Gate`` Protocol）是 provider-free 的同步注入闸门；
-真实 ``interrupt`` + ``Command(resume)`` + checkpointer 属后续切片（dev-guide §7/§8）。
+真实 ``interrupt`` + ``Command(resume)`` + checkpointer 属后续切片（DEVELOPMENT.md §11）。
 本模块是「第二个 adapter」：在终端把树 / 呈现交给**人**、用 ``input()`` 收回**纯数据决策**，
 交给 ``confirm`` 校验应用。决策合法性最终仍由各 ``confirm`` 在深拷贝上兜底（HITL-1
 逐 op ``validate_tree``、HITL-2 状态机）——gate 自身只做**输入解析 + 软校验**，避免
@@ -207,7 +207,7 @@ class CliHitl1Gate:
 class CliHitl2Gate:
     """交互式 HITL-2 硬闸门：逐被触达段呈现原文 × 提议重写 → 确认 / 编辑 / 驳回。
 
-    Slice 6（ADR-0017）重定位 hitl2 为终稿文本确认闸门后，本闸门呈现的是
+    重构后重定位 hitl2 为终稿文本确认闸门后，本闸门呈现的是
     ``proposed_rewrites`` 中的被触达段（``ParagraphRewriteReview``：原文 × 提议重写
     文本），逐段产一个段级三态 op：
 

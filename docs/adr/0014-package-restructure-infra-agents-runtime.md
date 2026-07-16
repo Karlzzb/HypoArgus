@@ -24,7 +24,7 @@
 2. **domain 核心平铺留 `src/` 根**：`domain` / `partition` / `raw_store` / `status_machine` / `tree_invariants` 保持顶层模块。
    它们是被全部测试与全部 Agent 依赖的共享真相源，平铺避免给共享依赖套子包前缀。
 3. **三子包承载非领域逻辑**：
-   - `infra/`：基础设施 seam（工具协议、历史 seam、检索协议与适配器）及后续 #3/#4 切片的落脚点。
+   - `infra/`：基础设施 seam（工具协议、历史 seam、检索协议与适配器）。
    - `agents/`：每个 Agent 一个自洽单元。
      有 seam 的 Agent（`parser`/`verification`/`hypothesis`/`hitl1`/`hitl2`）拆为子包 `agents/<name>/{contract.py, agent.py, __init__.py}`——`contract.py` 放 Protocol + Fake，`agent.py` 放纯函数。
      纯函数 Agent（`merge`/`impact`/`consistency`/`writeback`）保持单模块 `agents/<name>.py`。
@@ -45,7 +45,7 @@
 
 ## 影响
 
-- 物理重构为独立切片（Slice A），纯文件搬移 + import 重写 + `pyproject` 调整，零逻辑变更，以字节级还原 e2e 为锚。
-- 后续 Slice B（工具/历史 seam）与 Slice C（manifest 装配）直落终位，无需二次搬迁。
+- 物理重构：纯文件搬移 + import 重写 + `pyproject` 调整，零逻辑变更，以字节级还原 e2e 为锚。
+- manifest 装配与各 seam 直落终位，无需二次搬迁。
 - 全部测试 import 由 `hypoargus.X` 重写为裸名 `X` / `agents.X` / `runtime.X` / `infra.X`，属机械改动。
 - `ADR-0005`（两层存储）与 `ADR-0010`（HITL-2 硬闸门）不受影响——本 ADR 只动物理布局与装配机制，不动领域不变量。

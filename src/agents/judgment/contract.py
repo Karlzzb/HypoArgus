@@ -1,11 +1,11 @@
-"""裁决 Agent 契约：judgment seam + LLM Protocol + 离线 Fake 桩（PRD §5、ADR-0017、Slice 5）。
+"""裁决 Agent 契约：judgment seam + LLM Protocol + 离线 Fake 桩（PRD §5、ADR-0017）。
 
 ADR-0014 子包拆分：``contract.py`` 放 Protocol + Fake 桩 + verdict 模型，``agent.py``
 放裁决编排纯函数。``JudgmentLlmClient`` 为注入 seam：真实适配器用
-``with_structured_output(_JudgmentEnvelope)``（dev-guide §6.3）；本切片提供
+``with_structured_output(_JudgmentEnvelope)``（DEVELOPMENT.md §11）；本切片提供
 ``FakeJudgmentLlmClient`` 供离线单测——provider-free、确定、可断言。
 
-Slice 5 五合一（ADR-0017）：检索（retrieval 节点产 citations）之后的五节点（verification
+五合一（ADR-0017）：检索（retrieval 节点产 citations）之后的五节点（verification
 ReAct 取证 / hypothesis 取证 / merge / impact / consistency）并入单一 ``judgment`` 节点。
 本 seam 吃 ``citations`` 判 per-argument / per-hypothesis 终态，再由 ``agent.py`` 按序调用
 **不动**的 ``merge`` / ``impact`` / ``consistency`` 纯函数、整树写回 ``argument_tree``
@@ -112,13 +112,13 @@ class JudgmentOutcome(BaseModel):
 
 
 class JudgmentLlmClient(Protocol):
-    """裁决 LLM seam（Slice 5 五合一）。
+    """裁决 LLM seam（五合一）。
 
     - :meth:`judge`：吃 ``argument_tree`` + ``hypotheses`` + ``citations`` + ``paragraph_list``
       + 贯穿背景（``session_context`` / ``query_time_range``），产 per-argument / per-hypothesis
       终态裁决（:class:`JudgmentResult`）。
 
-    真实适配器用 ``with_structured_output(_JudgmentEnvelope)`` 保证结构合法（dev-guide §6.3），
+    真实适配器用 ``with_structured_output(_JudgmentEnvelope)`` 保证结构合法（DEVELOPMENT.md §11），
     并据段 ``original_content`` + 节点 ``argument_type`` + 假说 ``text`` + citation 片段推理。本 seam
     不绑任何 provider。输入压缩铁律（PRD §7）：T-02 prompt 按段聚合节点——每段 ``original_content``
     出现一次、节点只列 ``argument_id`` / ``argument_type``（不再逐节点 ``Argument.content``）+ 假说

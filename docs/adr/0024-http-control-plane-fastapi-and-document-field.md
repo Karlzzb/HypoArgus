@@ -6,13 +6,13 @@ accepted (2026-07-14)
 
 ## Context
 
-T-04 落地 `src/api_layer/` 的 HTTP 控制面（`POST /api/agent/run` + `GET /api/agent/graph` +
+落地 `src/api_layer/` 的 HTTP 控制面（`POST /api/agent/run` + `GET /api/agent/graph` +
 会话所有权 + `session_locks` + `pause_meta`）。落地前需收敛两个任务文档留下的待定项：
 
 1. **Web 框架选型**。任务文档明确「Web 框架选 async-native（推荐 FastAPI/Starlette……选型记入
    ADR 或 PRD §1.5 待定项收敛）」。控制面的核心驱动是 ``ainvoke`` / ``aget_state`` /
-   ``Command(resume=...)``（均 async），HITL 暂停 / 续跑 over HTTP 是请求级 async I/O，且 T-05
-   起的翻译层（``astream_events``）与 T-06 的 WS 都需要 async-native 框架。
+   ``Command(resume=...)``（均 async），HITL 暂停 / 续跑 over HTTP 是请求级 async I/O，且翻译层
+   （``astream_events``）与 WS 都需要 async-native 框架。
 2. **fresh-run 的文档来源**。任务文档列出的 ``/api/agent/run`` 入参为 ``session_id`` / ``query``
    / ``human_response`` / ``biz_trace_id``，**未含文档本体**。但 ``Orchestrator.run_with_report``
    要求 ``original_doc: bytes``（与 ``session_context`` 同入 START、全链只读）——业务纯函数
@@ -26,7 +26,7 @@ T-04 落地 `src/api_layer/` 的 HTTP 控制面（`POST /api/agent/run` + `GET /
    - async-native：原生 ``async def`` 路由直驱 ``ainvoke`` / ``aget_state``，不经 sync-bridge。
    - pydantic v2 请求 / 响应模型与仓内既有 ``BaseModel`` 契约（``Hitl*Reply`` / ``Hitl*Question``）
      同源，``with_structured_output`` 链路无阻抗。
-   - T-06 WS 由 ``starlette.websockets`` 承载（同栈，无第二框架）。
+   - WS 由 ``starlette.websockets`` 承载（同栈，无第二框架）。
    - 不引入 Flask / Django（sync，需 ``run_in_threadpool`` 桥接 async 图，反复杂）。
 2. **fresh-run 请求体新增 ``document: str`` 字段**（resume 路径不消费、可缺省）。
    - ``query`` 仍为修订提示词（写入 ``session_context.user_prompt``，与 ``original_doc`` 同入 START）。
@@ -54,7 +54,7 @@ T-04 落地 `src/api_layer/` 的 HTTP 控制面（`POST /api/agent/run` + `GET /
 - ``SessionCacheBase`` 为 side-meta 抽象基类（``pause_meta`` / ``session_owner`` / ``session_locks``），
   **不含** ``get_state`` / ``save_state``（state 是 checkpointer 契约，ADR-0022）。两个 adapter
   （``InMemorySessionCache`` 单测 + ``PostgresSessionCache`` 生产）使之成为真 seam。
-- ``GET /api/agent/graph`` 复用 T-02 ``build_graph_view``，HTTP 层不另写拓扑（单一源不漂移）。
-- T-06 接 WS 时复用本切片的 ``aget_state`` 判定（NEED_HUMAN_INPUT 同源，ADR-0023 不变量）。
+- ``GET /api/agent/graph`` 复用 ``build_graph_view``，HTTP 层不另写拓扑（单一源不漂移）。
+- 接 WS 时复用本切片的 ``aget_state`` 判定（NEED_HUMAN_INPUT 同源，ADR-0023 不变量）。
 - ``document`` 字段是本切片相对任务文档入参清单的唯一显式增量；二期若 PRD §5 收敛出独立文档传输
   契约，可据此再调整（不破坏 fresh/resume 二态判定）。

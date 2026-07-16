@@ -28,7 +28,7 @@
 | `hypotheses` | `dict[str, list[Hypothesis]]` | `assembly.py:645`（`state.get("hypotheses", {})`） | `orchestrator.py:156`，reducer `_merge_dict` | hypothesis_propose（唯一写者） | 缺省 `{}`。`Hypothesis.text` 是检索的 query 输入（`RetrievalFn` docstring `assembly.py:168-169`）。 |
 | `query_time_range` | `TimeRange` | `assembly.py:646`（`state.get("query_time_range", DEFAULT_QUERY_TIME_RANGE)`） | `orchestrator.py:153`，无 reducer | parse+partition（桩值） | 缺省 `DEFAULT_QUERY_TIME_RANGE`。 |
 | `session_context` | `SessionContext` | `assembly.py:647`（`state["session_context"]`） | `orchestrator.py:152`，无 reducer | entry 注入（`runtime/run_real.py`） | **必填键**，直接索引（非 `.get`）。全链只读。 |
-| `paragraph_list` | `list[ParagraphRecord]` | `assembly.py:648`（`state.get("paragraph_list", [])`） | `orchestrator.py:154`，reducer `merge_paragraph_list` | parse+partition / hitl1 | 缺省 `[]`。PRD §Q2 最小放宽：补回段原文通道（`Argument` 无文本字段，ADR-0025 代价）。forward `target_text` 取段 `original_content` 属 Slice 2 适配器侧构造，本节点只读穿下去。与 judgment / hypothesis_propose / rewrite_loop 同 family。 |
+| `paragraph_list` | `list[ParagraphRecord]` | `assembly.py:648`（`state.get("paragraph_list", [])`） | `orchestrator.py:154`，reducer `merge_paragraph_list` | parse+partition / hitl1 | 缺省 `[]`。PRD §Q2 最小放宽：补回段原文通道（`Argument` 无文本字段，ADR-0025 代价）。forward `target_text` 取段 `original_content` 属适配器侧构造，本节点只读穿下去。与 judgment / hypothesis_propose / rewrite_loop 同 family。 |
 
 ### 支撑类型定义
 

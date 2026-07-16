@@ -1,4 +1,4 @@
-"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0017、Slice 5）。
+"""裁决 Agent：judgment 五合一节点（PRD §5、ADR-0017）。
 
 检索（retrieval 节点产 citations）之后的五节点（verification ReAct 取证 / hypothesis 取证 /
 merge / impact / consistency）并入单一 ``judgment`` 节点。本模块吃 ``citations`` 判
@@ -6,7 +6,7 @@ per-argument / per-hypothesis 终态，再按序调用**不动**的 ``merge`` / 
 ``consistency`` 纯函数、整树写回 ``argument_tree``（单写者，故裁撤
 ``argument_credibility`` partial channel）。
 
-编排顺序（控制流落代码而非 prompt 散文，dev-guide §0 铁律）：
+编排顺序（控制流落代码而非 prompt 散文，DEVELOPMENT.md §11 铁律）：
 
 1. ``llm.judge(...)`` 取 per-argument / per-hypothesis 终态（:class:`JudgmentResult`）。
 2. 构造局部 ``argument_credibility`` dict（verdict↔:class:`ArgumentStatus`）+
@@ -22,7 +22,7 @@ per-argument / per-hypothesis 终态，再按序调用**不动**的 ``merge`` / 
 ``query_time_range`` 背景；**不回灌**
 ``status`` / ``argument_weight`` / ``parent_id`` / ``children_ids`` / ``issue_tags`` /
 ``merge_decision``——这些由本模块在调用前后管理、不进 prompt。真实 prompt 构造属
-:mod:`infra.llm_adapters` 的 ``QwenJudgmentLlmClient``（Slice 5 cycle 7）；本模块的
+:mod:`infra.llm_adapters` 的 ``QwenJudgmentLlmClient``；本模块的
 :func:`judge_and_adjudicate` 与 provider 无关、可独立单测。
 
 状态语义（ADR-0008 对称）：原文侧 ``credible / doubtful / error`` ↔ 假说侧

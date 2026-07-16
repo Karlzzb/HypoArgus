@@ -1,6 +1,6 @@
 """检索 Agent 编排：真实适配器 ``real_retrieval`` + daemon worker loop + 延迟单例。
 
-PRD §Q4（loop-affine 纠偏）· Slice 2：vendored V12 的 ``VolcanoWebSearchClient`` /
+PRD §Q4（loop-affine 纠偏）：vendored V12 的 ``VolcanoWebSearchClient`` /
 ``BishengRetrieveClient`` 首次请求即绑当时 loop（loop-affine）。故「singleton runtime + 每次节点
 调用 ``asyncio.run(runtime.ainvoke(...))``」会坏——spine 里 ``create_real_agents`` 跑在
 uvicorn loop、client 绑之；retrieval 节点在 LangGraph threadpool worker 无 loop、``asyncio.run``

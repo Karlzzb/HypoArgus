@@ -4,7 +4,6 @@
 
 已接受（2026-07-16）。
 本 ADR 捕获「把已存在的事实核验子智能体 SearchAgent V12 迁入主智能体作真实检索后端」的全部架构决议。
-落地切片（commit）：`a6d0dc1`（Slice 0 vendor+carve-out）/ `4d5bd51`（Slice 1 RetrievalFn 5 输入）/ `c5a5d3d`（Slice 2 真实适配器）/ `184d39b`（Slice 3 real_llm 全链测试）/ `6d93dd9`（Slice 4 本 ADR + 文档同步）；5 切片全部落地。
 字段流向见 `docs/STATE.md` §3.1（retrieval 行 / `citations` 行）；术语见 `CONTEXT.md`「智能体角色」。
 取代关系：无；承接 ADR-0025 既成代价（`Argument` 无文本字段）的下游消费面，并为 ADR-0014 的 retrieval 子包补齐。
 
@@ -131,7 +130,7 @@ state 里无 `trace_id` channel。
 - `request_id ← session_context.session_id`（运行时必非空；空则 mint uuid 兜底，`contract.py:189`）。
 - `document_id ← "doc-" + blake2b(joined_paragraph_original_content, digest_size=12).hexdigest()`（`contract.py:145-156`）。
   内容指纹、确定性、跨段稳定、跨 resume 稳定；只是 hash 串不外泄原文。
-  注：因 Slice 1 把 retrieval 节点输入锁定为 5 输入、`original_doc` 不在其中，指纹改由 `paragraph_list.original_content` 拼接计算——满足 §Q9 确定性/稳定/不外泄原文三意图。
+  注：因 retrieval 节点输入锁定为 5 输入、`original_doc` 不在其中，指纹改由 `paragraph_list.original_content` 拼接计算——满足 §Q9 确定性/稳定/不外泄原文三意图。
 - `user_id ← session_context.user_id or None`（可选，无校验风险，不用兜底，`contract.py:190`）。
 
 ## 权衡

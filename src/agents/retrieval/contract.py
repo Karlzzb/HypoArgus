@@ -1,6 +1,6 @@
 """检索 Agent 契约：retrieval 真实适配器 seam + runtime Protocol + 映射纯函数 + 离线 Fake 桩。
 
-PRD §Q1/Q3/B1 · Slice 2：把 vendored SearchAgent V12 作为真实检索 provider 接入 retrieval
+PRD §Q1/Q3/B1 把 vendored SearchAgent V12 作为真实检索 provider 接入 retrieval
 seam（填 manifest 的 ``real=None`` 空位，与 judgment 同形管理）。本子包拆三模块（ADR-0014）：
 
 - ``contract.py``（本文件）：注入 seam ``RetrievalRuntime`` Protocol + 映射纯函数
@@ -146,7 +146,7 @@ def _document_fingerprint(paragraph_list: list[ParagraphRecord]) -> str:
     """内容指纹：``"doc-" + blake2b(段原文拼接, digest_size=12)``（PRD §Q9）。
 
     确定性、跨段 / 跨 resume 稳定、只 hash 串不外泄原文。``original_doc`` bytes 不在
-    ``RetrievalFn`` 5 输入内（Slice 1 锁定 5 输入、未含 ``original_doc``），故从
+    ``RetrievalFn`` 5 输入内（锁定 5 输入、未含 ``original_doc``），故从
     ``paragraph_list.original_content`` 拼接派生——paragraph_list 是 original_doc 的分区，
     拼接是其等价内容指纹，满足 §Q9 全部意图（确定性 / 稳定 / 不泄原文）。
     """

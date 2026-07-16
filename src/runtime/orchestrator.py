@@ -1,7 +1,7 @@
 """全局调度中枢（Orchestrator，PRD §13、ADR 拓扑 §1）。
 
 用 LangGraph ``StateGraph`` 把整条流水线落成一张可执行的状态图——控制流落边而非
-prompt 散文（见 ``docs/langgraph-dev-guide.md``）。数据在子环节间经 state channel
+prompt 散文（见 ``docs/DEVELOPMENT.md`` §11）。数据在子环节间经 state channel
 路由、无跨模块直接调用；流水线严格单向——唯 ``hitl1`` 经条件边有**有界打回**
 （``hitl1 → parse+partition``，max retries 默认 3，超限向前 + 贴 ``partition_retry_exhausted``，
 ADR-0017），其余 stage 绝不打回。
@@ -9,17 +9,17 @@ ADR-0017），其余 stage 绝不打回。
 ``parse+partition →〖HITL-1〗→ hypothesis_propose → retrieval → judgment
 → rewrite_loop →〖HITL-2〗→ END``（HITL-1 打回边：``hitl1 --REPLAY--> parse+partition``）
 
-Slice 6（ADR-0017）后，judgment 之后的终稿产出由 ``writeback``（确定性纯函数回写）改为
+重构后，judgment 之后的终稿产出由 ``writeback``（确定性纯函数回写）改为
 ``rewrite_loop``（逐段 LLM 提议重写）+ ``hitl2``（终稿文本确认闸门）：rewrite_loop 对被触达段
 （supported 假说 / 命中 citations）产 ``proposed_rewrites``、未触达段省略；hitl2 逐段确认 /
 编辑 / 驳回 ``proposed_rewrites`` 后拼装 ``final_document``（确认→提议文本、驳回 / 未触达→
 逐字节原文）。``writeback`` 节点裁撤；未触达段逐字节忠实不变。hypothesis_propose / retrieval
 各自把 partial 更新写入**专用 channel**（``hypotheses`` / ``citations``），由 ``judgment_node``
 读之判终态后整树写回 ``argument_tree``——避免多线路整节点 upsert 互相覆盖、丢 ``status``
-或 ``candidate_hypotheses``（dev-guide §2.2 铁律：共享可变状态换成带 reducer 的 channel）。
+或 ``candidate_hypotheses``（DEVELOPMENT.md §11 铁律：共享可变状态换成带 reducer 的 channel）。
 
 本切片 HITL 仍为同步注入闸门（不打断、不接 checkpointer）；真实 ``interrupt`` +
-``Command(resume)`` + checkpointer 属后续切片（dev-guide §7、§8）。终稿拼装幂等续跑的崩溃
+``Command(resume)`` + checkpointer 属后续切片（``docs/DEVELOPMENT.md`` §11 interrupt 三坑、ADR-0022）。终稿拼装幂等续跑的崩溃
 恢复入口见 :meth:`Orchestrator.resume_rewrite`（issue #11）。
 
 **stage 降级兜底**（异常就地置错误 + 日志 + 单向向前，PRD §13）与各 stage 的落图闭包
@@ -82,7 +82,7 @@ def merge_argument_tree(
     channel（``hypotheses`` / ``citations``），由 ``judgment_node`` 读之判终态、再按序调
     merge/impact/consistency 纯函数后**整树写回** ``argument_tree``（单写者，故裁撤
     ``argument_credibility`` partial channel）——避免多线路整节点 upsert 互相覆盖、丢
-    ``status`` 或 ``candidate_hypotheses``（dev-guide §2.2 铁律：共享可变状态换成带 reducer
+    ``status`` 或 ``candidate_hypotheses``（DEVELOPMENT.md §11 铁律：共享可变状态换成带 reducer
     的 channel）。
     """
 
@@ -216,7 +216,7 @@ def default_pipeline() -> tuple[StageSpec, ...]:
     7 个 stage。
 
     parse+partition → hitl1 → hypothesis_propose → retrieval → judgment → rewrite_loop
-    → hitl2 → END（Slice 6 后，writeback 裁撤、终稿改由 rewrite_loop 提议 + hitl2 确认拼接
+    → hitl2 → END（重构后，writeback 裁撤、终稿改由 rewrite_loop 提议 + hitl2 确认拼接
     落地）。manifest 是 agent 身份（stub/real）与 stage 拓扑（deps/build）的单一数据源
     （ADR-0014）——加 Agent 只需新增子包 + ``Agents`` 字段 + manifest 条目（触点 3）。
     """

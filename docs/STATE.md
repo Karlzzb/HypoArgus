@@ -37,8 +37,8 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 **channel 三类**（理解路由的关键）：
 
 - **整树 channel**（`argument_tree`）：多写者、带 `merge_argument_tree` reducer，按 `argument_id` 同 id 覆盖、新 id 追加。
-  Slice 5 五合一后 judgment 为检索之后的**唯一**整树写者（吃 `hypotheses` / `citations` partial 判终态、再按序调 merge/impact/consistency 纯函数后整树写回），故裁撤 `argument_credibility` partial channel（ADR-0017）。
-  Slice 6（ADR-0017）后 hitl2 不再写 `argument_tree`（按段落 / 文本工作、与 argument 状态解耦），`argument_tree` 在 judgment 之后冻结——rewrite_loop 只读用于触达判定；hitl2 不碰 `argument_tree`（只读 `original_paragraphs` + `proposed_rewrites` 拼终稿）。
+  五合一后 judgment 为检索之后的**唯一**整树写者（吃 `hypotheses` / `citations` partial 判终态、再按序调 merge/impact/consistency 纯函数后整树写回），故裁撤 `argument_credibility` partial channel（ADR-0017）。
+  重构后 hitl2 不再写 `argument_tree`（按段落 / 文本工作、与 argument 状态解耦），`argument_tree` 在 judgment 之后冻结——rewrite_loop 只读用于触达判定；hitl2 不碰 `argument_tree`（只读 `original_paragraphs` + `proposed_rewrites` 拼终稿）。
 - **段落聚合根 channel**（`paragraph_list`，ADR-0025）：带 `merge_paragraph_list` reducer（按 `paragraph_id` upsert、保持首见段序）；写者=parse+partition（创建 / 打回重跑整列表）+ hitl1（EDIT 同步 `argument_tree_ids` 写回、SKIP/ACCEPT/REPLAY 原样深拷；upsert reducer 保证多写者不重复不丢序）；多读者（hitl1 / hypothesis_propose / judgment / rewrite_loop / consistency / CLI / checkpoint，经 `argument_id → ParagraphRecord` 反查取该段 `original_content` + `summary`）。承载段落↔节点正向一对多关系（`argument_tree_ids`），原句每段一份（取代 ADR-0005 决策 2 的节点级存原句）。
 - **partial channel**（`hypotheses` / `citations` / `proposed_rewrites`）：单写者 + 单读者。
   hypothesis_propose 产候选假设列表（`list[Hypothesis]`、`status=pending`）、retrieval 产 citations（`list[Source]`）、rewrite_loop 产 `proposed_rewrites`（`paragraph_id → 提议重写文本`，仅被触达段），judgment 读前两者判终态后整树写回 `argument_tree`、hitl2 读 `proposed_rewrites` 拼装 `final_document`。**partial 不塞整节点**——名字即内容：`hypotheses` 的 value 就是假设列表本身、`citations` 的 value 就是 `Source` 列表本身、`proposed_rewrites` 的 value 就是提议文本本身。
@@ -55,22 +55,22 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 
 ### 1.2 重构方向新增字段（ADR-0017·已落地）
 
-下表为流水线重构（ADR-0017）所接受的契约。Slice 1–6 已全部落地
+下表为流水线重构（ADR-0017）所接受的契约。已全部落地
 （`session_context` / `query_time_range` / `citations` / `partition_retry_count` /
-`hitl1_route` 均已并入 `PipelineState`；`proposed_rewrites` Slice 6 落地后已并入 §1 主表，
+`hitl1_route` 均已并入 `PipelineState`；`proposed_rewrites` 已并入 §1 主表，
 `paragraph_list` ADR-0025 落地后已并入 §1 主表，本小节不再重复其定义）。
 本小节为过渡期描述点，遵循「单一定义点、避免漂移」维护约定（已并入 §1 主表者此处不再赘述）。
 术语见 `CONTEXT.md`「重构方向术语」；ADR 偏离见 `docs/adr/0017-pipeline-refactor-slices-1-6.md`。
 
-| 字段 | 类型 | reducer | 来源（创建者） | 谁读 | 证据 / 落地 slice |
+| 字段 | 类型 | reducer | 来源（创建者） | 谁读 | 证据 |
 |---|---|---|---|---|---|
-| `session_context` | `SessionContext`（`session_id` / `user_id` / `current_time: datetime` / `user_prompt`） | —（单写者，无冲突） | `【用户】` 入口注入（`runtime/run_real.py`，与 `original_doc` 同入 START） | retrieval / judgment / hypothesis_propose / rewrite_loop（全链只读，进 LLM 背景） | ADR-0017；Slice 1 |
-| `query_time_range` | `TimeRange`（`start: date \| None` / `end: date \| None` / `rationale: str`） | —（单写者） | `【代码】` `parse+partition` 注入桩值（`TimeRange(start=2025, end=2026, rationale="默认值·真实识别待后续")`，不真实调 LLM） | retrieval / judgment / rewrite_loop | ADR-0017；Slice 1（桩），真实识别 Out of Scope |
+| `session_context` | `SessionContext`（`session_id` / `user_id` / `current_time: datetime` / `user_prompt`） | —（单写者，无冲突） | `【用户】` 入口注入（`runtime/run_real.py`，与 `original_doc` 同入 START） | retrieval / judgment / hypothesis_propose / rewrite_loop（全链只读，进 LLM 背景） | ADR-0017 |
+| `query_time_range` | `TimeRange`（`start: date \| None` / `end: date \| None` / `rationale: str`） | —（单写者） | `【代码】` `parse+partition` 注入桩值（`TimeRange(start=2025, end=2026, rationale="默认值·真实识别待后续")`，不真实调 LLM） | retrieval / judgment / rewrite_loop | ADR-0017（桩），真实识别 Out of Scope |
 | `citations` | `dict[str, list[Source]]`（key 为 `argument_id` 如 `n0001`/`bg-...` 或 `hypothesis_id` 如 `h-...`，两套 id 不冲突） | `_merge_dict`（单写者无冲突） | `【代码】` retrieval（真实后端已落地：vendored SearchAgent V12，ADR-0026；未注入 `retrieval_runtime` 时退桩产空 citations） | judgment / rewrite_loop | ADR-0017；ADR-0026（真实后端已接） |
-| `partition_retry_count` | `int` | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（打回 +1；超限不 +1） | hitl1 自身（循环续传计数） | ADR-0017；Slice 2 |
-| `hitl1_route` | `str`（`"continue"` / `"replay"`） | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（据 `confirm_partition` 产 `Hitl1Outcome.route`） | hitl1 条件边 `_hitl1_route`（ADR-0017 受控打回边） | ADR-0017；Slice 2 |
+| `partition_retry_count` | `int` | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（打回 +1；超限不 +1） | hitl1 自身（循环续传计数） | ADR-0017 |
+| `hitl1_route` | `str`（`"continue"` / `"replay"`） | —（单写者，覆盖） | `【代码】` hitl1 build 闭包（据 `confirm_partition` 产 `Hitl1Outcome.route`） | hitl1 条件边 `_hitl1_route`（ADR-0017 受控打回边） | ADR-0017 |
 
-> `proposed_rewrites`（Slice 6·rewrite_loop）已并入 §1 主表（单写者=rewrite_loop、读者=hitl2、reducer=`_merge_dict`）。
+> `proposed_rewrites`（rewrite_loop）已并入 §1 主表（单写者=rewrite_loop、读者=hitl2、reducer=`_merge_dict`）。
 
 **channel 类别**（沿用 §1 三类划分）：
 
@@ -81,7 +81,7 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 - `session_context` 以单一嵌套对象流转，**不污染顶层 channel**（不拆 `session_id` / `user_id` / ... 为顶层字段，ADR-0017）。
 
 > `hypotheses` channel 形状：propose 阶段写入的 `Hypothesis.status` 为 `pending`，由 judgment 取证后落终态（`supported` / `doubtful` / `refuted`）——见 ADR-0017。
-> 原 `writeback` 产出的 `final_document` 已改由 hitl2 拼装落地（ADR-0017），`writeback` 节点裁撤——Slice 6 已落地。终稿拼装幂等续跑入口为 `Orchestrator.resume_rewrite(resolved_rewrites, original_paragraphs)`。
+> 原 `writeback` 产出的 `final_document` 已改由 hitl2 拼装落地（ADR-0017），`writeback` 节点裁撤——已落地。终稿拼装幂等续跑入口为 `Orchestrator.resume_rewrite(resolved_rewrites, original_paragraphs)`。
 
 ## 2. 论证树节点形状（`argument_tree` channel 的元素）
 
@@ -97,11 +97,11 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 | `parent_id` | `str \| None` | `【代码】` parse 据 LLM `parent_index` 解析（越界/自指→根）；`【HITL】` hitl1 `ReparentOp` | 否 | `agents/parser/agent.py` |
 | `children_ids` | `list[str]` | `【代码】` parse 回填 + 断环 `_break_cycles` | 否 | `agents/parser/agent.py` |
 | `argument_weight` | `int 0-100` | `【LLM】` parse 提议 → `【代码】` clamp 至 [0,100]（影子恒 0）；HITL-1 合并时按规则调 | 否 | `agents/parser/agent.py` |
-| `status` | `ArgumentStatus` | `【LLM】` judgment 取证终判（`credible/doubtful/error`）；`【代码】` impact 判 `invalid` | 否（不进任何 LLM） | judgment `agents/judgment/agent.py`；impact `agents/impact.py`。**注**：Slice 6 后 `adopted`/`corrected` 在新流程（rewrite_loop + hitl2 终稿闸门）不再被写——hitl2 按段 / 文本工作、与 argument 状态解耦；`adopted`/`corrected`/`adopted_hypothesis_id` 等 domain 字段保留不删（minimizing domain churn） |
-| `issue_tags` | `list[str]` | `【代码】` merge 追加 `conflict`；`【代码】` consistency 扫贴；`【代码】` impact 追加 `weakening`（三者经 judgment 串联调用） | 否 | `agents/merge.py`；`agents/consistency.py`；`agents/impact.py`。**注**：原 writeback 失败贴 `writeback_error` 已随 writeback 裁撤移除（Slice 6） |
+| `status` | `ArgumentStatus` | `【LLM】` judgment 取证终判（`credible/doubtful/error`）；`【代码】` impact 判 `invalid` | 否（不进任何 LLM） | judgment `agents/judgment/agent.py`；impact `agents/impact.py`。**注**：重构后 `adopted`/`corrected` 在新流程（rewrite_loop + hitl2 终稿闸门）不再被写——hitl2 按段 / 文本工作、与 argument 状态解耦；`adopted`/`corrected`/`adopted_hypothesis_id` 等 domain 字段保留不删（minimizing domain churn） |
+| `issue_tags` | `list[str]` | `【代码】` merge 追加 `conflict`；`【代码】` consistency 扫贴；`【代码】` impact 追加 `weakening`（三者经 judgment 串联调用） | 否 | `agents/merge.py`；`agents/consistency.py`；`agents/impact.py`。**注**：原 writeback 失败贴 `writeback_error` 已随 writeback 裁撤移除 |
 | `candidate_hypotheses` | `list[Hypothesis]` | `【LLM】` hypothesis_propose 产 pending 假说；`【LLM】` judgment 取证落终态后经 merge 裁剪存活 | 否（propose 只把 `argument_type` + 段 `original_content` + `summary` 进 prompt；judgment 只把假说 `text` 进 prompt；rewrite_loop 只读用于触达判定、不回灌 `candidate_hypotheses`） | `agents/hypothesis/agent.py`；`agents/judgment/agent.py`；`agents/rewrite_loop/agent.py` |
 | `merge_decision` | `MergeDecision \| None` | `【代码】` merge 12 格矩阵裁决；`【代码】` impact 复用 supported 假设激活（均经 judgment 串联调用） | 否 | `agents/merge.py`；`agents/impact.py` |
-| `adopted_hypothesis_id` | `str \| None` | （新流程不写；原 `【HITL】` hitl2 `AdoptOp` 立即持久化，随 Slice 6 hitl2 重定位移除） | 否 | domain 字段保留不删 |
+| `adopted_hypothesis_id` | `str \| None` | （新流程不写；原 `【HITL】` hitl2 `AdoptOp` 立即持久化，随 hitl2 重定位移除） | 否 | domain 字段保留不删 |
 
 ### 2.1 `Hypothesis`（`candidate_hypotheses` 元素，`domain.py`）
 
@@ -116,7 +116,7 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 ### 2.2 状态机（`ArgumentStatus` / `HypothesisStatus`）
 
 `ArgumentStatus`（`domain.py`）：`unverified → pending_verification → (credible | doubtful | error) → adopted → corrected`；`invalid` 由 impact 对上层论点单独判定。回写失败停留 `adopted` 可重试（ADR-0011）。
-**注（Slice 6）**：新流程（rewrite_loop + hitl2 终稿闸门）按段落 / 文本工作、与 argument 的 `status` / `merge_decision` 解耦——`adopted` / `corrected` / `adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）；终稿拼装的幂等续跑入口改为 `Orchestrator.resume_rewrite(resolved_rewrites, original_paragraphs)`（按段文本重推导，不再依赖 `adopted_hypothesis_id`）。
+**注**：新流程（rewrite_loop + hitl2 终稿闸门）按段落 / 文本工作、与 argument 的 `status` / `merge_decision` 解耦——`adopted` / `corrected` / `adopted_hypothesis_id` 在新流程不再被写（domain 字段保留不删）；终稿拼装的幂等续跑入口改为 `Orchestrator.resume_rewrite(resolved_rewrites, original_paragraphs)`（按段文本重推导，不再依赖 `adopted_hypothesis_id`）。
 `HypothesisStatus`（`domain.py`）：`pending → (supported | doubtful | refuted)`，与原文侧 `credible/doubtful/error` 对称。
 `MergeAction`（`domain.py`）：`keep/replace/rewrite/supplement/conflict/freeze`（ADR-0006 12 格矩阵）。
 
@@ -153,9 +153,9 @@ reducer 见 `runtime/orchestrator.py`（`merge_argument_tree` / `merge_paragraph
 | rewrite_loop | `argument_tree` / `citations` / `paragraph_list` / `session_context` / `query_time_range` | `proposed_rewrites`[, `errors`] | **是** | `propose_rewrites(argument_tree, citations, paragraph_list, sc, qtr, llm) -> RewriteLoopOutcome` `agents/rewrite_loop/agent.py` |
 | hitl2 | `original_paragraphs` / `proposed_rewrites` | `final_document` | 否（HITL 桩） | `confirm(original_paragraphs, proposed_rewrites, gate) -> Hitl2Confirmation` `agents/hitl2/agent.py` |
 
-> **judgment 内部串联**（纯函数、逻辑不动）：`judge_and_adjudicate` 先 `llm.judge(...)` 取 per-argument / per-hypothesis 终态（T-02：按段聚合节点 + 段原文一次），构造局部 `argument_credibility` + 终态化 `hypotheses`，再按序调 `merge_with_partials` → `impact` → `consistency`（`consistency` 收 `paragraph_list`、按 `argument_tree_ids` 分组 + `original_content` 去重），整树写回 `argument_tree`（单写者，故裁撤 `argument_credibility` partial channel）。
+> **judgment 内部串联**（纯函数、逻辑不动）：`judge_and_adjudicate` 先 `llm.judge(...)` 取 per-argument / per-hypothesis 终态（按段聚合节点 + 段原文一次），构造局部 `argument_credibility` + 终态化 `hypotheses`，再按序调 `merge_with_partials` → `impact` → `consistency`（`consistency` 收 `paragraph_list`、按 `argument_tree_ids` 分组 + `original_content` 去重），整树写回 `argument_tree`（单写者，故裁撤 `argument_credibility` partial channel）。
 > merge/impact/consistency 均为确定性纯函数、无 LLM / 检索依赖，**不在拓扑中独立成 stage**——它们的串联编排收口于 judgment 节点（ADR-0017）。
-> rewrite_loop 只读 `argument_tree`（触达判定）+ `paragraph_list`（按 `argument_tree_ids` 解析段内节点、取该段 `original_content`）用于 LLM 输入，**不写 `argument_tree`**（Slice 6：与 argument 状态解耦，失败信号落 `errors` channel + 段回退原文）。hitl2 只读 `original_paragraphs` + `proposed_rewrites`，拼装 `final_document`，亦不写 `argument_tree`。
+> rewrite_loop 只读 `argument_tree`（触达判定）+ `paragraph_list`（按 `argument_tree_ids` 解析段内节点、取该段 `original_content`）用于 LLM 输入，**不写 `argument_tree`**（与 argument 状态解耦，失败信号落 `errors` channel + 段回退原文）。hitl2 只读 `original_paragraphs` + `proposed_rewrites`，拼装 `final_document`，亦不写 `argument_tree`。
 
 ### 3.2 各子智能体可改字段（一句话边界）
 

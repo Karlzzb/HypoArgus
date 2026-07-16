@@ -1,18 +1,18 @@
-"""线路 2 · 开药 Agent：投机生成（PRD §5、issue #5、ADR-0002/0007/0008/0011、Slice 3 重构）。
+"""线路 2 · 开药 Agent：投机生成（PRD §5、issue #5、ADR-0002/0007/0008/0011、重构）。
 
 对覆盖范围内的节点投机生成可证伪修订假设，产 ``list[Hypothesis]``（status=pending）。
 与体检线路（#4）**乐观并行**：生成不读取体检结论（ADR-0002 解法 A），两线路结果由双轨
 合并算子（#6）在并行层之后裁剪。
 
-**Slice 3 重构**：原「投机生成 → 逐条取证」两阶段被拆分——本节点仅 ``propose``、不取证；
-取证职责移出，推迟到 Slice 5 的 judgment 节点（吃 citations 判终态）。故假说产出即
+**重构**：原「投机生成 → 逐条取证」两阶段被拆分——本节点仅 ``propose``、不取证；
+取证职责移出，推迟到 judgment 节点（吃 citations 判终态）。故假说产出即
 ``pending``，由 judgment 落终态（``supported / doubtful / refuted``）。
 
 propose 读 ``paragraph_list``（段落聚合根），逐 argument 经 ``argument_tree_ids`` 反查该段
 ``original_content`` + ``summary`` 调 LLM——T-04：``Argument`` 不存原文字段，原文 / 摘要
 均取自段落聚合根（避免一次性 / 逐点喂入时上下文爆炸，PRD §7 输入压缩铁律）。
 
-控制流落代码而非 prompt 散文（``docs/langgraph-dev-guide.md`` §0 铁律）：
+控制流落代码而非 prompt 散文（``docs/DEVELOPMENT.md`` §11 铁律）：
 
 - 生成任何异常 → 该节点无假设（空列表，保守、不抛出、不卡死）。
 - ``content`` 永不被改写（节点文本只来自只读表，``parser`` / ``verification`` 先例）。
@@ -96,7 +96,7 @@ def propose_hypotheses(
       （保持空 ``candidate_hypotheses``，下游合并据此识别未开药节点）。
     - 逐 argument 经 ``argument_tree_ids`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
       ``summary``（原文 / 摘要取自段落聚合根，``Argument`` 不存原文字段），调 ``propose``；
-      产出的假设一律 ``status=pending``（取证落终态属 Slice 5 的 judgment）。
+      产出的假设一律 ``status=pending``（取证落终态属 judgment）。
     - ``status`` 不动（``status`` 由体检 #4 写回，``candidate_hypotheses``
       由本节点写回，二者在 reducer 处合流，供 #6 矩阵裁决）。
     - partial 只存候选假设列表本身，不再塞整节点——合流由 merge 按 ``argument_id`` 取本

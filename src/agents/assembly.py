@@ -75,7 +75,7 @@ if TYPE_CHECKING:
     # 仅类型：build 闭包返回 ``NodeFn``、``state: PipelineState`` 注解在
     # ``from __future__ import annotations`` 下为字符串、运行时不求值。运行时无
     # agents→runtime 依赖（依赖方向保持 runtime→agents），故用 TYPE_CHECKING 破环。
-    # RetrievalRuntime 仅类型——真实检索后端注入 seam（Slice 2）；避免桩路径 eager import
+    # RetrievalRuntime 仅类型——真实检索后端注入 seam；避免桩路径 eager import
     # vendored search_agent 栈（``create_real_agents(retrieval_runtime=...)`` 时才 lazy import）。
     from agents.retrieval import RetrievalRuntime
     from runtime.orchestrator import NodeFn, PipelineState
@@ -100,7 +100,7 @@ __all__ = [
 class ParseFn(Protocol):
     """论证结构解析（#2 接入真实 LLM 解析）。返回初始论证树 + 时间范围（桩）+ 段落摘要。
 
-    partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0017 / Slice 1）：
+    partition + parse 合并为单一 ``parse+partition`` 节点（PRD §1 / ADR-0017 / ）：
     partition 的纯代码切分 + 字节级自检由 build 闭包承担，本 Protocol 承载 parse 语义——
     产 ``ParseOutput``（argument_tree + query_time_range 桩 + paragraph_list（含 summary））。
     """
@@ -129,7 +129,7 @@ class Hitl1Fn(Protocol):
 
 
 class JudgmentFn(Protocol):
-    """裁决五合一节点（#4 取证 + #5 取证 + #6 merge + #7 impact + #8 consistency·Slice 5）。
+    """裁决五合一节点（#4 取证 + #5 取证 + #6 merge + #7 impact + #8 consistency）。
 
     吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/consistency
     纯函数、整树写回 ``argument_tree``（单写者，故裁撤 ``argument_credibility`` partial channel）。
@@ -151,11 +151,11 @@ class JudgmentFn(Protocol):
 
 
 class HypothesisProposeFn(Protocol):
-    """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。
+    """线路 2 · 开药（#5 · 重定义为仅 propose）。
 
     逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content`` +
     ``summary`` 调 ``propose``（不读 ``Argument`` 原文字段；原文 / 摘要取自 ``paragraph_list``），
-    产 pending 假设 partial（by ``argument_id``）。取证落终态属 Slice 5 的 judgment 节点。
+    产 pending 假设 partial（by ``argument_id``）。取证落终态属 judgment 节点。
     """
 
     def __call__(
@@ -166,7 +166,7 @@ class HypothesisProposeFn(Protocol):
 
 
 class RetrievalFn(Protocol):
-    """批量检索（PRD §8 / ADR-0017 · Slice 4 · 当前伪代码桩）。
+    """批量检索（PRD §8 / ADR-0017  · 当前伪代码桩）。
 
     紧随 hypothesis_propose：批量接收 ``argument_tree`` + ``hypotheses``（含假说文本，作
     查询输入）+ ``query_time_range`` + ``session_context`` + ``paragraph_list``，统一返回 citations
@@ -175,7 +175,7 @@ class RetrievalFn(Protocol):
     的白名单 / 权限 / 模板契约不动，真实后端后续切片接入）。读 ``session_context`` /
     ``query_time_range`` / ``paragraph_list`` 不触发联网——仅穿背景供真实后端就位。
     ``paragraph_list`` 是 PRD §Q2 最小放宽：补回段原文通道（``Argument`` 无文本字段，
-    ADR-0025 代价），forward ``target_text`` 取段 ``original_content`` 属 Slice 2 适配器侧构造，
+    ADR-0025 代价），forward ``target_text`` 取段 ``original_content`` 属适配器侧构造，
     本 Protocol 只穿下去；与 judgment / hypothesis_propose / rewrite_loop 同 family。
     """
 
@@ -190,7 +190,7 @@ class RetrievalFn(Protocol):
 
 
 class RewriteLoopFn(Protocol):
-    """逐段重写提议（#10·Slice 6·ADR-0017）。返回提议重写表 + per-段失败日志。
+    """逐段重写提议（#10·ADR-0017）。返回提议重写表 + per-段失败日志。
 
     对被触达段（supported 假说 / 命中 citations）由 LLM 提议重写文本、未触达段省略；
     产 ``proposed_rewrites``（仅触达段）+ per-段 LLM 失败日志（``errors``）。rewrite_loop
@@ -217,7 +217,7 @@ class RewriteLoopFn(Protocol):
 
 
 class Hitl2Fn(Protocol):
-    """HITL-2 终稿文本确认闸门（#9 接入，不可跳过硬闸门·Slice 6 重定位）。
+    """HITL-2 终稿文本确认闸门（#9 接入，不可跳过硬闸门·重定位）。
 
     接收只读原文表 + rewrite_loop 的 ``proposed_rewrites``，逐段确认 / 编辑 / 驳回，
     拼装 ``final_document``（确认→提议文本、编辑→编辑文本、驳回 / 未触达→逐字节原文），
@@ -327,7 +327,7 @@ def _stub_retrieval(
     session_context: SessionContext,
     paragraph_list: list[ParagraphRecord],
 ) -> dict[str, list[Source]]:
-    """检索桩（PRD §8 / Slice 4）：不真实检索、只穿 state、产空 citations。
+    """检索桩（PRD §8 / ）：不真实检索、只穿 state、产空 citations。
 
     ``session_context`` / ``query_time_range`` / ``paragraph_list`` 被读取（穿至 seam、供真实
     后端就位）但不触发联网；``argument_tree`` / ``hypotheses`` 接过但不发起查询。返回空 citations
@@ -347,7 +347,7 @@ def _stub_judgment(
     session_context: SessionContext,
     query_time_range: TimeRange,
 ) -> JudgmentOutcome:
-    """裁决桩（ADR-0017·Slice 5）：不判终态、调纯函数向前（空裁决 → 全 KEEP → 未触达）。
+    """裁决桩（ADR-0017）：不判终态、调纯函数向前（空裁决 → 全 KEEP → 未触达）。
 
     委托 :func:`judge_and_adjudicate` 用 :class:`agents.judgment.FakeJudgmentLlmClient`
     （默认空 :class:`JudgmentResult`）——无裁决 → ``argument_credibility`` 空、假说保持
@@ -480,7 +480,7 @@ def _guarded(
 
 def _parse_partition_node(agents: Agents) -> NodeFn:
     def parse_partition_node(state: PipelineState) -> dict[str, object]:
-        """parse+partition 合并节点（PRD §1 / ADR-0017 / Slice 1）。
+        """parse+partition 合并节点（PRD §1 / ADR-0017 / ）。
 
         partition 纯代码切分 + 字节级自检（硬停，不兜底），parse 建树 + 顺产
         query_time_range（桩）/ paragraph_list（异常 → 记日志 + 空树向前，PRD §13）。
@@ -562,7 +562,7 @@ def _hitl1_node(agents: Agents) -> NodeFn:
 
 def _judgment_node(agents: Agents) -> NodeFn:
     def judgment_node(state: PipelineState) -> dict[str, object]:
-        """裁决五合一节点（ADR-0017·Slice 5）。异常 → 覆盖范围内未判决节点置 error + 日志。
+        """裁决五合一节点（ADR-0017）。异常 → 覆盖范围内未判决节点置 error + 日志。
 
         吃 ``citations`` 判 per-argument / per-hypothesis 终态、再按序调 merge/impact/
         consistency 纯函数、整树写回 ``argument_tree``（单写者，故裁撤
@@ -607,7 +607,7 @@ def _judgment_node(agents: Agents) -> NodeFn:
 
 def _hypothesis_propose_node(agents: Agents) -> NodeFn:
     def hypothesis_propose_node(state: PipelineState) -> dict[str, object]:
-        """线路 2 · 开药（#5 · Slice 3 重定义为仅 propose）。异常 → 记日志 + 无假设向前。
+        """线路 2 · 开药（#5 · 重定义为仅 propose）。异常 → 记日志 + 无假设向前。
 
         T-02：逐 argument 经 ``paragraph_id`` 从 ``paragraph_list`` 反查该段 ``original_content``
         + ``summary`` 调 ``propose``（原文 / 摘要取自 ``paragraph_list``，不读 ``Argument`` 原文字段），
@@ -632,7 +632,7 @@ def _hypothesis_propose_node(agents: Agents) -> NodeFn:
 
 def _retrieval_node(agents: Agents) -> NodeFn:
     def retrieval_node(state: PipelineState) -> dict[str, object]:
-        """批量检索节点（PRD §8 / ADR-0017 · Slice 4 · 当前伪代码桩）。异常 → 降级空
+        """批量检索节点（PRD §8 / ADR-0017  · 当前伪代码桩）。异常 → 降级空
         citations + 日志、单向向前（PRD §13）。
 
         读 ``argument_tree`` + ``hypotheses`` + ``query_time_range`` + ``session_context`` +
@@ -668,7 +668,7 @@ def _retrieval_node(agents: Agents) -> NodeFn:
 
 def _hitl2_node(agents: Agents) -> NodeFn:
     def hitl2_node(state: PipelineState) -> dict[str, object]:
-        """HITL-2 终稿文本确认闸门（#9·Slice 6 重定位·不可跳过硬闸门）。
+        """HITL-2 终稿文本确认闸门（#9·重定位·不可跳过硬闸门）。
 
         接收只读原文表 + rewrite_loop 的 ``proposed_rewrites``，逐段确认 / 编辑 / 驳回，
         拼装 ``final_document``（确认→提议文本、编辑→编辑文本、驳回 / 未触达→逐字节原文）。
@@ -700,7 +700,7 @@ def _hitl2_node(agents: Agents) -> NodeFn:
 
 def _rewrite_loop_node(agents: Agents) -> NodeFn:
     def rewrite_loop_node(state: PipelineState) -> dict[str, object]:
-        """逐段重写提议（#10·Slice 6·ADR-0017）。异常 → 降级空 proposed_rewrites + 日志、
+        """逐段重写提议（#10·ADR-0017）。异常 → 降级空 proposed_rewrites + 日志、
         单向向前（PRD §13）。
 
         T-02：读 ``paragraph_list``（段落聚合根），逐段按 ``argument_tree_ids`` 正向解析节点、
@@ -775,7 +775,7 @@ class RealDeps:
 
 
 def _real_retrieval_factory(deps: RealDeps) -> Any:
-    """manifest retrieval ``real`` 工厂（PRD §Solution / §定位线索 · Slice 2，与 judgment 同形）。
+    """manifest retrieval ``real`` 工厂（PRD §Solution / §定位线索 ，与 judgment 同形）。
 
     ``retrieval_runtime`` 给出时返回绑定 runtime 的 :class:`RetrievalFn`（
     ``partial(real_retrieval, runtime=...)``，镜像 judgment ``partial(judge_and_adjudicate,
@@ -878,7 +878,7 @@ MANIFEST: tuple[AgentEntry, ...] = (
         name="retrieval",
         field="retrieval",
         stub=_stub_retrieval,
-        real=_real_retrieval_factory,  # Slice 2：填 real=None 空位、与 judgment 同形（real= 工厂 + RealDeps.retrieval_runtime 注入）。
+        real=_real_retrieval_factory,  # 填 real=None 空位、与 judgment 同形（real= 工厂 + RealDeps.retrieval_runtime 注入）。
         deps=("hypothesis_propose",),
         build=_retrieval_node,
         label="检索",
@@ -964,19 +964,19 @@ def create_real_agents(
 
     在 :func:`create_stub_agents` 基础上替换桩为真实实现。``llm`` 为解析 seam（具体 provider
     适配器属生产装配）；``hitl1_gate`` 为 HITL-1 注入闸门（真实 interrupt+checkpointer
-    属后续切片）。``hypothesis_llm`` 给出时开药桩（#5 · Slice 3 重定义为仅 propose）替换为真实
+    属后续切片）。``hypothesis_llm`` 给出时开药桩（#5 · 重定义为仅 propose）替换为真实
     「投机生成」实现——逐 argument 经 ``paragraph_list`` 反查段原文 / 摘要调 ``propose``、产 pending
     假说、只写回 ``candidate_hypotheses``、不改 ``status``，字节级承诺依然
     成立。``judgment_llm`` 给出时裁决桩（#4 取证 + #5 取证 + #6 merge + #7 impact + #8
-    consistency 五合一·Slice 5）替换为真实裁判实现——吃 citations 判 per-argument /
+    consistency 五合一）替换为真实裁判实现——吃 citations 判 per-argument /
     per-hypothesis 终态、再按序调 merge/impact/consistency 纯函数、整树写回
     ``argument_tree``（单写者，裁撤 ``argument_credibility`` partial channel）；merge/impact/
     consistency 为确定性纯函数、无 LLM/检索依赖（桩路径与真实装配共用同一串联、逻辑不动），
     故无独立 ``real`` 工厂；裁决只写回 ``status`` / ``merge_decision`` / ``issue_tags`` /
     裁剪假设、不改 ``content``、不置 ``adopted``，字节级承诺依然成立。``rewrite_llm`` 给出时
-    重写桩（#10·Slice 6·ADR-0017）替换为真实逐段提议重写实现——对被触达段（supported 假说 /
+    重写桩（#10·ADR-0017）替换为真实逐段提议重写实现——对被触达段（supported 假说 /
     命中 citations）调 ``propose_rewrite`` 产 ``proposed_rewrites``、未触达段省略，**不碰
-    ``argument_tree``**（按段 / 文本工作、与 argument 状态解耦）。HITL-2（#9·Slice 6 重定位
+    ``argument_tree``**（按段 / 文本工作、与 argument 状态解耦）。HITL-2（#9·重定位
     为终稿文本确认闸门）为不可跳过的硬闸门：``hitl2_gate`` 缺省时用
     :class:`ConservativeHitl2Gate`（无提议重写→一键通过、有提议重写→全驳回、原文逐字节保留、
     绝不自动采纳，ADR-0010）；逐段确认 / 编辑 / 驳回 ``proposed_rewrites`` 后由

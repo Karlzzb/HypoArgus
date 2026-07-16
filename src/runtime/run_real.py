@@ -4,7 +4,7 @@
 接真实 provider（DashScope 等 OpenAI-compatible），HITL-1 / HITL-2 用交互式 CLI 闸门。装配后
 manifest 的 ``real`` 工厂自动替换桩。
 
-Slice 6 后 retrieval 节点仍为桩（产空 citations、真实后端 Out of Scope）；judgment 节点
+重构后 retrieval 节点仍为桩（产空 citations、真实后端 Out of Scope）；judgment 节点
 吃空 citations 经 FakeJudgmentLlmClient 默认空裁决 → 全 KEEP → rewrite_loop 无触达段 →
 终稿逐字节等于原文。真实后端检索接入后 citations 非空、judgment 据之判终态、rewrite_loop
 据 supported 假说 / 命中 citations 逐段提议重写（拓扑不动）。
@@ -118,7 +118,7 @@ def run_real_pipeline(
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=hitl2_gate or CliHitl2Gate(),  # type: ignore[arg-type]
-        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：真实检索后端（with_llm=False、进程级单例、daemon worker loop 承载）。
+        retrieval_runtime=lazy_search_agent_runtime(),  # 真实检索后端（with_llm=False、进程级单例、daemon worker loop 承载）。
     )
     ctx = session_context or SessionContext(
         session_id=os.environ.get("HYPOARGUS_SESSION_ID", ""),
@@ -330,7 +330,7 @@ async def arun_real_pipeline(
         judgment_llm=QwenJudgmentLlmClient(chat),
         rewrite_llm=QwenRewriteLlmClient(chat),
         hitl2_gate=InterruptHitl2Gate(),
-        retrieval_runtime=lazy_search_agent_runtime(),  # Slice 2：CLI 一次性路径同样可用真实检索（PRD story 14）。
+        retrieval_runtime=lazy_search_agent_runtime(),  # CLI 一次性路径同样可用真实检索（PRD story 14）。
     )
     ctx = session_context or SessionContext(
         session_id=os.environ.get("HYPOARGUS_SESSION_ID", ""),

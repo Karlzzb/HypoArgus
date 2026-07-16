@@ -1,10 +1,10 @@
-"""HITL-2 终稿文本确认硬闸门契约（PRD §13、ADR-0010/0017、Slice 6）。
+"""HITL-2 终稿文本确认硬闸门契约（PRD §13、ADR-0010/0017）。
 
 ADR-0014 子包拆分：``contract.py`` 放会话级决策 + 段落级操作 op 判别联合 + 呈现视图 +
 闸门 Protocol + Fake/默认闸门实现 + ``Hitl2GateError``，``agent.py`` 放
 ``build_review`` / ``resolve_rewrites`` / ``assemble_final_document`` / ``confirm`` 纯函数。
 
-Slice 6（ADR-0017）重定位 hitl2 为**终稿文本确认闸门**：在 rewrite_loop 逐段提议重写
+重构后重定位 hitl2 为**终稿文本确认闸门**：在 rewrite_loop 逐段提议重写
 （``proposed_rewrites``）之后、``final_document`` 落地之前触发。界面并列呈现被触达段的
 原文 + 提议重写文本；用户逐段**确认 / 编辑 / 驳回**，系统据三态拼装 ``final_document``
 （确认→提议文本、编辑→编辑文本、驳回→原文 bytes、未触达→逐字节原文）。
